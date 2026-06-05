@@ -24,7 +24,6 @@ env/
 cases/
 data/
 nmap_scans/
-screenshots/
 logs/
 sessions/
 wifi_sessions/
