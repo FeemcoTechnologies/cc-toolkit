@@ -1,0 +1,528 @@
+id: tomcat-ajp-lfi
+info:
+  name: Apache Tomcat AJP Connector LFI (Ghostcat - CVE-2020-1938)
+  author: cc-toolkit
+  severity: high
+  description: Apache Tomcat AJP file inclusion vulnerability
+  tags: cve, tomcat, lfi
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/WEB-INF/web.xml"
+    matchers:
+      - type: word
+        words:
+          - "<web-app"
+---
+id: jboss-deserialization
+info:
+  name: JBoss Deserialization RCE
+  author: cc-toolkit
+  severity: critical
+  description: JBoss/JBossEAP insecure deserialization leading to RCE
+  tags: jboss, deserialization, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/invoker/JMXInvokerServlet"
+    matchers:
+      - type: word
+        words:
+          - "JMXInvokerServlet"
+---
+id: jenkins-secrets-exposure
+info:
+  name: Jenkins Secrets / Credentials Exposure
+  author: cc-toolkit
+  severity: high
+  description: Jenkins credential store accessible to unauthenticated users
+  tags: jenkins, exposure, credentials
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/credential-store/domain/_/"
+      - "{{BaseURL}}/credentials/"
+    matchers:
+      - type: word
+        words:
+          - "Credentials"
+          - "credential-store"
+        condition: or
+---
+id: jenkins-script-console
+info:
+  name: Jenkins Script Console Access
+  author: cc-toolkit
+  severity: critical
+  description: Jenkins script console exposed - leads to RCE
+  tags: jenkins, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/script"
+      - "{{BaseURL}}/scriptText"
+    matchers:
+      - type: word
+        words:
+          - "Script Console"
+          - "Groovy"
+        condition: or
+---
+id: swagger-ui-exposed
+info:
+  name: Swagger/OpenAPI UI Exposed
+  author: cc-toolkit
+  severity: medium
+  description: Swagger UI documentation exposed without authentication
+  tags: api, documentation, exposure
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/swagger-ui.html"
+      - "{{BaseURL}}/swagger-ui/"
+      - "{{BaseURL}}/api/swagger-ui"
+      - "{{BaseURL}}/docs"
+      - "{{BaseURL}}/api/docs"
+    matchers:
+      - type: word
+        words:
+          - "Swagger UI"
+          - "swagger-ui"
+          - "OpenAPI definition"
+        condition: or
+---
+id: graphql-introspection
+info:
+  name: GraphQL Introspection Enabled
+  author: cc-toolkit
+  severity: high
+  description: GraphQL endpoint with introspection enabled - allows schema extraction
+  tags: graphql, api, exposure
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/graphql"
+      - "{{BaseURL}}/v1/graphql"
+      - "{{BaseURL}}/api/graphql"
+    headers:
+      Content-Type: application/json
+    body: '{"query":"{__schema{types{name}}}"}'
+    matchers:
+      - type: word
+        words:
+          - "\"data\""
+          - "\"types\""
+          - "\"name\""
+        condition: and
+---
+id: wordpress-user-enum
+info:
+  name: WordPress User Enumeration
+  author: cc-toolkit
+  severity: medium
+  description: WordPress user enumeration via REST API or author archives
+  tags: wordpress, enumeration
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/wp-json/wp/v2/users"
+      - "{{BaseURL}}/?author=1"
+    matchers:
+      - type: word
+        words:
+          - "\"name\""
+          - "\"slug\""
+        condition: or
+---
+id: exposed-dashboard-druid
+info:
+  name: Exposed Monitoring Dashboard
+  author: cc-toolkit
+  severity: high
+  description: Exposed monitoring/management dashboard found
+  tags: exposure, monitoring
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator"
+      - "{{BaseURL}}/actuator/env"
+      - "{{BaseURL}}/actuator/health"
+      - "{{BaseURL}}/druid/index.html"
+      - "{{BaseURL}}/phpinfo.php"
+    matchers:
+      - type: word
+        words:
+          - "\"spring.application.name\""
+          - "Druid Driver"
+          - "PHP Version"
+          - "PHP Extension"
+        condition: or
+---
+id: s3-bucket-open
+info:
+  name: Public S3 Bucket Listing
+  author: cc-toolkit
+  severity: medium
+  description: Amazon S3 bucket allows public listing
+  tags: cloud, aws, s3
+
+requests:
+  - method: GET
+    path:
+      - "http://{{BaseURL}}.s3.amazonaws.com"
+      - "http://{{BaseURL}}.s3.us-east-1.amazonaws.com"
+      - "http://{{BaseURL}}.s3.eu-west-1.amazonaws.com"
+      - "https://{{BaseURL}}.s3.amazonaws.com"
+    matchers:
+      - type: word
+        words:
+          - "<ListBucketResult"
+          - "<Contents>"
+          - "AccessDenied"
+        condition: or
+---
+id: elasticsearch-exposed
+info:
+  name: Elasticsearch Exposed
+  author: cc-toolkit
+  severity: high
+  description: Elasticsearch instance without authentication
+  tags: elasticsearch, exposure
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}:9200"
+      - "{{BaseURL}}:9200/_cat/indices"
+    matchers:
+      - type: word
+        words:
+          - "\"cluster_name\""
+          - "\"tagline\""
+          - "You Know, for Search"
+        condition: or
+---
+id: mongodb-exposed
+info:
+  name: MongoDB Instance Exposed
+  author: cc-toolkit
+  severity: high
+  description: MongoDB database accessible without authentication
+  tags: mongodb, exposure, database
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}:27017"
+    matchers:
+      - type: word
+        words:
+          - "MongoDB"
+          - "mongodb"
+        condition: or
+---
+id: redis-exposed
+info:
+  name: Redis Server Exposed
+  author: cc-toolkit
+  severity: high
+  description: Redis server accessible without authentication
+  tags: redis, exposure
+
+requests:
+  - method: GET
+    path:
+      - "redis://{{BaseURL}}:6379"
+    matchers:
+      - type: word
+        words:
+          - "+OK"
+          - "-NOAUTH"
+        condition: or
+---
+id: docker-api-exposed
+info:
+  name: Docker API Exposed
+  author: cc-toolkit
+  severity: critical
+  description: Docker daemon API exposed without authentication — full container RCE
+  tags: docker, exposure, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}:2375/version"
+      - "{{BaseURL}}:2376/version"
+      - "https://{{BaseURL}}:2376/version"
+    matchers:
+      - type: word
+        words:
+          - "\"Version\""
+          - "\"ApiVersion\""
+        condition: and
+---
+id: kibana-exposed
+info:
+  name: Kibana Dashboard Exposed
+  author: cc-toolkit
+  severity: high
+  description: Kibana instance without authentication
+  tags: kibana, elastic, exposure
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}:5601"
+      - "{{BaseURL}}:5601/api/status"
+    matchers:
+      - type: word
+        words:
+          - "kibana"
+          - "\"version\""
+          - "\"status\""
+        condition: or
+---
+id: cors-wildcard
+info:
+  name: CORS Wildcard Origin with Credentials
+  author: cc-toolkit
+  severity: medium
+  description: CORS allows any origin with Access-Control-Allow-Credentials
+  tags: cors, misconfiguration
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "https://evil.com"
+    matchers-condition: and
+    matchers:
+      - type: word
+        words:
+          - "Access-Control-Allow-Origin: https://evil.com"
+        part: header
+      - type: word
+        words:
+          - "Access-Control-Allow-Credentials: true"
+        part: header
+---
+id: webdav-enabled
+info:
+  name: WebDAV Enabled
+  author: cc-toolkit
+  severity: medium
+  description: WebDAV enabled — may allow file upload/modification
+  tags: webdav, misconfiguration
+
+requests:
+  - method: OPTIONS
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: word
+        words:
+          - "PROPFIND"
+          - "MKCOL"
+          - "PUT"
+          - "MOVE"
+        condition: or
+        part: header
+---
+id: host-header-injection
+info:
+  name: Host Header Injection
+  author: cc-toolkit
+  severity: medium
+  description: Application reflects or uses Host header in redirects
+  tags: host-header, misconfiguration
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Host: "evil.com"
+    matchers:
+      - type: word
+        words:
+          - "evil.com"
+        part: body
+---
+id: clickjacking-missing-headers
+info:
+  name: Missing Clickjacking Protection
+  author: cc-toolkit
+  severity: info
+  description: X-Frame-Options or CSP frame-ancestors not set
+  tags: clickjacking, misconfiguration
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers-condition: or
+    matchers:
+      - type: word
+        words:
+          - "X-Frame-Options"
+        part: header
+        negative: true
+      - type: word
+        words:
+          - "frame-ancestors"
+        part: header
+        negative: true
+---
+id: hsts-missing
+info:
+  name: Missing HSTS Header
+  author: cc-toolkit
+  severity: info
+  description: Strict-Transport-Security header not set
+  tags: hsts, misconfiguration
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: word
+        words:
+          - "Strict-Transport-Security"
+        part: header
+        negative: true
+---
+id: certificate-expiry
+info:
+  name: SSL Certificate Expiry Check
+  author: cc-toolkit
+  severity: medium
+  description: TLS certificate is expired or expiring within 7 days
+  tags: ssl, tls, certificate
+
+requests:
+  - method: GET
+    path:
+      - "https://{{BaseURL}}"
+    matchers:
+      - type: word
+        words:
+          - "certificate has expired"
+          - "expired certificate"
+        condition: or
+---
+id: directory-listing
+info:
+  name: Directory Listing Enabled
+  author: cc-toolkit
+  severity: medium
+  description: Directory listing is enabled on web server
+  tags: exposure, directory-listing
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      - "{{BaseURL}}/uploads/"
+      - "{{BaseURL}}/backup/"
+    matchers:
+      - type: word
+        words:
+          - "Index of /"
+          - "Directory listing for"
+          - "<title>Index of"
+        condition: or
+---
+id: exposed-backup-files
+info:
+  name: Exposed Backup Files
+  author: cc-toolkit
+  severity: high
+  description: Backup files with sensitive data exposed
+  tags: exposure, backup
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/backup.sql"
+      - "{{BaseURL}}/db_backup.sql"
+      - "{{BaseURL}}/backup.zip"
+      - "{{BaseURL}}/backup.tar.gz"
+      - "{{BaseURL}}/www.zip"
+      - "{{BaseURL}}/website.zip"
+    matchers:
+      - type: word
+        words:
+          - "PK"
+          - "SQL"
+          - "INSERT INTO"
+        condition: or
+---
+id: phpinfo-exposed
+info:
+  name: phpinfo() Exposed
+  author: cc-toolkit
+  severity: high
+  description: PHP phpinfo() page exposed — reveals system configuration, credentials, paths
+  tags: php, exposure
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/phpinfo.php"
+      - "{{BaseURL}}/info.php"
+      - "{{BaseURL}}/infophp.php"
+      - "{{BaseURL}}/php_info.php"
+    matchers:
+      - type: word
+        words:
+          - "PHP Version"
+          - "PHP License"
+          - "PHP Credits"
+        condition: or
+---
+id: wordpress-xmlrpc
+info:
+  name: WordPress XML-RPC Enabled
+  author: cc-toolkit
+  severity: medium
+  description: WordPress XML-RPC interface enabled — allows brute-force, DDoS via pingback
+  tags: wordpress, xmlrpc
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/xmlrpc.php"
+    matchers:
+      - type: word
+        words:
+          - "XML-RPC server accepts POST requests only"
+---
+id: cors-all-origins
+info:
+  name: CORS Reflects Origin
+  author: cc-toolkit
+  severity: low
+  description: Application reflects any Origin header in Access-Control-Allow-Origin
+  tags: cors, misconfiguration
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "https://evil.com"
+    matchers:
+      - type: word
+        words:
+          - "Access-Control-Allow-Origin: https://evil.com"
+        part: header

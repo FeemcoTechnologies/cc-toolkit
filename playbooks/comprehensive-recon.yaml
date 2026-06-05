@@ -1,0 +1,24 @@
+name: "Comprehensive Reconnaissance"
+description: >
+  Full nmap pipeline (ping/ARP → SYN top → ACK → SYN all → UDP top → UDP all)
+  → service scan (T3) → httpx → whatweb → eyewitness → katana → nuclei
+target_required: true
+
+vars:
+  pipeline_script: "/root/.pdtm/go/bin/python3"
+
+steps:
+  - id: pipeline_run
+    name: "Run comprehensive recon pipeline"
+    tool: "python3"
+    args:
+      - "{scripts_dir}/recon_pipeline.py"
+      - "--target"
+      - "{target}"
+      - "--case-dir"
+      - "{case_dir}"
+      - "--verbose"
+      - "--httpx-path"
+      - "/root/.pdtm/go/bin/httpx"
+    timeout: 3600
+    pause: 2

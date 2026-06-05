@@ -1,0 +1,403 @@
+title: OSED / OSCE
+description: Offensive Security Exploit Developer — Windows user-mode exploitation, ROP, SEH, ASLR bypass
+cards:
+- question: What is the OSED certification focus?
+  answer: Windows x86 and x64 user-mode exploit development, ROP, SEH, ASLR bypass, egg hunters
+- question: What is the EIP register used for in exploitation?
+  answer: Instruction pointer — overwriting EIP gains code execution
+- question: What is the ESP register used for in exploitation?
+  answer: Stack pointer — points to shellcode location on the stack
+- question: What is the SEH (Structured Exception Handler)?
+  answer: A per-thread linked list of exception handler records stored in the TEB
+- question: What is the SEH chain structure?
+  answer: 'Each record: [Next: 4 bytes] [Handler: 4 bytes] — EXCEPTION_REGISTRATION_RECORD'
+- question: What is the SEH handler record offset in TEB?
+  answer: FS:[0x00] points to the first SEH record
+- question: What is a SEH overwrite exploit?
+  answer: Overwriting a SEH handler pointer in a buffer overflow to redirect execution on exception
+- question: Why is an exception needed in SEH exploits?
+  answer: The overwritten handler is not called until an exception occurs (intentional crash)
+- question: What is the typical SEH overwrite offset?
+  answer: Buffer padding [4 bytes SEH next] [4 bytes SEH handler] [nop sled] [shellcode]
+- question: What is SafeSEH?
+  answer: Compiler flag that registers valid exception handlers; non-registered handlers are rejected
+- question: How do you bypass SafeSEH?
+  answer: Use a module compiled without SafeSEH, or use a registered handler that pivots to shellcode
+- question: What is SEHOP (SEH Overwrite Protection)?
+  answer: Windows mitigation that validates SEH chain integrity; chain must terminate in a FinalHandler
+- question: How does SEHOP work?
+  answer: Checks the SEH chain before dispatching an exception; validates that last record is the...
+- question: How do you bypass SEHOP?
+  answer: Overwrite the SEH chain pointer so it terminates in a valid handler, or use a module...
+- question: What is a pop pop ret gadget?
+  answer: A gadget sequence (pop r32; pop r32; ret) used to redirect through a SEH handler
+- question: What does the SEH handler stack look like when triggered?
+  answer: '[... SEH chain pointer ...] [Return addr of dispatch] [Except.Info] [EstablisherFrame]...'
+- question: What is ROP (Return-Oriented Programming)?
+  answer: Chaining short sequences of instructions ending in RET to perform arbitrary computations
+- question: What is a ROP gadget?
+  answer: A small number of instructions ending in RET (0xC3) used as building blocks in ROP chains
+- question: What is the stack pivot technique?
+  answer: Changing ESP to point to controlled memory (e.g., xchg eax, esp; ret) for larger ROP chains
+- question: What gadgets are needed for VirtualProtect ROP?
+  answer: pop r32; ret, call/jmp to VirtualProtect, and gadget to return execution to shellcode
+- question: What does VirtualProtect do?
+  answer: Changes memory page protection to PAGE_EXECUTE_READWRITE (0x40)
+- question: What are the VirtualProtect parameters?
+  answer: lpAddress, dwSize, flNewProtect (0x40), lpflOldProtect (writable address)
+- question: What is a ret2libc attack?
+  answer: Returning to libc functions (Linux) to bypass NX — equivalent to ROP
+- question: What is ret2mprotect (Linux)?
+  answer: Using mprotect() to make the stack executable and then executing shellcode
+- question: What is ret2plt?
+  answer: Returning to PLT entry of a function (system, execve) instead of GOT (for ASLR bypass)
+- question: What is the GOT (Global Offset Table)?
+  answer: Table of resolved function addresses in ELF binaries; GOT overwrite redirects function calls
+- question: What is the PLT (Procedure Linkage Table)?
+  answer: Stub code that lazily resolves function addresses via GOT; used in ret2plt
+- question: What is an info leak?
+  answer: Reading process memory through a vulnerability to defeat ASLR
+- question: What partial overwrite defeats ASLR?
+  answer: Overwriting only the lower bytes of a pointer to redirect execution within the same page/module
+- question: What is the partial EBP overwrite?
+  answer: Overwriting the saved EBP's lower byte to redirect the stack frame to a controlled buffer
+- question: What is the NtContinue technique?
+  answer: Using NtContinue API to restore controlled CONTEXT record, bypassing ASLR
+- question: What is an egg hunter?
+  answer: Small shellcode that searches memory for a unique tag followed by the actual payload
+- question: When are egg hunters needed?
+  answer: When the initial buffer is too small for full shellcode but large memory regions exist
+- question: What is the syscall-based egg hunter?
+  answer: Uses NtDisplayString, NtAccessCheckAndAuditAlarm, or similar NT API syscalls to probe memory
+- question: What is the access method egg hunter?
+  answer: Uses access() syscall to validate memory pages before scanning content
+- question: What is the last exception method?
+  answer: Tries to read memory; if exception occurs, handler advances to next page
+- question: What is DEP (Data Execution Prevention)?
+  answer: Hardware-enforced NX bit — prevents executing code on non-executable memory pages
+- question: How does DEP work?
+  answer: CPU checks NX bit in page table; if execution is attempted on NX page → access violation
+- question: What are the DEP bypass techniques?
+  answer: ROP (build functions with existing code), VirtualProtect/VirtualAlloc via ROP, ret2libc
+- question: What is NtSetInformationProcess DEP bypass?
+  answer: Disable DEP for the current process via syscall (only works if permanent DEP not on)
+- question: What is HeapCreate/HeapAlloc ROP?
+  answer: Create a new heap with EXECUTE permission and copy shellcode there
+- question: What is a stack cookie (canary)?
+  answer: A secret value placed before saved EBP; checked before RET to detect buffer overflows
+- question: How are cookies bypassed?
+  answer: Info leak, overwrite before cookie check, or overwrite TLS cookie
+- question: What is the TLS cookie bypass?
+  answer: Each thread's stack cookie is stored in Thread Local Storage; overwrite TLS to set known cookie
+- question: What is the x64 calling convention in Windows?
+  answer: RCX, RDX, R8, R9 for first 4 args; rest on stack; caller allocates 32-byte shadow space
+- question: How does x64 ROP differ from x86?
+  answer: Larger addresses (64-bit), need pop rcx; ret, etc. No single ret; need proper alignment
+- question: What is the x64 exception handling model?
+  answer: Table-based (unwind codes) rather than stack-based; no SEH chain overwrite
+- question: What is null-byte avoidance in shellcode?
+  answer: Encoding payloads to avoid 0x00 bytes so string functions (strcpy) do not truncate
+- question: What is the GetPC shellcode technique?
+  answer: Position-independent code that finds its own address via call/pop or fnstenv
+- question: What techniques resolve kernel32 base for shellcode?
+  answer: Walk PEB → LDR → InMemoryOrderModuleList → find kernel32 → parse export table
+- question: What is API hashing in shellcode?
+  answer: Hash function name strings and compare with computed hashes to find APIs without storing names
+- question: What is an alphanumeric shellcode encoder?
+  answer: Encodes shellcode to use only printable ASCII characters (0x20-0x7F)
+- question: What tool generates alphanumeric shellcode?
+  answer: alpha2 encoder or msfvenom -e alpha_mixed
+- question: What is an egghunter tag?
+  answer: A unique 8-byte string (e.g., 'W00TW00T') that the egghunter searches for in memory
+- question: What is immunity debugger?
+  answer: GUI debugger for Windows with plugin support (mona.py)
+- question: What is mona.py?
+  answer: Immunity debugger plugin with exploit development utilities (pattern, gadgets, SEH, ROP)
+- question: What mona command configures working directory?
+  answer: '!mona config -set workingfolder C:\logs'
+- question: What mona command finds offset for crash?
+  answer: '!mona pc 3000 (create pattern); crash with pattern → !mona po VALUE (find offset)'
+- question: What mona command finds JMP ESP?
+  answer: '!mona jmp -r esp -m module.dll'
+- question: What mona command finds gadgets?
+  answer: '!mona ropgadgets (generates ROP chains)'
+- question: What mona command finds SEH gadgets?
+  answer: '!mona seh'
+- question: What mona command identifies bad characters?
+  answer: '!mona bytearray -cpb ''\x00'' and compare with memory dump: !mona compare -f address'
+- question: What is a bad character?
+  answer: Byte that breaks the exploit (null 0x00, newline 0x0A, carriage return 0x0D, etc.)
+- question: What is the typical bad char test range?
+  answer: 0x01 through 0xFF (excluding null byte known as bad)
+- question: What is a NOP sled?
+  answer: Series of NOP (0x90) instructions that slide execution to shellcode
+- question: What is a NOP sled equivalent in ROP?
+  answer: RET sled (ret; ret; ret) slides through ROP chain doing nothing
+- question: What is a gadget for 'pop r32; ret'?
+  answer: 'Hex: 58 C3 (pop eax; ret), 5B C3 (pop ebx; ret) etc.'
+- question: What is a gadget for memory mov?
+  answer: mov [reg], reg; ret or mov reg, [reg]; ret
+- question: What is a pivot gadget?
+  answer: xchg eax, esp; ret or push r32; pop esp; ret
+- question: What is the ASLR flag in PE?
+  answer: IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE (0x0040) in DLL characteristics
+- question: What OS versions have full ASLR?
+  answer: Windows 10/11, Windows Server 2016+, earlier versions have limited ASLR
+- question: What is a non-ASLR module?
+  answer: A DLL compiled without /DYNAMICBASE — addresses are predictable across reboots
+- question: What is the advantage of a non-ASLR module?
+  answer: Can bypass ASLR without an info leak; all module addresses are fixed
+- question: What is the DEP flag in PE?
+  answer: IMAGE_DLLCHARACTERISTICS_NX_COMPAT (0x0100) in DLL characteristics
+- question: What flag enforces SEHOP?
+  answer: DisableExceptionChainValidation (DisableExploitProtection) or system-wide via policy
+- question: What is WinDbg used for?
+  answer: Kernel and user-mode debugging with .process, .thread, kd, lm, and scripting
+- question: What WinDbg command shows stack trace?
+  answer: k or kd (kernel)
+- question: What WinDbg command lists loaded modules?
+  answer: lm
+- question: What WinDbg command sets a breakpoint?
+  answer: bp address or bu $exentry (entry point)
+- question: What WinDbg command examines memory?
+  answer: db (bytes), dw (words), dd (dwords), dq (qwords), da (ascii), du (unicode)
+- question: What WinDbg command edits memory?
+  answer: eb (byte), ew (word), ed (dword), eq (qword)
+- question: What WinDbg command shows registers?
+  answer: r (registers)
+- question: What WinDbg command goes to a module?
+  answer: .reload /f module.dll (force reload symbols)
+- question: What WinDbg command shows process info?
+  answer: '!process 0 0 or .process'
+- question: What is an SEH attack chain?
+  answer: Crash → SEH handler triggered → pop pop ret → [6-8 bytes room] → short jump → rest of chain
+- question: What is the typical SHORT jump opcode?
+  answer: \xEB (JMP rel8) — jumps up to 127 bytes forward or backward
+- question: What is a typical 6-byte SEH trampoline?
+  answer: \xEB\x06 (jump 6 bytes forward) with padding to align to SEH chain
+- question: What is a ret2libc attack on Windows?
+  answer: Return to kernel32/ntdll functions like VirtualProtect or WinExec
+- question: What is WinExec used for in exploits?
+  answer: Execute a command (calc.exe, cmd.exe) with a single argument
+- question: What is the WinExec signature?
+  answer: UINT WinExec(LPCSTR lpCmdLine, UINT uCmdShow)
+- question: What is the typical egg hunter syscall used?
+  answer: NtDisplayString (syscall) on Windows
+- question: What is the egg hunter tag size?
+  answer: 8 bytes (4-byte tag + 4-byte tag alignment)
+- question: How does the egg hunter compare each address?
+  answer: Compares DWORD (4 bytes) at current address with tag; if match, jumps to address+8
+- question: What is the egg hunter exception handling?
+  answer: Each page probe that fails gives ACCESS_VIOLATION; handler advances to next page
+- question: What is the stack in x86?
+  answer: LIFO structure; grows down (higher address → lower address); ESP points to top
+- question: What are the Windows kernel32 exported functions?
+  answer: VirtualProtect, VirtualAlloc, WinExec, LoadLibrary, GetProcAddress
+- question: What is the Windows ntdll exported function?
+  answer: NtContinue, NtDisplayString, NtSetInformationProcess
+- question: What does the 'ret' instruction do?
+  answer: Pops 4 bytes from stack into EIP (x86) or 8 bytes into RIP (x64)
+- question: What does 'ret N' do?
+  answer: Pops return address and then adds N to ESP (clean arguments)
+- question: What is the address of VirtualProtect on a non-ASLR module?
+  answer: 'Fixed offset from module base: module_base + VirtualProtect RVA'
+- question: What is the OSED shellcode requirement?
+  answer: Must be null-free and within memory constraints (typically small buffer)
+- question: What is a multi-stage shellcode?
+  answer: Small stager loads a larger second stage over connection
+- question: What is a reverse shell stager?
+  answer: Small code that connects back and downloads second stage over WinSock
+- question: What is PEB walk for API resolution?
+  answer: Locate PEB → LDR → InMemoryOrderModuleList → kernel32 → parse exports for function
+- question: What is the PEB offset in TEB on x86?
+  answer: FS:[0x30] points to PEB
+- question: What is the PEB.Ldr offset?
+  answer: PEB+0x0C -> _PEB_LDR_DATA.InMemoryOrderModuleList
+- question: What is the InMemoryOrderModuleList offset?
+  answer: PEB_LDR_DATA+0x14 -> InMemoryOrderModuleList (LIST_ENTRY)
+- question: What is the kernel32 module name?
+  answer: kernel32.dll (or KERNEL32.DLL)
+- question: What field in LDR_MODULE contains the DLL base?
+  answer: DllBase at offset 0x18 from the LIST_ENTRY in x86
+- question: How is the export directory found?
+  answer: DLL base + IMAGE_DATA_DIRECTORY[0].VirtualAddress (Export Directory)
+- question: What does IMAGE_EXPORT_DIRECTORY contain?
+  answer: NumberOfFunctions, AddressOfFunctions, AddressOfNames, AddressOfNameOrdinals
+- question: How do you find a function by name?
+  answer: Search AddressOfNames array for match, get ordinal from AddressOfNameOrdinals, get address...
+- question: What is the shellcode for exec calc on Windows?
+  answer: Call WinExec("calc", 1); each byte of 'calc' pushed on stack in reverse
+- question: What is the concept of bad character narrowing?
+  answer: Test fewer characters per run to identify which specific bytes cause issues
+- question: What are typical bad chars in HTTP-based exploits?
+  answer: 0x00 (null), 0x0A (LF), 0x0D (CR), 0x20 (space), 0x26 (&), 0x3F (?), etc.
+- question: What is the immunity debugger command to run program?
+  answer: F9 or Debug → Run
+- question: What is the immunity debugger command to step over?
+  answer: F8 or Debug → Step Over
+- question: What is the immunity debugger command to step into?
+  answer: F7 or Debug → Step Into
+- question: What is the immunity debugger command to toggle breakpoint?
+  answer: F2 or right-click → Breakpoint → Toggle
+- question: What is an exception handler in exploit dev?
+  answer: A registered function in SEH chain called when an exception occurs
+- question: What is the purpose of the 4-byte SEH next pointer?
+  answer: Points to the next EXCEPTION_REGISTRATION_RECORD in the chain
+- question: What does a SEH overwrite require?
+  answer: Buffer overflow that reaches the SEH chain, overwriting both next and handler pointers
+- question: What is the opcode for a 6-byte near jump?
+  answer: \xE9 (JMP rel32) — jump forward/backward up to 2GB
+- question: What is the opcode for short jump forward 6 bytes?
+  answer: \xEB\x04 (JMP +4 from the end of the SEH next field)
+- question: What is the typical x86 gadget class in ntdll?
+  answer: POP, RET, MOV, ADD/SUB, XOR, CALL, JMP gadgets used in ROP chains
+- question: What is the hex for pop eax; ret?
+  answer: 0x58, 0xC3
+- question: What is the hex for pop ecx; ret?
+  answer: 0x59, 0xC3
+- question: What is the hex for pop ebx; ret?
+  answer: 0x5B, 0xC3
+- question: What is the hex for pop edx; ret?
+  answer: 0x5A, 0xC3
+- question: What is the hex for pop esi; ret?
+  answer: 0x5E, 0xC3
+- question: What is the hex for pop edi; ret?
+  answer: 0x5F, 0xC3
+- question: What is the hex for pop ebp; ret?
+  answer: 0x5D, 0xC3
+- question: What is the hex for push eax; call esp?
+  answer: 0x50, 0xFF, 0xD4
+- question: What is the hex for xchg eax, esp; ret?
+  answer: 0x94, 0xC3
+- question: What is the hex for ret?
+  answer: '0xC3'
+- question: What is the hex for JMP ESP?
+  answer: 0xFF, 0xE4
+- question: What is the hex for JMP EAX?
+  answer: 0xFF, 0xE0
+- question: What is the hex for CALL EAX?
+  answer: 0xFF, 0xD0
+- question: What is the hex for CALL ESP?
+  answer: 0xFF, 0xD4
+- question: What is the hex for INT3 (software breakpoint)?
+  answer: '0xCC'
+- question: What is a trampoline in ROP?
+  answer: A small gadget sequence that jumps execution to shellcode (e.g., ADD ESP, X; RET)
+- question: What is the minimum offset to determine before building an exploit?
+  answer: The offset in bytes from buffer start to EIP
+- question: What is a cyclic pattern?
+  answer: De Bruijn sequence of unique substrings to determine crash offset
+- question: What Python library creates cyclic patterns?
+  answer: 'pwntools: cyclic(1000) and cyclic_find(''laaa'')'
+- question: What is the standard immunity pattern command?
+  answer: '!mona pc 3000'
+- question: What is the standard immunity offset find command?
+  answer: '!mona po 37694136'
+- question: What is a buffer overflow vulnerability?
+  answer: Writing more data than allocated, overwriting adjacent memory (EIP, SEH, heap)
+- question: What is a heap spray?
+  answer: Allocating many heap objects filled with NOPs + shellcode to predict heap address
+- question: When is heap spray useful?
+  answer: When address of overflowed buffer is unpredictable but a large range is predictable
+- question: What is the DEP state on modern Windows?
+  answer: Enabled by default (OptOut policy); user or exploit must disable/avoid it
+- question: What is the OSED exam format?
+  answer: 48-hour practical exam with 4 machines requiring custom exploits
+- question: What tools are permitted in OSED?
+  answer: Immunity Debugger, WinDbg, Python, Mona.py, any non-automatic exploit generation tool
+- question: What must the exploit do in the OSED exam?
+  answer: Execute calc.exe or create a file (not just crash or EIP control)
+- question: What is a conditional jump in x86?
+  answer: 'Jumps based on flags: JZ/JE (ZF=1), JNZ/JNE (ZF=0), JG (SF=OF), JL (SF≠OF)'
+- question: What is the NEG instruction?
+  answer: 'Two''s complement negation: NEG AX → AX = 0 - AX'
+- question: What is the LEA instruction?
+  answer: 'Load Effective Address: LEA EAX, [EBX+ECX*4] — calculates address without accessing memory'
+- question: What is the SHL/SHR instruction?
+  answer: 'Shift left/right: SHL AX, 1 (multiply by 2); SHR AX, 1 (divide by 2)'
+- question: What is the ROL/ROR instruction?
+  answer: Rotate left/right through carry bit — used in encryption/decryption shellcode
+- question: What is the XOR instruction?
+  answer: 'Exclusive OR: XOR EAX, EAX (zero register); XOR [mem], reg (encrypt memory)'
+- question: What is the REP prefix?
+  answer: Repeat string instruction until ECX is zero (used with MOVS, STOS, LODS, SCAS, CMPS)
+- question: What is the SCAS instruction?
+  answer: 'Compare string: SCASB/SCASW/SCASD — compares AL/AX/EAX with [EDI] and sets flags'
+- question: What is the LODS instruction?
+  answer: 'Load string: LODSB/LODSW/LODSD — loads byte/word/dword from [ESI] into AL/AX/EAX'
+- question: What is the STOS instruction?
+  answer: 'Store string: STOSB/STOSW/STOSD — stores AL/AX/EAX into [EDI]'
+- question: What is the CMPS instruction?
+  answer: 'Compare string: CMPSB/CMPSW/CMPSD — compares [ESI] with [EDI]'
+- question: What is the MOVS instruction?
+  answer: 'Move string: MOVSB/MOVSW/MOVSD — copies from [ESI] to [EDI] with REP prefix for block copy'
+- question: What is the CMPXCHG instruction?
+  answer: 'Compare and exchange: compares accumulator with destination, sets ZF, exchanges if equal'
+- question: What is the BSWAP instruction?
+  answer: 'Byte swap: BSWAP EAX — reverses byte order (endian conversion)'
+- question: What is the CPUID instruction?
+  answer: 'Processor identification: returns CPU vendor, family, features in EAX/EBX/ECX/EDX'
+- question: What is the LFENCE instruction?
+  answer: Load fence — serializes load instructions (memory ordering)
+- question: What is the MFENCE instruction?
+  answer: Memory fence — serializes all memory operations
+- question: What is the SFENCE instruction?
+  answer: Store fence — serializes store instructions
+- question: What is the PAUSE instruction?
+  answer: Spin loop hint — improves performance in spin-wait loops
+- question: What is the PREFETCH instruction?
+  answer: Prefetch data into cache levels — used in optimization
+- question: What is the TEST vs CMP instruction difference?
+  answer: TEST sets flags based on AND (no carry); CMP sets flags based on subtraction
+- question: What is the XCHG instruction?
+  answer: 'Exchange: XCHG EAX, EBX — swaps values between register and memory'
+- question: What is a cookie check function?
+  answer: ___security_check_cookie — called on function exit to verify stack cookie
+- question: What is the __except_handler3 function?
+  answer: Windows SEH dispatcher for C++ exceptions — manages exception handling frames
+- question: What is the __CxxFrameHandler3 function?
+  answer: C++ exception handling handler — manages unwind and catch logic
+- question: What is the RtlCreateHeap function?
+  answer: Creates a new heap with specified options (size, flags, lock) — used in heap exploitation
+- question: What is the NtContinue function?
+  answer: NTAPI function that restores thread context from a CONTEXT record
+- question: What is the NtSetInformationProcess function?
+  answer: Can disable DEP for current process (if permanent DEP not enforced)
+- question: What is the NtQueryInformationProcess function?
+  answer: Queries process information — can detect debugger (ProcessDebugPort)
+- question: What is the NtDisplayString function?
+  answer: NT kernel function called by Win32 subsystem — used in egg hunters for syscall probe
+- question: What is the ZwOpenProcess function?
+  answer: NT kernel API to open a process handle — used in process enumeration
+- question: What is the RtlAdjustPrivilege function?
+  answer: Enables/disables a privilege (SeDebugPrivilege) from user mode
+- question: What is the ImageLoad event notification?
+  answer: Driver callback when DLL is loaded — used by Windows Debugger for breakpoints
+- question: What is the CreateProcess notification?
+  answer: Driver callback for process creation — registered by security products
+- question: What is the LdrLoadDll function?
+  answer: NTDLL function that loads a DLL — can be hooked for DLL load monitoring
+- question: What is the LdrUnloadDll function?
+  answer: NTDLL function that unloads a DLL
+- question: What is the LdrGetProcedureAddress function?
+  answer: NTDLL function that resolves a DLL export — used in GetProcAddress
+- question: What is the exception handling frame (EXCEPTION_REGISTRATION)?
+  answer: '[Next: 4 bytes] [Handler: 4 bytes] — 8-byte SEH record'
+- question: What is the EXCEPTION_POINTERS structure?
+  answer: ExceptionRecord + ContextRecord — passed to exception handler
+- question: What is the EXCEPTION_RECORD structure?
+  answer: ExceptionCode, ExceptionFlags, ExceptionRecord, ExceptionAddress, NumberParameters,...
+- question: What is the CONTEXT record?
+  answer: 'Full CPU state: registers, flags, segments, debug registers'
+- question: What is the extended exception handler chain?
+  answer: 'For C++: __CxxFrameHandler; for SEH: __except_handler3/4; for VEH:...'
+- question: What is VEH (Vectored Exception Handling)?
+  answer: First handler called before SEH chain — can be used for anti-debug
+- question: What is the FinalExceptionHandler?
+  answer: Default SEH handler that terminates the process — last in SEH chain
+- question: What is the RtlDispatchException function?
+  answer: NTDLL function that walks the SEH chain to find a handler
+- question: What is the ZwQueryInformationThread function?
+  answer: Queries thread information - can detect thread hiding / debugger attach
+- question: What is the NtSetContextThread function?
+  answer: Sets thread execution context - used in thread hijacking exploits

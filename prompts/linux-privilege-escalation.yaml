@@ -1,0 +1,35 @@
+title: Linux Privilege Escalation
+description: Post-exploitation privilege escalation on a Linux system — enumerate, exploit misconfigurations, and escalate to root.
+tags: [privesc, linux, post-exploitation]
+prompt: >
+  Escalate privileges on the compromised Linux host {target_ip}.
+
+  ## Current Access
+  - Username: {current_user}
+  - Host: {target_ip}
+  - Method of access: {access_method} (SSH/shell/webshell)
+  - Known OS: {os_version}
+
+  ## Methodology
+  1. System enumeration:
+     - Kernel version and known exploits
+     - SUID/SGID binaries
+     - Writable scripts in cron jobs / systemd timers
+     - sudo permissions and misconfigured sudoers entries
+     - World-writable files owned by root
+     - Docker/LXC containment escape vectors
+  2. Credential hunting:
+     - Search for passwords in config files, .bash_history, db connections
+     - Dump browser passwords, SSH keys
+     - Check for shared credentials in /etc/shadow-readable backups
+  3. Exploitation:
+     - Attempt kernel exploit if applicable (with care — no crashes)
+     - Abuse sudo/SUID/cron misconfigurations
+     - Leverage capabilities and ACLs
+
+  ## Constraints
+  - Do NOT run kernel exploits that could crash the system without explicit authorization
+  - Do NOT modify system files permanently unless required for escalation proof
+
+  ## Output
+  Create a case with all enumeration findings, the specific escalation path used, and remediation recommendations.

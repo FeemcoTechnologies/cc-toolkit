@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Jobs — CC Dashboard{% endblock %}
+{% block head %}
+<style>
+    .job-card { transition: all 0.2s ease; }
+    .job-card:hover { border-color: #6366f1; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold flex items-center gap-2">
+            <i data-lucide="clock" class="w-6 h-6 text-indigo-400"></i>
+            Background Jobs
+        </h1>
+        <div class="text-sm text-gray-400">
+            <span id="job-count" class="font-mono">0</span> jobs
+        </div>
+    </div>
+
+    <div id="job-list" class="space-y-2">
+        <div class="text-gray-500 text-center py-12">Loading jobs...</div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    const ICONS = {
+        queued: '<span class="text-gray-400">&#x23F3;</span>',
+        running: '<span class="text-blue-400 animate-pulse">&#x2699;</span>',
+        completed: '<span class="text-green-400">&#x2714;</span>',
+        failed: '<span class="text-red-400">&#x2716;</span>',
+        cancelled: '<span class="text-yellow-400">&#x23F9;</span>',
+    };
+
+    const TYPE_LABELS = {
+        report: 'Report Generation',
+        scan: 'Network Scan',
+        crack: 'Password Cracking',
+        playbook: 'Playbook',
+        runbook: 'Runbook',
+        custom: 'Custom Job',
+    };
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+    }
+
+    function renderJob(j) {
+        var icon = ICONS[j.status] || '<span class="text-gray-400">?</span>';
+        var pct = j.progress || 0;
+        var barColor = j.status === 'failed' ? 'bg-red-500'
+            : j.status === 'completed' ? 'bg-green-500'
+                : j.status === 'cancelled' ? 'bg-yellow-500'
+                    : 'bg-indigo-500';
+        var borderColor = j.status === 'running' ? 'border-indigo-500/50'
+            : j.status === 'failed' ? 'border-red-500/30'
+                : 'border-gray-700';
+
+        var typeLabel = TYPE_LABELS[j.type] || j.type;
+        var createdAt = j.created_at ? new Date(j.created_at).toLocaleString() : '?';
+        var completedAt = j.completed_at ? new Date(j.completed_at).toLocaleString() : '';
+        var duration = '';
+        if (j.created_at && j.completed_at) {
+            var diff = new Date(j.completed_at) - new Date(j.created_at);
+            duration = Math.round(diff / 1000) + 's';
+        }
+
+        return '<div class="job-card bg-gray-900 border ' + borderColor + ' rounded-lg p-4">' +
+            '<div class="flex items-start justify-between mb-2">' +
+            '<div class="flex-1 min-w-0">' +
+            '<div class="flex items-center gap-2">' +
+            '<span class="text-lg">' + icon + '</span>' +
+            '<h3 class="font-semibold truncate">' + escapeHtml(j.title) + '</h3>' +
+            '<span class="text-xs bg-gray-800 px-2 py-0.5 rounded text-gray-400">' + escapeHtml(typeLabel) + '</span>' +
+            '</div>' +
+            '<div class="text-xs text-gray-500 mt-1">' +
+            '<span>' + createdAt + '</span>' +
+            (duration ? ' <span class="text-gray-600">|</span> <span>' + duration + '</span>' : '') +
+            (completedAt ? ' <span class="text-gray-600">|</span> <span>done: ' + completedAt + '</span>' : '') +
+            '</div>' +
+            '</div>' +
+            '<div class="text-right flex-shrink-0 ml-4">' +
+            '<span class="text-lg font-mono ' +
+            (j.status === 'running' ? 'text-blue-400' :
+                j.status === 'completed' ? 'text-green-400' :
+                    j.status === 'failed' ? 'text-red-400' :
+                        j.status === 'cancelled' ? 'text-yellow-400' : 'text-gray-400') +
+            '">' + pct + '%</span>' +
+            (j.status === 'running'
+                ? '<button onclick="cancelJob(\'' + j.id + '\')" class="block mt-1 text-xs text-gray-500 hover:text-red-400" title="Cancel">cancel</button>'
+                : '') +
+            '</div>' +
+            '</div>' +
+            (j.message ? '<div class="text-sm text-gray-400 mb-2">' + escapeHtml(j.message) + '</div>' : '') +
+            '<div class="w-full h-2 bg-gray-700 rounded-full overflow-hidden">' +
+            '<div class="h-full ' + barColor + ' rounded-full transition-all duration-500" style="width:' + pct + '%"></div>' +
+            '</div>' +
+            (j.error ? '<div class="mt-2 text-xs text-red-400 bg-red-900/30 rounded p-2 font-mono">' + escapeHtml(j.error) + '</div>' : '') +
+            (j.result && j.result.case_id ? '<div class="mt-2"><a href="/case/' + escapeHtml(j.result.case_id) + '" class="text-xs text-indigo-400 hover:text-indigo-300">View Case: ' + escapeHtml(j.result.case_id) + '</a></div>' : '') +
+            (j.result && !j.result.case_id ? '<div class="mt-2 text-xs text-gray-500 truncate">' + escapeHtml(JSON.stringify(j.result)) + '</div>' : '') +
+            '</div>';
+    }
+
+    var es = new EventSource('/api/jobs/stream');
+    var jobList = document.getElementById('job-list');
+    var jobCount = document.getElementById('job-count');
+    var jobs = {};
+
+    es.addEventListener('snapshot', function(e) {
+        var data = JSON.parse(e.data);
+        data.forEach(function(j) { jobs[j.id] = j; });
+        renderAll();
+    });
+
+    es.addEventListener('message', function(e) {
+        var j;
+        try { j = JSON.parse(e.data); } catch (_) { return; }
+        jobs[j.id] = j;
+        renderAll();
+    });
+
+    es.onerror = function() {
+        jobList.innerHTML = '<div class="text-gray-500 text-center py-8">Reconnecting...</div>';
+        setTimeout(function() { }, 3000);
+    };
+
+    function renderAll() {
+        var sorted = Object.values(jobs).sort(function(a, b) {
+            return a.created_at < b.created_at ? 1 : -1;
+        });
+        jobCount.textContent = sorted.length;
+        if (!sorted.length) {
+            jobList.innerHTML = '<div class="text-gray-500 text-center py-12"><i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2"></i><p>No jobs yet</p></div>';
+            lucide.createIcons();
+            return;
+        }
+        jobList.innerHTML = sorted.map(renderJob).join('');
+        lucide.createIcons();
+    }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,193 @@
+title: Suspicious PowerShell Execution
+id: posh_suspicious_cmdline
+status: experimental
+description: Detects suspicious PowerShell command-line patterns used by attackers
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_encoded:
+    CommandLine|contains:
+      - '-EncodedCommand'
+      - '-ec '
+      - '-enc '
+  selection_hidden:
+    CommandLine|contains:
+      - '-WindowStyle Hidden'
+      - '-Win Hidden'
+      - '-W 1'
+      - '-ExecutionPolicy Bypass'
+      - '-ep bypass'
+  selection_download:
+    CommandLine|contains:
+      - 'Invoke-WebRequest'
+      - 'iwr'
+      - 'curl'
+      - 'wget'
+      - 'Net.WebClient'
+      - 'DownloadString'
+      - 'DownloadFile'
+  condition: selection_encoded or selection_hidden or selection_download
+falsepositives:
+  - Administrative scripts
+  - Software installers
+level: medium
+tags:
+  - attack.execution
+  - attack.t1059.001
+---
+title: WMIC Process Call Create
+id: wmic_process_call
+status: experimental
+description: Detects wmic process call creation — common lateral movement pattern
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\WMIC.exe'
+    CommandLine|contains|all:
+      - 'process'
+      - 'call'
+      - 'create'
+  condition: selection
+falsepositives:
+  - Administrative scripts
+level: high
+tags:
+  - attack.execution
+  - attack.t1047
+---
+title: LSASS Access from Non-System Process
+id: lsass_access_suspicious
+status: experimental
+description: Detects suspicious LSASS access from processes other than standard system tools
+logsource:
+  product: windows
+  category: process_access
+detection:
+  selection:
+    TargetImage|endswith: '\lsass.exe'
+    SourceImage|endswith:
+      - '\procdump.exe'
+      - '\procdump64.exe'
+      - '\rundll32.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\cmd.exe'
+      - '\taskmgr.exe'
+  condition: selection
+falsepositives:
+  - Legitimate troubleshooting
+  - Approved credential tools
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+---
+title: Suspicious Scheduled Task Creation
+id: schtask_suspicious_create
+status: experimental
+description: Detects creation of scheduled tasks with suspicious characteristics
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\schtasks.exe'
+    CommandLine|contains|all:
+      - '/create'
+      - '/tn'
+  selection_suspicious:
+    CommandLine|contains:
+      - '-Hidden'
+      - '-WindowStyle Hidden'
+      - 'powershell'
+      - 'net user'
+      - 'net localgroup'
+  condition: selection and selection_suspicious
+falsepositives:
+  - Legitimate task automation
+  - Software updates
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1053.005
+---
+title: Office Application Network Connection
+id: office_network_connection
+status: experimental
+description: Detects network connections initiated by Office applications (potential macro C2)
+logsource:
+  category: network_connection
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+      - '\POWERPNT.EXE'
+      - '\OUTLOOK.EXE'
+    DestinationPort: 80 or 443
+  condition: selection
+falsepositives:
+  - Legitimate add-ins and updates
+level: medium
+tags:
+  - attack.execution
+  - attack.t1204.002
+  - attack.t1566.001
+---
+title: Net.exe User Account Creation
+id: net_user_add
+status: experimental
+description: Detects creation of local users via net.exe — often used for backdoor accounts
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\net.exe'
+    CommandLine|contains|all:
+      - 'user'
+      - '/add'
+    CommandLine|contains:
+      - 'Administrator'
+      - 'Admin'
+      - 'backup'
+      - 'support'
+      - 'temp'
+  condition: selection
+falsepositives:
+  - IT helpdesk activities
+level: high
+tags:
+  - attack.persistence
+  - attack.t1136.001
+---
+title: Registry Run Key Modification
+id: registry_run_key
+status: experimental
+description: Detects modifications to Run registry keys (common persistence)
+logsource:
+  category: registry_event
+  product: windows
+detection:
+  selection:
+    TargetObject|contains:
+      - '\CurrentVersion\Run'
+      - '\CurrentVersion\RunOnce'
+      - '\CurrentVersion\RunOnceEx'
+    Image|endswith:
+      - '\reg.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    Details|contains: '.exe'
+  condition: selection
+falsepositives:
+  - Software installations
+  - Driver updates
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1547.001

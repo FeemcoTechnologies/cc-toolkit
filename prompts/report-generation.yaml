@@ -1,0 +1,59 @@
+title: Pentest Report Generation
+description: Generate a structured security assessment report from case data, findings, evidence, and metadata — tailored for executive, technical, and compliance audiences.
+tags: [report, documentation, compliance]
+prompt: >
+  Generate a penetration test report for case {case_id}.
+
+  ## Case Data
+  - Case ID: {case_id}
+  - Client: {client_name}
+  - Assessment dates: {assessment_dates}
+  - Scope: {scope}
+  - Methodology: {methodology}
+  - Testers: {testers}
+
+  ## Report Template
+  Generate the report in Markdown format with the following sections:
+
+  ### 1. Executive Summary
+  - High-level overview of the assessment
+  - Key risk themes (e.g., multiple critical web vulnerabilities, weak AD posture)
+  - Top 3 most critical findings with business impact
+  - Overall risk rating: {overall_risk}
+
+  ### 2. Scope & Methodology
+  - In-scope targets: {in_scope_targets}
+  - Out-of-scope: {out_of_scope}
+  - Tools used: {tools_used}
+  - Testing methodology reference (OWASP, PTES, OSSTMM)
+
+  ### 3. Key Observations
+  - {key_observations}
+
+  ### 4. Findings Summary
+  - Total findings: {total_findings}
+  - By severity: {severity_counts}
+  - By status: {status_counts}
+  - Top affected systems: {top_systems}
+
+  ### 5. Detailed Findings
+  For each finding, include:
+  - Title, severity, CVE/CWE reference
+  - Description and impact
+  - Affected systems/endpoints
+  - Proof of concept (with redacted sensitive data)
+  - Remediation steps
+  - References
+
+  ### 6. Remediation Plan
+  - Prioritized action items grouped by severity
+  - Estimated effort per remediation
+  - Recommended timeline
+
+  ### 7. Appendix
+  - Evidence file list: {evidence_list}
+  - Raw scan output references
+  - Glossary
+
+  ## Output
+  Save to {output_path} as a Markdown file ready for conversion to PDF.

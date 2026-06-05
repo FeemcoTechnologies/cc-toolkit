@@ -1,0 +1,116 @@
+rules:
+  - id: python.hardcoded-secret
+    pattern: |
+      $VAR = "$SECRET"
+    severity: ERROR
+    languages: [python]
+    message: Hardcoded secret or credential detected
+    metadata:
+      cwe: CWE-798
+      owasp: A3
+
+  - id: python.sql-injection
+    pattern: |
+      execute("SELECT * FROM $TABLE WHERE " + $INPUT)
+    severity: ERROR
+    languages: [python]
+    message: SQL injection — use parameterized queries
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: python.command-injection
+    pattern: |
+      os.system($INPUT)
+    severity: ERROR
+    languages: [python]
+    message: Command injection — use subprocess with argument list
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: python.path-traversal
+    pattern: |
+      open("uploads/" + $INPUT)
+    severity: WARNING
+    languages: [python]
+    message: Path traversal risk — validate/sanitize input before file operations
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: python.eval-used
+    pattern: |
+      eval($INPUT)
+    severity: WARNING
+    languages: [python]
+    message: Avoid eval() — risk of code injection
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: python.pickle-unsafe
+    pattern: |
+      pickle.load($INPUT)
+    severity: WARNING
+    languages: [python]
+    message: Unsafe deserialization — prefer pickle.loads with trusted data only
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: python.yaml-load-unsafe
+    pattern: yaml.load($INPUT)
+    severity: ERROR
+    languages: [python]
+    message: Unsafe YAML load — use yaml.safe_load() to prevent code execution
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: python.jinja-autoescape-off
+    pattern: |
+      jinja2.Environment(autoescape=False)
+    severity: WARNING
+    languages: [python]
+    message: Auto-escape disabled — XSS risk in template rendering
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: python.requests-verify-false
+    pattern: |
+      requests.$REQ(..., verify=False)
+    severity: WARNING
+    languages: [python]
+    message: SSL verification disabled — MITM risk
+    metadata:
+      cwe: CWE-295
+      owasp: A3
+
+  - id: python.debug-endpoint
+    pattern: |
+      @app.route("/debug")
+    severity: INFO
+    languages: [python]
+    message: Debug endpoint exposed in production
+    metadata:
+      cwe: CWE-489
+      owasp: A5
+
+  - id: python.assert-used
+    pattern: assert $EXPRESSION
+    severity: INFO
+    languages: [python]
+    message: __debug__ removes assert in optimized mode — use proper validation
+    metadata:
+      cwe: CWE-670
+
+  - id: python.hardcoded-ip
+    pattern: |
+      $VAR = "192.168.$X.$Y"
+    severity: INFO
+    languages: [python]
+    message: Hardcoded private IP address
+    metadata:
+      cwe: CWE-200

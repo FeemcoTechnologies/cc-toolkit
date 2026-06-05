@@ -1,0 +1,231 @@
+# v2 runbook — Threat intelligence & IOC enrichment
+name: "Threat Intelligence"
+description: "Enrich IOCs, query MISP, VirusTotal, IntelligenceX, Shodan, and AlienVault OTX — pivot on hashes, IPs, domains, URLs"
+version: "2.0"
+
+vars:
+  ioc_type: ""           # ip | domain | hash | url
+  ioc_value: ""
+  ioc_file: ""           # path to bulk IOC list
+  misp_url: ""
+  misp_api_key: ""
+  vt_api_key: "${VT_API_KEY}"
+
+steps:
+  - id: preamble
+    type: log
+    message: "Threat intelligence — {ioc_type}:{ioc_value} (case: {case_id})"
+
+  # Phase 0: Load IOCs
+  - id: load_iocs
+    name: "Load IOCs from file or single value"
+    type: sequential
+    steps:
+      - id: ioc_regex
+        name: "Classify IOC types"
+        tool: python3
+        args: ["-c",
+               "\"import re,json;\nv='{ioc_value}';\ntypes={'ip':r'^\\\\d+\\\\.\\\\d+\\\\.\\\\d+\\\\.\\\\d+$','domain':r'^[a-z0-9.-]+\\\\.[a-z]{2,}$','hash_md5':r'^[a-f0-9]{32}$','hash_sha1':r'^[a-f0-9]{40}$','hash_sha256':r'^[a-f0-9]{64}$','url':r'^https?://'};\nresults={k:bool(re.match(p,v,re.I)) for k,p in types.items()};\njson.dump(results,open('{case_dir}/ioc_classification.json','w'))\nprint(json.dumps(results,indent=2))\n\"",
+               "-o", "{case_dir}/ioc_classification.json"]
+        timeout: 15
+
+      - id: ioc_batch
+        name: "Parse bulk IOC file"
+        tool: python3
+        args: ["-c",
+               "\"lines=open('{ioc_file}').read().strip().split('\\n');\niocs=[l.strip() for l in lines if l.strip()];\nopen('{case_dir}/ioc_bulk.txt','w').write('\\n'.join(iocs))\nprint(f'Loaded {len(iocs)} IOCs')\n\"",
+               "-o", "{case_dir}/ioc_bulk_loaded.txt"]
+        timeout: 15
+        when: "has:ioc_file"
+
+  # Phase 1: VirusTotal
+  - id: virustotal
+    name: "VirusTotal enrichment"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: vt_ip
+        name: "VT IP report"
+        tool: curl
+        args: ["-s",
+               "--header", "x-apikey:{vt_api_key}",
+               "'https://www.virustotal.com/api/v3/ip_addresses/{ioc_value}'",
+               "-o", "{case_dir}/vt_ip_report.json"]
+        timeout: 30
+        when: "ioc_type == ip"
+        artifacts: ["{case_dir}/vt_ip_report.json"]
+
+      - id: vt_domain
+        name: "VT domain report"
+        tool: curl
+        args: ["-s",
+               "--header", "x-apikey:{vt_api_key}",
+               "'https://www.virustotal.com/api/v3/domains/{ioc_value}'",
+               "-o", "{case_dir}/vt_domain_report.json"]
+        timeout: 30
+        when: "ioc_type == domain"
+
+      - id: vt_hash
+        name: "VT file report"
+        tool: curl
+        args: ["-s",
+               "--header", "x-apikey:{vt_api_key}",
+               "'https://www.virustotal.com/api/v3/files/{ioc_value}'",
+               "-o", "{case_dir}/vt_file_report.json"]
+        timeout: 30
+        when: "ioc_type == hash"
+
+      - id: vt_url
+        name: "VT URL report"
+        tool: curl
+        args: ["-s",
+               "--header", "x-apikey:{vt_api_key}",
+               "-d", "url={ioc_value}",
+               "'https://www.virustotal.com/api/v3/urls'",
+               "-o", "{case_dir}/vt_url_report.json"]
+        timeout: 30
+        when: "ioc_type == url"
+
+      - id: vt_relationship
+        name: "VT related entities"
+        tool: curl
+        args: ["-s",
+               "--header", "x-apikey:{vt_api_key}",
+               "'https://www.virustotal.com/api/v3/ip_addresses/{ioc_value}/resolutions'",
+               "-o", "{case_dir}/vt_relationships.json"]
+        timeout: 30
+        when: "ioc_type == ip"
+
+  # Phase 2: MISP
+  - id: misp
+    name: "MISP query"
+    type: parallel
+    steps:
+      - id: misp_search
+        name: "Search MISP for IOC"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\nurl='{misp_url}';key='{misp_api_key}';\nh={'Authorization':key,'Accept':'application/json','Content-Type':'application/json'};\nd={'returnFormat':'json','value':'{ioc_value}','type':'{ioc_type}'};\nr=requests.post(url+'/attributes/restSearch',headers=h,json=d,verify=False);\njson.dump(r.json(),open('{case_dir}/misp_results.json','w'),indent=2);\nprint(f'MISP: {len(r.json().get(\"response\",{}).get(\"Attribute\",[]))} attributes')\"",
+               "-o", "{case_dir}/misp_results.json"]
+        timeout: 60
+        artifacts: ["{case_dir}/misp_results.json"]
+        when: "has:misp_url"
+
+      - id: misp_events
+        name: "MISP recent events"
+        tool: curl
+        args: ["-s",
+               "--header", "Authorization:{misp_api_key}",
+               "--header", "Accept:application/json",
+               "'{misp_url}/events/index'",
+               "-o", "{case_dir}/misp_events.json"]
+        timeout: 30
+        when: "has:misp_url"
+
+  # Phase 3: IntelligenceX
+  - id: intelx
+    name: "IntelligenceX search"
+    type: parallel
+    steps:
+      - id: ix_search
+        name: "IntelX domain/IP search"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\nif '{ioc_type}' in ('ip','domain'):\n r=requests.get(f'https://2.intelx.io/phonebook/search?term={{{ioc_value}}}&maxresults=50&media=0&target=0&timeout=10');\n json.dump(r.json(),open('{case_dir}/intelx_results.json','w'),indent=2);\n print(f'IntelX: {len(r.json().get(\\\"selectors\\\",[]))} results')\"",
+               "-o", "{case_dir}/intelx_results.json"]
+        timeout: 60
+        artifacts: ["{case_dir}/intelx_results.json"]
+
+      - id: ix_cve
+        name: "IntelX CVE search"
+        tool: curl
+        args: ["-s",
+               "'https://2.intelx.io/cve/search?cveid={ioc_value}'",
+               "-o", "{case_dir}/intelx_cve.json"]
+        timeout: 30
+        when: "ioc_type == cve"
+
+  # Phase 3b: Shodan
+  - id: shodan
+    name: "Shodan enrichment"
+    type: parallel
+    steps:
+      - id: shodan_ip
+        name: "Shodan host lookup"
+        tool: shodan
+        args: ["host", "{ioc_value}",
+               "-o", "{case_dir}/shodan_host.json"]
+        timeout: 30
+        when: "ioc_type == ip"
+        artifacts: ["{case_dir}/shodan_host.json"]
+
+      - id: shodan_search
+        name: "Shodan search"
+        tool: shodan
+        args: ["search", "--limit=50", "{ioc_value}",
+               "-o", "{case_dir}/shodan_search.json"]
+        timeout: 30
+
+  # Phase 4: AlienVault OTX
+  - id: otx
+    name: "AlienVault OTX"
+    type: sequential
+    steps:
+      - id: otx_query
+        name: "OTX IOC pulse lookup"
+        tool: curl
+        args: ["-s",
+               "--header", "X-OTX-API-Key:${OTX_API_KEY}",
+               "'https://otx.alienvault.com/api/v1/indicators/{ioc_type}/{ioc_value}/general'",
+               "-o", "{case_dir}/otx_general.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/otx_general.json"]
+
+      - id: otx_pulses
+        name: "OTX related pulses"
+        tool: curl
+        args: ["-s",
+               "--header", "X-OTX-API-Key:${OTX_API_KEY}",
+               "'https://otx.alienvault.com/api/v1/indicators/{ioc_type}/{ioc_value}/pulses'",
+               "-o", "{case_dir}/otx_pulses.json"]
+        timeout: 30
+
+  # Phase 5: Bulk enrichment summary
+  - id: bulk_enrich
+    name: "Bulk IOC enrichment summary"
+    type: sequential
+    steps:
+      - id: enrich_summary
+        name: "Summarize enrichment data"
+        tool: python3
+        args: ["-c",
+               "\"import json,os,gc; base='{case_dir}'; report={}; files=['vt_ip_report.json','vt_file_report.json','vt_domain_report.json','misp_results.json','intelx_results.json','shodan_host.json','otx_general.json']; vt_files=[f for f in files if os.path.exists(os.path.join(base,f))]; summary_md='# Threat Intelligence Summary\\n'; summary_report=os.path.join(base,'threat_intel_summary.md');\nfor fn in vt_files:\n fp=os.path.join(base,fn)\n try:\n  d=json.load(open(fp))\n  if 'virustotal' in fn.lower():\n   stats=d.get('data',{}).get('attributes',{}).get('last_analysis_stats',{});\n   malicious=stats.get('malicious',0);\n   undetected=stats.get('undetected',0);\n   summary_md+=f'## {fn}\\n- Malicious: {malicious}\\n- Undetected: {undetected}\\n- Total engines: {malicious+undetected+stats.get(\\\"suspicious\\\",0)+stats.get(\\\"harmless\\\",0)}\\n\\n';\n except: pass\nopen(summary_report,'w').write(summary_md);\nprint('Summary generated')\n\"",
+               "-o", "{case_dir}/threat_intel_summary.md"]
+        timeout: 30
+
+  # Phase 6: Report
+  - id: report
+    name: "Generate threat intelligence report"
+    type: report
+    format: markdown
+    title: "Threat Intelligence Report — {ioc_value}"
+    output: "{case_dir}/threat-intel-report.md"
+    sections:
+      - heading: "IOC"
+        body: "- Type: {ioc_type}\n- Value: {ioc_value}\n- Classification: {case_dir}/ioc_classification.json\n- Case: {case_id}"
+      - heading: "VirusTotal"
+        body: "- Report: {case_dir}/vt_ip_report.json / {case_dir}/vt_file_report.json\n- Relationships: {case_dir}/vt_relationships.json"
+      - heading: "MISP"
+        body: "- Attribute search: {case_dir}/misp_results.json\n- Events: {case_dir}/misp_events.json"
+      - heading: "IntelX / Shodan"
+        body: "- IntelX: {case_dir}/intelx_results.json\n- Shodan: {case_dir}/shodan_host.json"
+      - heading: "AlienVault OTX"
+        body: "- General: {case_dir}/otx_general.json\n- Pulses: {case_dir}/otx_pulses.json"
+      - heading: "Summary"
+        body: "- Enrichment summary: {case_dir}/threat_intel_summary.md"
+
+postflight:
+  - id: done
+    type: notify
+    level: info
+    message: "Threat intelligence collection complete — {case_dir}"

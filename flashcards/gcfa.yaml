@@ -1,0 +1,403 @@
+title: GCFA
+description: GIAC Certified Forensic Analyst — advanced forensic analysis and incident response
+cards:
+- question: What is the first step in memory acquisition?
+  answer: 'Preserve volatile data in order: RAM → network connections → process list → disk state'
+- question: What tool captures memory on Windows?
+  answer: WinPmem or Magnet RAM Capture
+- question: What is the order of volatility?
+  answer: CPU registers/cache → RAM → swap/pagefile → disk → remote logs → physical config
+- question: What Volatility profile is for Win10 x64?
+  answer: Win10x64_15063 (or appropriate build number)
+- question: What does KDBG in Volatility represent?
+  answer: Kernel Debugger Block — contains debugger data, used to find kernel structures
+- question: What Volatility command finds the kernel base and KDBG?
+  answer: windows.info (image date, machine info, KDBG offset)
+- question: What does the DTB field represent?
+  answer: Directory Table Base — physical address of the page directory for virtual-to-physical...
+- question: What Volatility plugin scans for process by KDBG offset?
+  answer: windows.pslist (reads EPROCESS doubly-linked list)
+- question: What does psscan find that pslist misses?
+  answer: Hidden or terminated processes via pool tag scanning
+- question: What does pstree show?
+  answer: Parent-child hierarchy of all running processes
+- question: What EPROCESS field links to the process's virtual memory map?
+  answer: VadRoot (Virtual Address Descriptor root)
+- question: What are VAD flags used for?
+  answer: Page protection, image mapping, shared memory — VAD diagnostics reveal hidden code
+- question: What Volatility command extracts process memory?
+  answer: windows.memmap --pid PID --dump
+- question: What does windows.dlllist show?
+  answer: Loaded DLLs per process (full path, base address, size)
+- question: What does windows.cmdline show?
+  answer: Command-line arguments for each process
+- question: What does windows.cmdscan show?
+  answer: Command lines from the Windows command console (conhost) history
+- question: What does windows.consoles show?
+  answer: Console application data including screen buffer output
+- question: What does windows.handles show?
+  answer: Open handles per process (file handles, registry keys, mutexes, etc.)
+- question: What does windows.filescan show?
+  answer: Files that have handles open in memory (deleted files, hidden files)
+- question: What does windows.mftparser show?
+  answer: MFT entries parsed from a memory sample
+- question: What does windows.sessions show?
+  answer: Logged-on sessions including session ID and associated processes
+- question: What does windows.envars show?
+  answer: Environment variables per process — can reveal paths, temp dirs, proxies
+- question: What does windows.psxview show?
+  answer: Cross-view of processes across multiple sources (pslist, psscan, thrdscan, session, csrss)
+- question: What does windows.modscan show?
+  answer: Kernel modules loaded on the system
+- question: What does windows.modulescan show?
+  answer: Kernel modules scanned via pool tags
+- question: What does windows.driver module show?
+  answer: Loaded kernel drivers (list from driver objects)
+- question: What does windows.idt show?
+  answer: Interrupt Descriptor Table entries — rootkits can hook IDT
+- question: What does windows.gdt show?
+  answer: Global Descriptor Table entries
+- question: What does windows.ssdt show?
+  answer: System Service Descriptor Table — shows hooked system calls
+- question: What does windows.callbacks show?
+  answer: Kernel callbacks (process creation, image load, etc.) — some rootkits remove these
+- question: What does windows.malfind show?
+  answer: Process regions with PAGE_EXECUTE_READWRITE permissions and no loaded DLL — code injection
+- question: What does windows.vadinfo show?
+  answer: Detailed VAD node info (protection, flags, type, mapped_file)
+- question: What does windows.evthooks show?
+  answer: Hooks in the Windows event log subsystem
+- question: What does windows.privileges show?
+  answer: Token privileges per process (SeBackupPrivilege, SeDebugPrivilege, etc.)
+- question: What does windows.getservicesids show?
+  answer: Service SIDs and permissions
+- question: What does windows.getsids show?
+  answer: SIDs associated with each running process
+- question: What does windows.registry.hivelist show?
+  answer: All registry hives loaded in memory (hive offset, path, virtual address)
+- question: What does windows.registry.printkey show?
+  answer: Prints registry key and subkeys from memory
+- question: What does windows.registry.userassist show?
+  answer: UserAssist entries (program execution counts, timestamps, GUID-encoded names)
+- question: What does windows.registry.shellbags print?
+  answer: Shellbag entries (folder view settings, file timestamps, folder sizes)
+- question: What does windows.shimcache show?
+  answer: Application Compatibility Cache (binary path, last modified time, execution flag)
+- question: What does windows.amcache show?
+  answer: Recent file execution cache (SHA1, path, insert time)
+- question: What does windows.prefetch show?
+  answer: Prefetch files (.pf) for executed applications (spool count, last execution, loaded DLLs)
+- question: What does windows.joblinks show?
+  answer: Netschedule job links (scheduled tasks)
+- question: What does windows.scheduledtasks show?
+  answer: Scheduled tasks discovered in memory
+- question: What does windows.srumbios show?
+  answer: System Resource Usage Monitor (SRUM) data — CPU, network, disk usage per process
+- question: What does windows.netscan show?
+  answer: TCP/UDP endpoints (IP, port, state, owning process, created time)
+- question: What does windows.netstat show?
+  answer: Network connections (similar to netscan but uses tcpip.sys structures)
+- question: What does windows.sockets show?
+  answer: Open sockets per process
+- question: What does windows.lsadump show?
+  answer: LSA secrets (cached credentials, service account passwords)
+- question: What does windows.hashdump show?
+  answer: Domain cached credentials and local SAM hashes
+- question: What does windows.cachedump show?
+  answer: Domain cached credentials (MS Cache v2)
+- question: What does windows.mimikatz show?
+  answer: Built-in mimikatz for memory credential extraction
+- question: What does windows.notepad show?
+  answer: Recovers notepad.exe text content from memory
+- question: What does windows.iehistory show?
+  answer: Internet Explorer history entries from cache
+- question: What does windows.chromium show?
+  answer: Chrome browser history, cookies, and passwords (depends on plugin version)
+- question: What does windows.dumpfiles show?
+  answer: Extracts individual files from memory by virtual or physical address
+- question: What does windows.bigpools show?
+  answer: Big kernel pool allocations
+- question: What does windows.poolscan show?
+  answer: Kernel pool scanning for specific tags
+- question: What does windows.devicetree show?
+  answer: Device tree (physical device objects, logical device objects)
+- question: What does windows.driverscan show?
+  answer: Kernel driver objects found via pool tag scanning
+- question: What is a bodyfile in timeline analysis?
+  answer: 'Tab-separated file format: MD5|name|inode|mode|UID|GID|size|atime|mtime|ctime|crtime'
+- question: What tool creates a super timeline from multiple sources?
+  answer: log2timeline (plaso)
+- question: What does fls do?
+  answer: Lists file and directory names in a disk image (from The Sleuth Kit)
+- question: What does icat do?
+  answer: Extracts a file by its inode number from a disk image
+- question: What does mactime do?
+  answer: Converts a bodyfile into a human-readable timeline
+- question: What does plaso timeline contain?
+  answer: Timestamps, source, data type, file path, user, and description
+- question: What is the purpose of timeline analysis?
+  answer: Correlate events across multiple systems to establish a timeline of compromise
+- question: What is the MFT record structure?
+  answer: Header → Attributes
+- question: What is $STANDARD_INFORMATION (SI)?
+  answer: 'MFT attribute with timestamps (MACE: Modified, Accessed, Changed, Entry Modified)'
+- question: What is $FILE_NAME (FN)?
+  answer: MFT attribute with filename, parent reference, and timestamps (separate from SI)
+- question: What is the $DATA attribute?
+  answer: File content; resident (<~700 bytes) or non-resident (runs/clusters)
+- question: What is the MFT zone?
+  answer: Reserved MFT space; when full, MFT expands into the zone
+- question: What is NTFS timestomping?
+  answer: Modifying SI timestamps but not FN timestamps; the discrepancy reveals tampering
+- question: What does $LogFile contain?
+  answer: NTFS journal — records metadata changes before they are committed
+- question: What does $UsnJrnl contain?
+  answer: Update Sequence Number journal — records all file changes with timestamps and reasons
+- question: What is an MFT entry for a deleted file?
+  answer: The entry remains but marked as free; data may be recoverable
+- question: What is the $Boot file?
+  answer: First sector of NTFS volume (Boot Sector) — contains BPB, NTFS metadata
+- question: What is the $Bitmap file?
+  answer: 'Tracks cluster allocation (bit per cluster: 1=used, 0=free)'
+- question: What is the $AttrDef file?
+  answer: Attribute definitions — lists all attribute types and their properties
+- question: What is the $BadClus file?
+  answer: Tracks bad clusters on the volume
+- question: What is the $Secure file?
+  answer: Stores security descriptors (ACLs) for all files on the volume
+- question: What is the $UpCase file?
+  answer: Unicode uppercase table for case-insensitive name comparisons
+- question: What is an alternate data stream (ADS)?
+  answer: NTFS file can have multiple data streams (e.g., 'file.txt:hidden.txt')
+- question: What tool detects ADS on a file?
+  answer: dir /R or streams.exe (sysinternals)
+- question: What is the Windows Event Log format (.evtx)?
+  answer: Binary XML-based format; each event has System, EventData, and UserData sections
+- question: What tool parses .evtx files?
+  answer: wevtutil, Event Viewer, or Log Parser
+- question: What Windows Event ID 4625 logs?
+  answer: Failed logon attempt
+- question: What Windows Event ID 4624 logs?
+  answer: Successful logon
+- question: What Windows Event ID 4634 logs?
+  answer: Logoff
+- question: What Windows Event ID 4648 logs?
+  answer: Logon with explicit credentials (RunAs)
+- question: What Windows Event ID 4672 logs?
+  answer: Special privileges assigned to new logon (admin logons)
+- question: What Windows Event ID 4688 logs?
+  answer: Process creation
+- question: What Windows Event ID 4698 logs?
+  answer: Scheduled task creation
+- question: What Windows Event ID 4702 logs?
+  answer: Scheduled task updated
+- question: What Windows Event ID 4720 logs?
+  answer: User account created
+- question: What Windows Event ID 4732 logs?
+  answer: User added to security-enabled local group
+- question: What Windows Event ID 4740 logs?
+  answer: User account locked out
+- question: What Windows Event ID 4768 logs?
+  answer: Kerberos TGT request
+- question: What Windows Event ID 4769 logs?
+  answer: Kerberos service ticket request
+- question: What Windows Event ID 4776 logs?
+  answer: Credential validation (NTLM authentication)
+- question: What Windows Event ID 5140 logs?
+  answer: SMB share accessed
+- question: What Windows Event ID 5145 logs?
+  answer: SMB share access (detailed)
+- question: What Windows Event ID 5156 logs?
+  answer: Windows Filtering Platform connection
+- question: What Windows Event ID 7045 logs?
+  answer: Service installed
+- question: What is Prefetch used for in forensics?
+  answer: Speeds up application launches; records execution path, run count, last execution time
+- question: What is the Prefetch file location?
+  answer: C:\Windows\Prefetch (files named appname-HASH.pf)
+- question: What is the USBSTOR registry key?
+  answer: HKLM/SYSTEM/CurrentControlSet\Enum\USBSTOR — lists USB devices ever connected
+- question: What registry key tracks mounted devices?
+  answer: HKLM/SYSTEM\MountedDevices — volume GUIDs, drive letters, disk signatures
+- question: What is the ShellBag key?
+  answer: Registry keys (BagMRU) that track folder views and directory traversal
+- question: What is the UserAssist key?
+  answer: HKCU/Software\Microsoft\Windows/CurrentVersion\Explorer\UserAssist — tracks application...
+- question: What registry key tracks network shares?
+  answer: HKCU/Software\Microsoft\Windows/CurrentVersion\Explorer\MountPoints2
+- question: What is the MRU (Most Recently Used) list?
+  answer: Registry keys tracking recent files per application
+- question: What is the Jump List (Jumplist)?
+  answer: Windows taskbar jump lists stored as .automaticDestinations-ms and .customDestinations-ms
+- question: What tool parses Jump Lists?
+  answer: JLECmd (Eric Zimmerman)
+- question: What is the ShimCache key location?
+  answer: HKLM/SYSTEM/CurrentControlSet/Control/Session Manager\AppCompatCache
+- question: What is the AmCache hive location?
+  answer: C:\Windows\appcompat\Programs\Amcache.hve
+- question: What tool parses AmCache?
+  answer: AmcacheParser (Eric Zimmerman)
+- question: What is the SRUM database location?
+  answer: C:\Windows/System32/sru/SRUDB.dat
+- question: What tool parses SRUM?
+  answer: SrumECmd (Eric Zimmerman)
+- question: What is the BAM/DAM key?
+  answer: HKLM/SYSTEM/CurrentControlSet/Services\bam\UserSettings (Background Activity Moderator)
+- question: What is the Registry file format?
+  answer: 'Binary hive structure: base block (regf) → bins → cells → key nodes (nk) → value nodes (vk)'
+- question: What tool mounts registry hives for analysis?
+  answer: RegRipper, Registry Explorer (Eric Zimmerman), or regedit with external load
+- question: What is the Recycle Bin artifact location?
+  answer: C:\$Recycle.Bin/SID\ (each user's SID has subfolder with deleted files)
+- question: What does a $I file in Recycle Bin contain?
+  answer: Original filename, size, deletion timestamp
+- question: What does a $R file in Recycle Bin contain?
+  answer: Original file contents
+- question: What is the LNK file (shortcut) used for forensically?
+  answer: Records target path, creation/modify timestamps, volume serial, network share info
+- question: What tool parses LNK files?
+  answer: LECmd (Eric Zimmerman)
+- question: What does a browser history analysis reveal?
+  answer: Sites visited, search queries, downloads, timestamps, cookies, active logins
+- question: What is the Chrome history file location?
+  answer: '%LOCALAPPDATA%\Google/Chrome\User Data\Default\History'
+- question: What is the Firefox history file location?
+  answer: '%APPDATA%\Mozilla\Firefox\Profiles\*\places.sqlite'
+- question: What is the IE/Edge history file location?
+  answer: '%LOCALAPPDATA%\Microsoft\Windows\WebCache\v01.log (WebCacheV01.dat)'
+- question: What tool extracts browser data?
+  answer: Hindsight (Chrome/Edge), BrowsingHistoryView, or Dumpzilla (Firefox)
+- question: What is the Browser Downloads database for Chrome?
+  answer: History SQL database, downloads table
+- question: What is the Browser Cookies database for Chrome?
+  answer: Cookies SQLite database
+- question: What is the NTFS file slack?
+  answer: Unused bytes in a cluster that may contain remnants of previous files
+- question: What is RAM slack?
+  answer: Unused bytes between the end of a logical file and the end of the last sector in a cluster
+- question: What is volume slack?
+  answer: Unused bytes between the last volume allocation and the end of the partition
+- question: What tool carves deleted files?
+  answer: foremost, scalpel, or photorec
+- question: What tool performs keyword search across a disk image?
+  answer: bulk_extractor
+- question: What is the timeline of a compromise?
+  answer: 'Reconstruction of attacker actions: entry → lateral movement → privilege escalation →...'
+- question: What is a forensic chain of custody?
+  answer: 'Documentation of evidence handling: seizure → transport → storage → analysis → court'
+- question: What hash verifies evidence integrity?
+  answer: SHA-256 or MD5, computed before and after analysis
+- question: What is a forensic boot disk?
+  answer: Bootable USB/CD for imaging a suspect system without altering the OS
+- question: What is live forensic acquisition?
+  answer: Collecting volatile data from a running system before shutdown
+- question: What is dead box forensics?
+  answer: Analyzing a powered-off system's hard drive offline
+- question: What is remote forensics?
+  answer: Acquiring and analyzing evidence over a network connection
+- question: What is a forensic analysis timeline?
+  answer: Chronological reconstruction of events using multiple artifact sources
+- question: What is the MFT record number?
+  answer: Sequential index (0-based) of file entries in the MFT
+- question: What is an MFT record sequence number?
+  answer: Incrementing counter in MFT record — tracks record reuse for deleted files
+- question: What is the $INDEX_ALLOCATION attribute?
+  answer: Non-resident directory index (b-tree) for directories with many entries
+- question: What is the $INDEX_ROOT attribute?
+  answer: Resident directory index for small directories (stored in MFT record)
+- question: What is an INDX buffer?
+  answer: A 4096-byte block of $INDEX_ALLOCATION containing directory entries
+- question: What is the file reference in an INDX entry?
+  answer: '64-bit: 48-bit MFT record number + 16-bit sequence number'
+- question: What is a resident file size?
+  answer: File data stored entirely within the MFT record (small files)
+- question: What is a non-resident file size?
+  answer: File data stored in clusters; MFT contains run list of extents
+- question: What is a run list compression?
+  answer: NTFS uses variable-length encoding for cluster run lists (length + offset pairs)
+- question: What is a sparse file in NTFS?
+  answer: File with unallocated clusters (virtual runs) to save space
+- question: What is MFT mirror ($MftMirr)?
+  answer: Backup copy of the first 4 MFT records (critical for recovery)
+- question: What is the $Volume file?
+  answer: NTFS metadata file containing volume name, version, and object ID
+- question: What is the $AttrDef file?
+  answer: MFT attribute definition table — lists all attribute types and properties
+- question: What is a hard link in NTFS?
+  answer: Multiple directory entries pointing to same MFT record (same file)
+- question: What is a symbolic link in NTFS (reparse point)?
+  answer: File/folder that redirects to another path (reparse tag + substitute name)
+- question: What is a junction point?
+  answer: Reparse point that redirects a folder to another local path
+- question: What is volume shadow copy (VSS)?
+  answer: Snapshots of files/volumes at specific points in time — forensically valuable
+- question: What tool mounts VSS snapshots?
+  answer: vssadmin list shadows, then mklink /d to mount
+- question: What is the Windows prefetch hash?
+  answer: Hash of the application path + command arguments — unique file identifier
+- question: What is the Windows prefetch file structure?
+  answer: Header (version, size, checksum) → file info → run list → timestamps → resource strings
+- question: What is the Syscache.hve?
+  answer: Windows prefetch/hibernation cache — file access history
+- question: What is the BAM key for background apps?
+  answer: Background Activity Moderator — tracks app inactivity and resource usage
+- question: What is the DAM key?
+  answer: Desktop Activity Moderator — similar to BAM for desktop apps
+- question: What is the Named Pipe in forensics?
+  answer: IPC mechanism; malware may use named pipes for C2 or process communication
+- question: What is Mutex analysis?
+  answer: Mutual exclusion object created by processes — malware often creates unique mutexes
+- question: What is the GUID partition table (GPT)?
+  answer: Modern partition table replacing MBR — globally unique partition identifiers
+- question: What is the Master Boot Record (MBR)?
+  answer: First 512 bytes of disk — boot code + partition table
+- question: What is the EFI System Partition (ESP)?
+  answer: FAT32 partition with boot loaders for UEFI systems
+- question: What is a write blocker certification tool?
+  answer: NIST CFTT — writes known pattern, verifies write blocker prevents modification
+- question: What is the ACPO (Association of Chief Police Officers) principles?
+  answer: 'UK digital forensic principles: no alteration, access by trained, audit trail, lead officer...'
+- question: What is the NIST forensic process?
+  answer: Collection → Examination → Analysis → Reporting
+- question: What is the IOC (Indicator of Compromise) sharing format?
+  answer: OpenIOC (Mandiant) or STIX (structured threat info expression)
+- question: What is OpenIOC?
+  answer: XML-based format for indicator sharing, developed by Mandiant
+- question: What is Cyber Triage?
+  answer: Remote triage tool for collecting endpoint evidence without full disk image
+- question: What is network forensics collection?
+  answer: Capturing network traffic (PCAP), logs (NetFlow, Zeek), and session data
+- question: What is a network baseline in forensics?
+  answer: Known good network behavior for anomaly comparison
+- question: What is a web proxy log analysis?
+  answer: Examining proxy logs for anomalous URLs, user-agents, and timing
+- question: What is a database forensics?
+  answer: Analyzing database logs, transactions, and artifacts for unauthorized activity
+- question: What is a cloud forensics challenge?
+  answer: Lack of physical access, shared responsibility boundaries, API logs only
+- question: What is forensic soundness?
+  answer: Methodology that produces accurate, repeatable, and verifiable results
+- question: What is the SWGDE best practices?
+  answer: Scientific Working Group on Digital Evidence — forensic best practices
+- question: What is a forensic image verification hash?
+  answer: Match source hash to image hash; re-verify after each analysis
+- question: What is a forensic tool validation?
+  answer: Testing tool produces correct results under known conditions
+- question: What is the difference between error and artifact in forensics?
+  answer: 'Error: mistake in analysis; Artifact: byproduct of system operation'
+- question: What is a video forensics artifact?
+  answer: CCTV footage, metadata, file timestamps, compression artifacts
+- question: What is a mobile device forensic artifact?
+  answer: Call logs, SMS, app data, GPS locations, WiFi connections
+- question: What is a storage device forensic artifact?
+  answer: Partition layout, filesystem type, bad block list, SMART data
+- question: What is SMART data in forensics?
+  answer: S.M.A.R.T. self-monitoring attributes — predicts disk failure, shows use history
+- question: What is a USB device history analysis?
+  answer: Registry USBSTOR key shows all USB devices ever connected
+- question: What is a Bluetooth device forensics?
+  answer: Registry (SYSTEM/CurrentControlSet/Services/BTHPORT) tracks paired Bluetooth devices
+- question: What is the Windows jump list forensics?
+  answer: Recent file access per application (.automaticDestinations-ms)
+- question: What is the Windows Search database?
+  answer: Windows.edb — indexes file content and metadata for fast search

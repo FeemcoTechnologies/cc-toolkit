@@ -1,0 +1,45 @@
+rules:
+  - id: js.xss-innerhtml
+    pattern: |
+      element.innerHTML = $INPUT
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: XSS — use textContent instead of innerHTML
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: js.xss-dangerous-fn
+    pattern: document.write($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: XSS — avoid document.write with user input
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: js.eval-user-input
+    pattern: eval($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: Code injection — avoid eval with user input
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: js.jwt-none-alg
+    pattern: |
+      jwt.verify($TOKEN, null, { algorithms: ["none"] })
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: JWT none algorithm accepted — authentication bypass
+    metadata:
+      cwe: CWE-345
+
+  - id: js.insecure-random
+    pattern: Math.random()
+    severity: INFO
+    languages: [javascript, typescript]
+    message: Use crypto.getRandomValues() for security-sensitive randomness
+    metadata:
+      cwe: CWE-338

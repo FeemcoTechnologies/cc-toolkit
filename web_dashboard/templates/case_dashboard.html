@@ -1,0 +1,641 @@
+{% extends "base.html" %}
+{% block title %}CC / {{ case.case_id }}{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-3">
+        <i data-lucide="{{ icon }}" class="w-6 h-6" style="color: {{ color }}"></i>
+        <h1 class="text-xl font-semibold">{{ case.case_id }}</h1>
+        <span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{{ case.type }}</span>
+        <span class="relative inline-block">
+            <button onclick="toggleStatusDropdown(event)" class="text-xs px-2 py-0.5 rounded cursor-pointer {{ 'bg-green-900/50 text-green-300' if case.status == 'open' else 'bg-gray-800 text-gray-400' }}">{{ case.status }}</button>
+            <div id="status-dropdown" class="hidden absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-lg z-50 min-w-[120px]">
+                {% for opt in ['open','pending','on-hold','closed'] %}
+                <button onclick="setStatus('{{ opt }}')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 {{ 'bg-gray-700/50' if case.status == opt else '' }}">{{ opt }}</button>
+                {% endfor %}
+            </div>
+        </span>
+    </div>
+    <div class="flex gap-2">
+        <a href="/case/{{ case.case_id }}/edit" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm flex items-center gap-1"><i data-lucide="edit" class="w-3.5 h-3.5"></i> Edit</a>
+        <a href="/case/{{ case.case_id }}/notes" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Notes</a>
+        <a href="/case/{{ case.case_id }}/evidence" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Evidence</a>
+        <a href="/case/{{ case.case_id }}/files" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Files</a>
+        <a href="/case/{{ case.case_id }}/topology" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Topology</a>
+        <a href="/case/{{ case.case_id }}/board" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Board</a>
+        <a href="/case/{{ case.case_id }}/gantt" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Timeline</a>
+        <a href="/case/{{ case.case_id }}/runbook" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Runbook</a>
+        <a href="/case/{{ case.case_id }}/report" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Report</a>
+        {% if case.get('status') == 'closed' %}
+        <button data-action="archive" data-case-id="{{ case.case_id }}" class="case-action-btn bg-yellow-700 hover:bg-yellow-600 px-3 py-1.5 rounded text-sm">Archive</button>
+        <button data-action="delete" data-case-id="{{ case.case_id }}" class="case-action-btn bg-red-800 hover:bg-red-700 px-3 py-1.5 rounded text-sm">Delete</button>
+        {% endif %}
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
+    <div class="bg-gray-900 rounded-lg p-3 border border-gray-800">
+        <p class="text-2xl font-bold text-indigo-400">{{ case.client or 'N/A' }}</p>
+        <p class="text-xs text-gray-500">Client</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-3 border border-gray-800">
+        <p class="text-2xl font-bold text-green-400">{{ (case.goals or [])|length }}</p>
+        <p class="text-xs text-gray-500">Goals</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-3 border border-gray-800">
+        <p class="text-2xl font-bold text-yellow-400">{{ (case.evidence or [])|length }}</p>
+        <p class="text-xs text-gray-500">Evidence</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-3 border border-gray-800">
+        <p class="text-2xl font-bold text-cyan-400">{{ (case.tasks|default([]))|length }}/{{ case._tasks_total or 0 }}</p>
+        <p class="text-xs text-gray-500">Tasks (done/total)</p>
+    </div>
+</div>
+
+<!-- Type-specific panels -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+    {% if case.type == 'ir' %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-red-400 mb-3 flex items-center gap-1">
+            <i data-lucide="clock" class="w-4 h-4"></i> Timeline
+        </h2>
+        <div id="ir-timeline" class="space-y-2 text-sm">
+            <p class="text-gray-500">Loading...</p>
+        </div>
+        <button onclick="addTimelineEvent()" class="mt-3 text-xs text-indigo-400 hover:text-indigo-300">+ Add event</button>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-purple-400 mb-3 flex items-center gap-1">
+            <i data-lucide="crosshair" class="w-4 h-4"></i> TTPs (MITRE ATT&CK)
+        </h2>
+        <div id="ir-ttps" class="space-y-2 text-sm">
+            <p class="text-gray-500">Loading...</p>
+        </div>
+    </div>
+    {% elif case.type in ('pentest', 'pentest_web', 'pentest_external', 'pentest_internal_ad') %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-indigo-400 mb-3 flex items-center gap-1">
+            <i data-lucide="target" class="w-4 h-4"></i> Scope
+        </h2>
+        <ul id="scope-list" class="text-sm space-y-1 mb-3">
+            {% for s in (case.scope or {}).get('in_scope', []) %}
+            <li class="text-green-400 flex items-center gap-2 group" data-target="{{ s }}">
+                <span>&check;</span>
+                <span class="flex-1">{{ s }}</span>
+                <button onclick="removeScope('{{ s|e }}')" class="text-red-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs">&times;</button>
+            </li>
+            {% else %}
+            <li class="text-gray-500" id="scope-empty">No scope defined</li>
+            {% endfor %}
+        </ul>
+        <div class="flex gap-2">
+            <input id="scope-input" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm flex-1" placeholder="target.com, 10.0.0.0/24, ...">
+            <button onclick="addScope()" class="bg-indigo-700 hover:bg-indigo-600 px-3 py-1 rounded text-sm">Add</button>
+        </div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-yellow-400">Findings</h2>
+            <button onclick="openAddFindingModal()" class="bg-yellow-700 hover:bg-yellow-600 px-2 py-0.5 rounded text-xs">+ Add</button>
+        </div>
+        <canvas id="case-findings-chart" class="mb-2" style="max-height:140px"></canvas>
+        <div id="case-findings-summary" class="text-xs text-gray-500 text-center"></div>
+        <div id="case-findings-list" class="mt-3 space-y-1 max-h-48 overflow-y-auto"></div>
+    </div>
+    <div id="scan-ui" class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-green-400 mb-3 flex items-center gap-1">
+            <i data-lucide="search" class="w-4 h-4"></i> Scan
+        </h2>
+        <div class="flex gap-2 mb-2">
+            <input id="scan-target" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm flex-1 font-mono" placeholder="target.com or IP">
+            <select id="scan-type" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
+                <option value="init-tcp">Initial TCP</option>
+                <option value="init-udp">Initial UDP</option>
+                <option value="full-tcp">Full TCP</option>
+                <option value="service-version">Service Version</option>
+                <option value="vuln">Vulnerability</option>
+            </select>
+            <button onclick="runScan()" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm whitespace-nowrap">Run Scan</button>
+        </div>
+        <div id="scan-output" class="hidden text-xs font-mono text-green-300 bg-gray-950 rounded p-2 max-h-48 overflow-y-auto"></div>
+    </div>
+    {% elif case.type == 'forensics' %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 lg:col-span-2">
+        <h2 class="text-sm font-semibold text-green-400 mb-3">Chain of Custody</h2>
+        <div class="text-sm space-y-2">
+            {% for ev in (case.evidence or []) %}
+            <div class="flex justify-between text-gray-300">
+                <span>{{ ev.filename }}</span>
+                <span class="text-gray-500">SHA256: {{ (ev.sha256 or '')[:16] }}...</span>
+            </div>
+            {% else %}
+            <p class="text-gray-500">No evidence logged</p>
+            {% endfor %}
+        </div>
+    </div>
+    {% else %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 lg:col-span-2">
+        <h2 class="text-sm font-semibold mb-3">Quick Actions</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+            <a href="/terminal" class="bg-gray-800 hover:bg-gray-700 rounded p-2 text-center">Terminal</a>
+            <a href="/case/{{ case.case_id }}/notes" class="bg-gray-800 hover:bg-gray-700 rounded p-2 text-center">Notes</a>
+            <a href="/case/{{ case.case_id }}/evidence" class="bg-gray-800 hover:bg-gray-700 rounded p-2 text-center">Evidence</a>
+            <a href="/case/{{ case.case_id }}/report" class="bg-gray-800 hover:bg-gray-700 rounded p-2 text-center">Report</a>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Goals -->
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-6">
+    <h2 class="text-sm font-semibold text-cyan-400 mb-3 flex items-center gap-1">
+        <i data-lucide="target" class="w-4 h-4"></i> Analysis Goals
+    </h2>
+    <ul id="goals-list" class="text-sm space-y-1 mb-3">
+        {% for g in (case.goals or []) %}
+        <li class="text-gray-300 flex items-center gap-2">
+            <span class="text-cyan-500">&rarr;</span> {{ g }}
+        </li>
+        {% else %}
+        <li class="text-gray-500">No goals defined</li>
+        {% endfor %}
+    </ul>
+    <div class="flex gap-2">
+        <input id="goal-input" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm flex-1" placeholder="Add a goal...">
+        <button onclick="addGoal()" class="bg-cyan-700 hover:bg-cyan-600 px-3 py-1 rounded text-sm">Add</button>
+    </div>
+</div>
+
+<!-- Tasks -->
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-6">
+    <h2 class="text-sm font-semibold text-yellow-400 mb-3 flex items-center gap-1">
+        <i data-lucide="check-square" class="w-4 h-4"></i> Tasks
+        <span class="text-xs text-gray-500 font-normal ml-2" id="task-count">({{ (case.tasks|default([])|selectattr('done')|list)|length }}/{{ (case.tasks|default([]))|length }})</span>
+    </h2>
+    <div id="tasks-list" class="space-y-1 mb-3">
+        {% for t in (case.tasks|default([])) %}
+        <div class="flex items-center gap-2 text-sm group" data-task-id="{{ t.id }}">
+            <input type="checkbox" {{ 'checked' if t.done else '' }} onchange="toggleTask('{{ t.id }}')" class="accent-yellow-500 cursor-pointer">
+            <span class="{{ 'line-through text-gray-500' if t.done else 'text-gray-300' }} flex-1">{{ t.description }}</span>
+            <span class="text-[10px] text-gray-600">{{ t.priority or 'medium' }}</span>
+            <button onclick="deleteTask('{{ t.id }}')" class="text-red-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs">&times;</button>
+        </div>
+        {% else %}
+        <p class="text-gray-500 text-sm" id="tasks-empty">No tasks</p>
+        {% endfor %}
+    </div>
+    <div class="flex gap-2">
+        <input id="task-input" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm flex-1" placeholder="Add a task...">
+        <select id="task-priority" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
+            <option value="low">low</option>
+            <option value="medium" selected>medium</option>
+            <option value="high">high</option>
+        </select>
+        <button onclick="addTask()" class="bg-yellow-700 hover:bg-yellow-600 px-3 py-1 rounded text-sm">Add</button>
+    </div>
+</div>
+
+<!-- Add Finding Modal -->
+<div id="add-finding-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60" onclick="if(event.target===this)closeAddFindingModal()">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="flex items-center justify-between p-4 border-b border-gray-800">
+            <h3 class="text-sm font-semibold">Add Finding</h3>
+            <button onclick="closeAddFindingModal()" class="text-gray-500 hover:text-gray-300 text-lg">&times;</button>
+        </div>
+        <div class="p-4 space-y-3">
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Title</label>
+                <input id="af-title" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="Finding title">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">Severity</label>
+                    <select id="af-severity" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
+                        <option value="info">Info</option>
+                        <option value="low">Low</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">Status</label>
+                    <select id="af-status" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
+                        <option value="unvalidated" selected>Unvalidated</option>
+                        <option value="validated">Validated</option>
+                        <option value="remediated">Remediated</option>
+                        <option value="closed_other">Closed (Other)</option>
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Description</label>
+                <textarea id="af-description" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[80px]"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">CVE</label>
+                    <input id="af-cve" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="CVE-xxxx-xxxx">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">CWE</label>
+                    <input id="af-cwe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="CWE-xxx">
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Remediation</label>
+                <textarea id="af-remediation" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[60px]"></textarea>
+            </div>
+            <button onclick="submitFinding()" class="w-full bg-yellow-700 hover:bg-yellow-600 px-4 py-2 rounded text-sm font-medium">Create Finding</button>
+            <div id="af-status-msg" class="hidden text-sm text-green-400 text-center"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Runbook Results -->
+<div id="runbook-results" class="hidden bg-gray-900 rounded border border-gray-800 p-4 mb-6">
+    <h2 class="text-sm font-semibold text-purple-400 mb-3 flex items-center gap-1">
+        <i data-lucide="play" class="w-4 h-4"></i> Runbook Results
+    </h2>
+    <div id="runbook-output" class="text-sm space-y-1 max-h-96 overflow-y-auto font-mono"></div>
+</div>
+
+<!-- Description -->
+{% if case.description %}
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+    <h2 class="text-sm font-semibold text-gray-400 mb-2">Description</h2>
+    <p class="text-sm text-gray-300">{{ case.description }}</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadTimeline() {
+    const r = await fetch('/api/case/{{ case.case_id }}/timeline');
+    const events = await r.json();
+    const el = document.getElementById('ir-timeline');
+    if (!el) return;
+    if (events.length === 0) { el.innerHTML = '<p class="text-gray-500">No events</p>'; return; }
+    el.innerHTML = events.slice(-10).reverse().map(e =>
+        `<div class="flex items-start gap-2 text-xs"><span class="text-gray-500 shrink-0">${escapeHtml((e.timestamp||'').slice(0,19))}</span><span class="px-1 rounded ${e.severity==='critical'?'bg-red-900/50 text-red-300':e.severity==='high'?'bg-orange-900/50 text-orange-300':'bg-gray-800 text-gray-400'}">${escapeHtml(e.severity)}</span><span class="text-gray-300">${escapeHtml(e.event)}</span></div>`
+    ).join('');
+}
+async function loadTTPs() {
+    const r = await fetch('/api/case/{{ case.case_id }}/ttps');
+    const ttps = await r.json();
+    const el = document.getElementById('ir-ttps');
+    if (!el) return;
+    if (ttps.length === 0) { el.innerHTML = '<p class="text-gray-500">No TTPs logged</p>'; return; }
+    el.innerHTML = ttps.map(t =>
+        `<div class="text-xs"><span class="text-purple-400">${escapeHtml(t.technique_id||'')}</span> <span class="text-gray-300">${escapeHtml(t.tactic)}</span> &mdash; <span class="text-gray-400">${escapeHtml(t.technique)}</span></div>`
+    ).join('');
+}
+async function addGoal() {
+    const input = document.getElementById('goal-input');
+    if (!input.value.trim()) return;
+    await fetch('/api/case/{{ case.case_id }}/goals/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({goal: input.value})
+    });
+    input.value = '';
+    location.reload();
+}
+async function addTimelineEvent() {
+    const ts = prompt('Timestamp (YYYY-MM-DDTHH:MM:SSZ):');
+    if (!ts) return;
+    const ev = prompt('Event description:');
+    if (!ev) return;
+    await fetch('/api/case/{{ case.case_id }}/timeline/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({timestamp: ts, event: ev, severity: 'info'})
+    });
+    loadTimeline();
+}
+loadTimeline();
+loadTTPs();
+loadRunbookLog();
+
+// Add Finding
+function openAddFindingModal() { document.getElementById('add-finding-modal').classList.remove('hidden'); }
+function closeAddFindingModal() { document.getElementById('add-finding-modal').classList.add('hidden'); }
+
+async function submitFinding() {
+    var title = document.getElementById('af-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    var payload = {
+        title: title,
+        severity: document.getElementById('af-severity').value,
+        status: document.getElementById('af-status').value,
+        description: document.getElementById('af-description').value.trim(),
+        cve: document.getElementById('af-cve').value.trim(),
+        cwe: document.getElementById('af-cwe').value.trim(),
+        remediation: document.getElementById('af-remediation').value.trim(),
+    };
+    var btn = document.querySelector('#add-finding-modal .bg-yellow-700');
+    btn.disabled = true; btn.textContent = 'Creating...';
+    try {
+        var r = await fetch('/api/case/{{ case.case_id }}/finding/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        var data = await r.json();
+        if (data.status === 'ok') {
+            document.getElementById('af-status-msg').textContent = 'Finding created!';
+            document.getElementById('af-status-msg').classList.remove('hidden');
+            setTimeout(function() { closeAddFindingModal(); location.reload(); }, 1000);
+        } else {
+            alert('Error: ' + (data.error || 'Unknown'));
+            btn.disabled = false; btn.textContent = 'Create Finding';
+        }
+    } catch(e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false; btn.textContent = 'Create Finding';
+    }
+}
+
+// Scope management
+async function addScope() {
+    const input = document.getElementById('scope-input');
+    if (!input.value.trim()) return;
+    await fetch('/api/case/{{ case.case_id }}/scope/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target: input.value, in_scope: true})
+    });
+    input.value = '';
+    location.reload();
+}
+async function removeScope(target) {
+    if (!confirm('Remove "' + target + '" from scope?')) return;
+    await fetch('/api/case/{{ case.case_id }}/scope/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target: target})
+    });
+    location.reload();
+}
+
+// Scan
+async function runScan() {
+    var btn = document.querySelector('#scan-ui button') || event.target;
+    var target = document.getElementById('scan-target').value.trim();
+    var subcommand = document.getElementById('scan-type').value;
+    var output = document.getElementById('scan-output');
+    if (!target) { alert('Enter a target'); return; }
+    btn.disabled = true; btn.textContent = 'Scanning...';
+    output.classList.remove('hidden');
+    output.textContent = 'Running nmap ' + subcommand + ' on ' + target + '...\n';
+    try {
+        var r = await fetch('/api/case/{{ case.case_id }}/scan/nmap', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({subcommand: subcommand, target: target})
+        });
+        var data = await r.json();
+        if (data.output) output.textContent += data.output + '\n';
+        if (data.error) output.textContent += '\nERROR: ' + data.error + '\n';
+        if (data.stderr) output.textContent += '\nstderr: ' + data.stderr + '\n';
+        if (data.evidence_count !== undefined) output.textContent += '\nEvidence files: ' + data.evidence_count;
+        output.scrollTop = output.scrollHeight;
+    } catch(e) {
+        output.textContent += 'Error: ' + e.message;
+    }
+    btn.disabled = false; btn.textContent = 'Run Scan';
+    output.textContent += '\n--- Scan complete. Results saved as evidence + findings. <a href="#" onclick="location.reload()" class="text-indigo-400 underline">Refresh page</a> to see updates. ---';
+}
+
+// Task management
+async function addTask() {
+    const input = document.getElementById('task-input');
+    if (!input.value.trim()) return;
+    const priority = document.getElementById('task-priority').value;
+    await fetch('/api/case/{{ case.case_id }}/tasks/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({description: input.value, priority: priority})
+    });
+    input.value = '';
+    location.reload();
+}
+async function toggleTask(id) {
+    await fetch('/api/case/{{ case.case_id }}/tasks/toggle/' + id, {method: 'POST'});
+    location.reload();
+}
+async function deleteTask(id) {
+    if (!confirm('Delete this task?')) return;
+    await fetch('/api/case/{{ case.case_id }}/tasks/delete/' + id, {method: 'POST'});
+    location.reload();
+}
+
+// Findings chart
+fetch('/api/case/{{ case.case_id }}/findings/stats')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var el = document.getElementById('case-findings-chart');
+        if (!el) return;
+        var sevOrder = ['critical','high','medium','low','info'];
+        var sevColors = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#22c55e', info:'#6b7280' };
+        var values = sevOrder.map(function(s) { return data.severity_counts[s] || 0; });
+        var hasAny = values.some(function(v) { return v > 0; });
+        if (!hasAny) {
+            document.getElementById('case-findings-summary').textContent = 'No findings yet';
+            return;
+        }
+        new Chart(el, {
+            type: 'doughnut',
+            data: {
+                labels: sevOrder.map(function(s) { return s.charAt(0).toUpperCase() + s.slice(1); }),
+                datasets: [{
+                    data: values,
+                    backgroundColor: sevOrder.map(function(s) { return sevColors[s]; }),
+                    borderWidth: 0,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { position: 'right', labels: { color: '#9ca3af', boxWidth: 10, padding: 8, font: { size: 10 } } }
+                }
+            }
+        });
+        document.getElementById('case-findings-summary').textContent = data.total + ' total, ' +
+            Object.keys(data.status_counts).map(function(s) { return s + ': ' + data.status_counts[s]; }).join(', ');
+    });
+
+// Load findings list
+fetch('/api/case/{{ case.case_id }}/board/data')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var listEl = document.getElementById('case-findings-list');
+        if (!listEl) return;
+        var html = '';
+        Object.keys(data.columns).forEach(function(key) {
+            data.columns[key].items.forEach(function(f) {
+                var sc = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#22c55e', info:'#6b7280' };
+                var color = sc[f.severity] || '#6b7280';
+                html += '<a href="/case/{{ case.case_id }}/finding/' + f.id + '" class="flex items-center gap-2 text-xs py-1 px-2 rounded hover:bg-gray-800 transition-colors">' +
+                    '<span class="w-2 h-2 rounded-full shrink-0" style="background:' + color + '"></span>' +
+                    '<span class="truncate text-gray-300 flex-1">' + escapeHtml(f.title) + '</span>' +
+                    '<span class="text-gray-500 shrink-0">' + f.id + '</span>' +
+                    '</a>';
+            });
+        });
+        if (!html) {
+            html = '<div class="text-gray-500 text-xs text-center py-2">No findings</div>';
+        }
+        listEl.innerHTML = html;
+    });
+
+async function loadRunbookLog(retries) {
+    if (retries === undefined) retries = 40;
+    var container = document.getElementById('runbook-results');
+    var output = document.getElementById('runbook-output');
+    if (!container || !output) return;
+    try {
+        var r = await fetch('/api/case/{{ case.case_id }}/runbook-log');
+        if (!r.ok) {
+            if (retries > 0) setTimeout(function() { loadRunbookLog(retries - 1); }, 3000);
+            return;
+        }
+        var data = await r.json();
+        container.classList.remove('hidden');
+        var html = '';
+        var steps = data.step_outputs || {};
+        var keys = Object.keys(steps);
+        if (keys.length === 0) {
+            html = '<div class="text-gray-500">No step data available</div>';
+        } else {
+            var i = 0;
+            keys.forEach(function(sid) {
+                var s = steps[sid];
+                var rc = s.rc !== undefined ? s.rc : '?';
+                var err = s.error || '';
+                var skipped = s.skipped;
+                var cls = skipped ? 'text-yellow-400' : (rc === 0 ? 'text-green-400' : 'text-red-400');
+                var icon = skipped ? '&#x23F8;' : (rc === 0 ? '&#x2713;' : '&#x2717;');
+                var detailId = 'rb-detail-' + (i++);
+                var hasOutput = s.stdout || s.stderr || err;
+                html += '<div class="border border-gray-800 rounded mb-1 overflow-hidden">';
+                html += '<div class="flex items-center gap-2 text-xs py-1.5 px-2 bg-gray-800/50 cursor-pointer hover:bg-gray-800" onclick="toggleDetail(\'' + detailId + '\')">';
+                html += '<span class="' + cls + ' font-mono w-5 shrink-0">' + icon + '</span>';
+                html += '<span class="text-gray-400 font-mono w-40 shrink-0 truncate" title="' + escapeHtml(sid) + '">' + escapeHtml(sid) + '</span>';
+                html += '<span class="text-gray-500 shrink-0">rc=' + rc + '</span>';
+                if (err) html += '<span class="text-red-500 truncate flex-1">' + escapeHtml(err.slice(0,200)) + '</span>';
+                if (hasOutput) html += '<span class="text-gray-600 text-[10px] ml-auto shrink-0">&#x25BC;</span>';
+                html += '</div>';
+                if (hasOutput) {
+                    html += '<div id="' + detailId + '" class="hidden text-xs px-3 py-2 bg-gray-950/50 border-t border-gray-800">';
+                    if (s.stdout) html += '<div class="mb-1"><span class="text-gray-500 font-semibold">stdout:</span><pre class="text-green-300/80 mt-0.5 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">' + escapeHtml(s.stdout.slice(0,4000)) + '</pre></div>';
+                    if (s.stderr) html += '<div class="mb-1"><span class="text-gray-500 font-semibold">stderr:</span><pre class="text-red-300/80 mt-0.5 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">' + escapeHtml(s.stderr.slice(0,4000)) + '</pre></div>';
+                    if (err && !s.stdout && !s.stderr) html += '<div class="text-red-400">' + escapeHtml(err) + '</div>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            });
+            // Check if still running and poll
+            var allDone = keys.every(function(sid) {
+                var s = steps[sid];
+                return s.rc !== undefined || s.error || s.skipped;
+            });
+            if (!allDone && retries > 0) {
+                setTimeout(function() { loadRunbookLog(retries - 1); }, 3000);
+            }
+        }
+        output.innerHTML = html;
+    } catch (_) {
+        if (retries > 0) setTimeout(function() { loadRunbookLog(retries - 1); }, 3000);
+    }
+}
+
+function toggleStatusDropdown(e) {
+    var dd = document.getElementById('status-dropdown');
+    dd.classList.toggle('hidden');
+    e.stopPropagation();
+}
+document.addEventListener('click', function() {
+    var dd = document.getElementById('status-dropdown');
+    if (dd && !dd.classList.contains('hidden')) dd.classList.add('hidden');
+});
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.case-action-btn');
+    if (!btn) return;
+    var caseId = btn.getAttribute('data-case-id');
+    var action = btn.getAttribute('data-action');
+    if (action === 'archive') archiveCase(caseId);
+    else if (action === 'delete') deleteCase(caseId);
+});
+function setStatus(status) {
+    fetch('/api/case/{{ case.case_id }}/meta', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: status}),
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.status === 'ok') location.reload();
+        else alert('Failed to update status');
+    });
+}
+
+function toggleDetail(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden');
+}
+
+function escapeHtml(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+function archiveCase(caseId) {
+    if (!confirm('Archive case "' + caseId + '"? It will be compressed and the live directory removed. You can restore it later.')) return;
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Archiving...';
+    fetch('/api/case/' + caseId + '/archive', {
+        method: 'POST'
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.case_id) {
+            btn.textContent = 'Done! Savings: ' + (data.savings_pct || '?') + '%';
+            setTimeout(function() { window.location.href = '/'; }, 2000);
+        } else {
+            alert('Archive failed: ' + (data.error || 'Unknown'));
+            btn.disabled = false;
+            btn.textContent = 'Archive';
+        }
+    })
+    .catch(function(e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Archive';
+    });
+}
+function deleteCase(caseId) {
+    if (!confirm('PERMANENTLY DELETE case "' + caseId + '"?\n\nThis will remove the case directory and ALL its data (findings, evidence, notes, files). This cannot be undone.')) return;
+    if (!confirm('Are you sure? Type "yes" to confirm.')) return;
+    fetch('/api/case/' + caseId, {
+        method: 'DELETE'
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'deleted') {
+            window.location.href = '/';
+        } else {
+            alert('Delete failed: ' + (data.error || 'Unknown'));
+        }
+    })
+    .catch(function(e) {
+        alert('Error: ' + e.message);
+    });
+}
+</script>
+{% endblock %}

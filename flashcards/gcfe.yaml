@@ -1,0 +1,403 @@
+title: GCFE
+description: GIAC Certified Forensic Examiner — computer forensic investigation and response
+cards:
+- question: What is the first rule of digital forensics?
+  answer: Do not alter original evidence — always work on a forensic copy (image)
+- question: What is a write blocker?
+  answer: Hardware or software device preventing writes to source evidence media
+- question: What are the two main types of write blockers?
+  answer: Hardware (physical filter between source and computer) and software (read-only OS driver)
+- question: What is a forensic image?
+  answer: Bit-for-bit copy of an entire storage device including unallocated space
+- question: What is the difference between a physical and logical image?
+  answer: Physical captures every bit including deleted data; logical only captures allocated files
+- question: What is the E01 (EnCase) image format?
+  answer: Proprietary forensic image format with integrated metadata, hash, compression, and CRC
+- question: What is the AFF (Advanced Forensic Format)?
+  answer: Open-source forensic image format that supports compression and metadata
+- question: What is the dd (raw) image format?
+  answer: Raw bit-for-bit copy with optional split; no metadata — simplest and most compatible
+- question: What tool creates a forensic image with E01 format?
+  answer: FTK Imager (GUI) or ewfacquire (command line)
+- question: What command creates a dd image?
+  answer: dd if=/dev/sda of=image.dd bs=4M conv=noerror,sync status=progress
+- question: What does noerror do in dd?
+  answer: Continue reading on read errors (skip bad blocks)
+- question: What does sync in dd do?
+  answer: Pad incomplete reads with zeros to maintain alignment
+- question: What tool verifies an image after acquisition?
+  answer: Compute SHA-256 of source and destination; verify they match
+- question: What is HPA (Host Protected Area)?
+  answer: Area on ATA drive outside normal addressable space; hidden from BIOS/OS
+- question: What is DCO (Device Configuration Overlay)?
+  answer: Area accessed via ATA commands; can hide HPA from the system
+- question: What tool detects HPA/DCO?
+  answer: hdparm (Linux), HPA detection tool (Windows, via ATA commands)
+- question: What is BitLocker?
+  answer: Full disk encryption built into Windows; uses TPM + PIN/USB key for pre-boot auth
+- question: What tool decrypts BitLocker?
+  answer: BitLocker recovery key or forensic tools like Elcomsoft, Passware, or custom scripts
+- question: Where is the BitLocker recovery key backed up?
+  answer: Microsoft account, AD (if domain-joined), or printed
+- question: What is the DPC (Data Protection API) master key?
+  answer: Per-user encryption key stored in %APPDATA%\Microsoft\Protect\SID
+- question: What can decrypt files protected by DPAPI?
+  answer: User's password (derives the master key) or domain backup key
+- question: What is the MFT (Master File Table)?
+  answer: NTFS metadata file ($Mft) containing records for every file and folder on the volume
+- question: What is the MFT record size?
+  answer: 1024 bytes per record, storing file attributes, timestamps, resident/non-resident data
+- question: What is the $MFT file path?
+  answer: Root directory ($Mft) — the MFT itself is a file
+- question: What is MFT record header signature?
+  answer: '''FILE'' for active records, ''BAAD'' for corrupted records, 0 (zeros) for unused'
+- question: What are the base MFT attributes?
+  answer: $STANDARD_INFORMATION, $ATTRIBUTE_LIST, $FILE_NAME, $DATA, $INDEX_ROOT, $INDEX_ALLOCATION,...
+- question: What timestamps does $STANDARD_INFORMATION contain?
+  answer: 'MACE: Modified, Accessed, Changed (MFT entry changed), Entry Modified (Born)'
+- question: What timestamps does $FILE_NAME contain?
+  answer: Same four timestamps but stored when the file was last renamed — not typically affected by...
+- question: What is the difference between SI and FN timestamps forensically?
+  answer: FN timestamps are harder to modify; discrepancies suggest timestomping of SI timestamps
+- question: What is resident vs non-resident data?
+  answer: Small files (<~700 bytes) store data resident in MFT; larger files store cluster runs
+- question: What is the $DATA attribute for a directory?
+  answer: Directories do not have a $DATA attribute; they use $INDEX_ROOT/$INDEX_ALLOCATION
+- question: What is an MFT attribute list?
+  answer: Used when a file requires more than one MFT record; links to extension records
+- question: What is resident data in MFT?
+  answer: Actual file content stored inside the MFT record (for small files)
+- question: What is a resident data maximum size?
+  answer: Approximately 700 bytes in a typical MFT record
+- question: What is non-resident data?
+  answer: File data stored in clusters outside MFT; MFT points to run lists of cluster ranges
+- question: What is a run list?
+  answer: Sequence of cluster count + starting cluster numbers that describe where data resides on disk
+- question: What is the $LogFile?
+  answer: NTFS metadata journal — records metadata changes to enable crash recovery
+- question: What does $LogFile analysis reveal?
+  answer: Undocumented file operations (timestamps, moves, renames) that were not committed to MFT
+- question: What is the $UsnJrnl?
+  answer: Update Sequence Number Journal ($Extend\$UsnJrnl:$J) — records file change notifications
+- question: What does $UsnJrnl analysis reveal?
+  answer: 'A detailed change log: file creation, deletion, rename, modification, timestamp changes'
+- question: What is the $Boot file?
+  answer: First 16 sectors of NTFS volume containing boot code, BPB, MFT metadata
+- question: What information is in the $Boot BPB?
+  answer: Bytes per sector, sectors per cluster, MFT starting cluster, MFT mirror cluster
+- question: What is the $Bitmap?
+  answer: Bit field per cluster — 1 = allocated, 0 = free
+- question: What is the $Secure ($SII, $SDH)?
+  answer: Unique security descriptors indexed by ID ($SII) and hash ($SDH)
+- question: What is the $UpCase?
+  answer: Uppercase character mapping table (Unicode)
+- question: What is the $Extend folder?
+  answer: 'Contains system metadata files: $ObjId, $Quota, $Reparse, $UsnJrnl'
+- question: What is the $ObjId file?
+  answer: Maps object IDs to MFT record numbers
+- question: What is the $Reparse file?
+  answer: Tracks reparse points (junction points, symbolic links, mount points)
+- question: What is the $Quota file?
+  answer: Tracks disk quota usage per user
+- question: What is a directory index in NTFS?
+  answer: $INDEX_ROOT and $INDEX_ALLOCATION; b-tree structure sorted by filename
+- question: What is resident directory?
+  answer: Small directories store index in $INDEX_ROOT; larger use $INDEX_ALLOCATION
+- question: What is the index entry structure?
+  answer: MFT reference, timestamps, file name, file reference, VCN of child node
+- question: What is LFN (Long File Name)?
+  answer: VFAT LFN entries on FAT32 for >8.3 names; on NTFS UTF-16 filenames in $FILE_NAME attribute
+- question: What is short name (8.3) in NTFS?
+  answer: Legacy 8.3 name auto-generated for backward compatibility (e.g., MICROS~1.TXT)
+- question: What is slack space?
+  answer: Unused space between end of file and end of cluster — may contain prior data
+- question: What is MFT slack?
+  answer: Unused bytes at end of a MFT record
+- question: What is volume slack?
+  answer: Space between end of volume/partition and end of disk
+- question: What is the FAT32 filesystem structure?
+  answer: Reserved (boot sector + FSInfo) → FAT1 → FAT2 (duplicate) → Root directory → Data area
+- question: What is the FAT family timeline?
+  answer: FAT12 (floppy) → FAT16 (MS-DOS) → FAT32 (Windows 95B+) → exFAT (large flash drives)
+- question: What is the maximum FAT32 volume size?
+  answer: 2 TB (with 512-byte sectors)
+- question: What is the maximum file size on FAT32?
+  answer: 4 GB minus 1 byte (32-bit file size field)
+- question: What is exFAT?
+  answer: Extended FAT — designed for flash drives, supports files up to 16 exabytes
+- question: What tool parses FAT32 directory entries?
+  answer: The Sleuth Kit (fls, icat, fsstat)
+- question: What is the FAT32 directory entry structure?
+  answer: Filename, attributes, creation/modify/access timestamps, first cluster, file size
+- question: What is file carving?
+  answer: Extracting files from raw data using file signatures rather than filesystem metadata
+- question: What tool is used for file carving?
+  answer: foremost, scalpel, photorec
+- question: What is the foremost configuration file?
+  answer: /etc/foremost.conf — defines file types and signatures to carve
+- question: What is scalpel?
+  answer: File carver with customizable file type definitions in scalpel.conf
+- question: What is photorec?
+  answer: File carver focused on recovering photos and media files; works across filesystems
+- question: What is bulk_extractor?
+  answer: 'Feature extractor for disk images: finds emails, URLs, credit cards, phone numbers, IPs'
+- question: What file signatures does forensics use for recovery?
+  answer: 'Magic bytes: JPEG (FFD8FF), PNG (89504E47), PDF (25504446), ZIP (504B0304), DOCX (ZIP wrapper)'
+- question: What is the difference between file extension and file signature?
+  answer: Extension is user-assigned; signature is byte content that identifies true file type
+- question: What is keyword search in forensics?
+  answer: Searching a disk image for specific strings with encoding handling
+- question: What tool performs indexed keyword search?
+  answer: FTK (Forensic Toolkit) or Autopsy
+- question: What is grep-like search in forensic images?
+  answer: bulk_extractor or strings + grep across raw image
+- question: What command extracts strings from an image?
+  answer: strings -e l image.dd > strings.txt (Unicode) or strings (ASCII)
+- question: What is registry parsing?
+  answer: Extracting and interpreting binary registry hive files
+- question: What is SAM hive?
+  answer: Security Account Manager — local user accounts, RIDs, password hashes
+- question: What is SYSTEM hive?
+  answer: System configuration — computer name, network, services, device drivers, LastWrite times
+- question: What is SOFTWARE hive?
+  answer: Installed software, application settings, system policies, last access times
+- question: What is SECURITY hive?
+  answer: Security policies, cached domain logons (LSA secrets)
+- question: What is NTUSER.DAT?
+  answer: Per-user registry hive — user preferences, MRU, user assist, shellbags
+- question: What is USRCLASS.DAT?
+  answer: Per-user classes registry — file associations, COM objects, shell extensions
+- question: What is the Software Hive path?
+  answer: C:\Windows\System32\config\SOFTWARE
+- question: What is the System Hive path?
+  answer: C:\Windows\System32\config\SYSTEM
+- question: What is the SAM Hive path?
+  answer: C:\Windows\System32\config\SAM
+- question: What is the Security Hive path?
+  answer: C:\Windows\System32\config\SECURITY
+- question: What is the NTUSER.DAT location?
+  answer: C:\Users\username\NTUSER.DAT
+- question: What is the USRCLASS.DAT location?
+  answer: C:\Users\username\AppData\Local\Microsoft\Windows\USRCLASS.DAT
+- question: What is tool parses registry hives?
+  answer: RegRipper, Registry Explorer (EZ Tools), or Python Registry
+- question: What is the RunMRU registry key?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU — commands typed in Run dialog
+- question: What is the TypedPaths registry key?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths — paths typed in Explorer
+- question: What is the ShellBags key tracking?
+  answer: HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU and Bags
+- question: What does MTF Resolver tool do?
+  answer: Converts Windows time (FILETIME) for timeline correlation
+- question: What is the $I30 index attribute?
+  answer: Directory index in NTFS ($INDEX_ALLOCATION) — contains directory listing entries
+- question: What is an INDX file?
+  answer: Extracted $INDEX_ALLOCATION buffer (directory listing data)
+- question: What tool parses INDX files?
+  answer: INDXParse or INDXECmd (EZ Tools)
+- question: What is a Windows Event Log structure?
+  answer: '.evtx: binary XML; header, chunks, event records; each record is a self-contained XML blob'
+- question: What tool converts .evtx to CSV/XML?
+  answer: evtxexport (libevtx), wevtutil, or Python-evtx
+- question: What is forensic chain of custody?
+  answer: Documentation of who collected, handled, analyzed, and stored evidence for legal admissibility
+- question: What must chain of custody record include?
+  answer: Date/time, evidence identifier, location, collector name, purpose, transfer/return signatures
+- question: What is hashing for evidence verification?
+  answer: Compute hash (MD5/SHA1/SHA256) of evidence at acquisition and verify before court presentation
+- question: What forensic standard governs digital evidence?
+  answer: ISO 17025, 27037, 27041, 27042 — laboratory competence and digital evidence handling
+- question: What is the Daubert standard?
+  answer: US Federal Rule of Evidence — scientific evidence must be relevant and reliable
+- question: What is the Frye standard?
+  answer: Evidence admitted if generally accepted in the relevant scientific community
+- question: What is the difference between class and individual evidence?
+  answer: 'Class: narrows to a group; Individual: identifies a specific source'
+- question: What is volatile data order?
+  answer: 'Order of volatility: CPU → RAM → cache → network state → process list → disk → backup'
+- question: What is the purpose of forensic examination planning?
+  answer: Define scope, acquire relevant evidence, choose analysis tools, document methodology
+- question: What does TCPView show?
+  answer: Real-time TCP/UDP endpoint listing with owning process
+- question: What does Process Explorer show?
+  answer: Detailed process information including DLLs, handles, security context
+- question: What does Process Monitor (Procmon) capture?
+  answer: File system, registry, process/thread, and network activity with stack traces
+- question: What tool monitors registry changes?
+  answer: RegShot (pre/post snapshot comparison)
+- question: What is RegRipper?
+  answer: Registry analysis tool that extracts and reports key forensic artifacts
+- question: What are the RegRipper plugins categories?
+  answer: Applications, system, network, user profiles, security, malware
+- question: What is Eric Zimmerman's tools suite?
+  answer: 'EZ Tools: Registry Explorer, JLECmd, LECmd, AmcacheParser, RBCmd, TimelineExplorer, etc.'
+- question: What is KAPE?
+  answer: Kroll Artifact Parser and Extractor — triage forensic collection tool
+- question: What does KAPE collect?
+  answer: Targets (file collections) and modules (processing/parsing) in modular batches
+- question: What is the difference between KAPE targets and modules?
+  answer: Targets collect files from specified locations; modules process collected files
+- question: What is Autopsy?
+  answer: GUI-based digital forensics platform built on The Sleuth Kit
+- question: What is The Sleuth Kit (TSK)?
+  answer: Command-line forensic toolkit for analyzing disk images (mmls, fls, icat, fsstat, blkcat)
+- question: What does mmls do?
+  answer: Lists partition layout of a disk image
+- question: What does fsstat do?
+  answer: Displays filesystem details (block size, inode count, timestamps)
+- question: What does istat do?
+  answer: Lists metadata information for a given inode (filename, permissions, timestamps)
+- question: What does dls do?
+  answer: Extracts unallocated space (slack) from a disk image
+- question: What does srch_strings do?
+  answer: Extracts printable strings from files using encoding hints (from TSK)
+- question: What is a write blocker certification?
+  answer: Verification that the write blocker functions correctly per NIST CFTT
+- question: What is NIST CFTT?
+  answer: Computer Forensic Tool Testing program — tests tool correctness
+- question: What is Volatility used for in forensics?
+  answer: Memory analysis framework — examines RAM for processes, network, artifacts
+- question: What is Windows crash dump analysis?
+  answer: Analyzing MEMORY.DMP or minidumps (.dmp) from system crashes for forensics
+- question: What is the pagefile.sys used for?
+  answer: Windows virtual memory swap file — may contain application remnants
+- question: What is the hiberfil.sys used for?
+  answer: Hibernation file containing a full snapshot of RAM
+- question: What is the Windows.edb file?
+  answer: Windows Search index database — cached file metadata and content
+- question: What is the $Recycle.Bin artifact?
+  answer: Per-user recycle bin with $I (metadata) and $R (content/actual file) files
+- question: What does LNK shortcut analysis reveal?
+  answer: Target path, creation/modify timestamps, drive letter, volume serial number
+- question: What forensic value do prefetch files have?
+  answer: Define first execution time, run count, last execution time, loaded DLLs
+- question: What forensic value do Jump Lists have?
+  answer: Track recently opened files per application with timestamps
+- question: What is OLE in the context of email forensics?
+  answer: Object Linking and Embedding — used in MSG (email) format to embed attachments
+- question: What is a PST/OST file?
+  answer: Outlook data file — stores emails, contacts, calendar, tasks
+- question: What tool parses PST/OST files?
+  answer: libpst (readpst), pfftools, or Outlook itself
+- question: What are email headers?
+  answer: 'RFC 5322 headers: received, message-id, from, to, subject, date, authentication-results'
+- question: What does the Received header show?
+  answer: Mail server transfer path (time, server IP, hostname, protocol)
+- question: What does Authentication-Results header show?
+  answer: SPF, DKIM, DMARC verification results
+- question: What is SPF?
+  answer: Sender Policy Framework — specifies which servers can send mail for a domain
+- question: What is DKIM?
+  answer: DomainKeys Identified Mail — cryptographic signature on outbound emails
+- question: What is DMARC?
+  answer: Domain-based Message Authentication, Reporting and Conformance — policy on SPF/DKIM failures
+- question: What is the Windows Thumbs.db file?
+  answer: Thumbnail cache for folder in Windows Explorer — may contain deleted image previews
+- question: What is the Windows Recent folder?
+  answer: C:\Users\username\Recent — LNK files to recently opened documents
+- question: What is the Windows SendTo folder?
+  answer: LNK files in SendTo context menu — may show previously used locations
+- question: What is the Windows Start Menu cache?
+  answer: C:\Users\username\AppData\Roaming\Microsoft\Windows\Start Menu
+- question: What is the Windows temp folder?
+  answer: C:\Users\username\AppData\Local\Temp — temporary files, often indicators of execution
+- question: What is the Windows $Recycle.Bin $I file structure?
+  answer: Header (size, version), file size, deletion time, original file path (UTF-16)
+- question: What is the Windows $Recycle.Bin $R file?
+  answer: Actual file content (name shortened to $R + random characters + extension)
+- question: What is the Windows 10 recycle bin default size?
+  answer: 10% of volume (can be configured per drive)
+- question: What is a USN journal entry?
+  answer: 'USN_RECORD_V2/V3: USN, timestamp, reason, file reference, filename'
+- question: What are the $UsnJrnl reason flags?
+  answer: USN_REASON_FILE_CREATE, FILE_DELETE, EXTEND, RENAME, CLOSE, DATA_OVERWRITE, etc.
+- question: What is a USN journal USN value?
+  answer: Monotonically increasing update sequence number per entry
+- question: What is the Windows Firewall log location?
+  answer: C:\Windows\System32\LogFiles\Firewall\pfirewall.log
+- question: What is the Windows PowerShell operational log?
+  answer: Applications and Services Logs/Microsoft/Windows/PowerShell/Operational (Event ID 4103/4104)
+- question: What is PowerShell ScriptBlock logging?
+  answer: Logs the script block content (Event ID 4104) — captures deobfuscated scripts
+- question: What is PowerShell transcription?
+  answer: Captures all PowerShell input/output to a text file
+- question: What is the Windows Task Scheduler log?
+  answer: Event ID 4698 (created), 4699 (deleted), 4700 (enabled), 4701 (disabled), 4702 (updated)
+- question: What is the Windows Service log?
+  answer: Event ID 7045 (service install), 7036 (service state change)
+- question: What is the Windows RDP access log?
+  answer: Event ID 4624 with Logon Type 10 (remote interactive)
+- question: What is the Windows RDP client MRU?
+  answer: HKCU\Software\Microsoft\Terminal Server Client\Servers — recent RDP connections
+- question: What is the Windows User Profile location?
+  answer: C:\Users\username — profile directory with Desktop, Documents, AppData, etc.
+- question: What is the roaming profile?
+  answer: User profile stored on network share that follows user across computers
+- question: What is a mandatory profile?
+  answer: Read-only user profile — changes are not saved on logout
+- question: What is a temporary profile?
+  answer: Profile created when user's normal profile cannot be loaded
+- question: What is the Windows profile list in registry?
+  answer: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList — SID to profile mapping
+- question: What is the Windows LastVisitedMRU?
+  answer: Registry key for recent dialog (Open/Save As) file paths
+- question: What is the Windows ComDlg32 MRU?
+  answer: Registry keys for common dialog (Open/Save) file history per extension
+- question: What is the Windows TypedURLs?
+  answer: HKCU\Software\Microsoft\Internet Explorer\TypedURLs — URLs typed in IE/Edge address bar
+- question: What is the Windows Word MRU?
+  answer: HKCU\Software\Microsoft\Office\version\Word\File MRU
+- question: What is the Windows Run dialog history?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU
+- question: What is the Windows network provider cache?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\NetworkProviderCache
+- question: What is the Windows mount point registry?
+  answer: HKLM\SYSTEM\MountedDevices — maps volumes to device paths
+- question: What is the Windows volume GUID?
+  answer: Unique identifier for each volume — changes on reformat
+- question: What is the Windows wireless network profile?
+  answer: C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces — SSID and PSK saved
+- question: What is the Windows VPN connection registry?
+  answer: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged
+- question: What is the Windows EFS encryption?
+  answer: Encrypting File System (NTFS) — per-file encryption using user's certificate
+- question: What is the Windows EFS backup key?
+  answer: Recovery agent certificate that can decrypt EFS files if user key is lost
+- question: What is the registry transaction log?
+  answer: Registry hive writes are journaled in .LOG files — forensic reconstruction possible
+- question: What is the registry hive dirty bit?
+  answer: Flag in hive header indicating unclean shutdown — may have log entries to replay
+- question: What is the registry hive base block?
+  answer: 'First 4096 bytes of hive: signature ''regf'', sequence numbers, last modified timestamp'
+- question: What is a registry cell?
+  answer: 'Basic storage unit in registry hive: header (size, type) + data'
+- question: What is a registry key cell (NK)?
+  answer: 'Key node: name, timestamps, security descriptor pointer, child keys, values'
+- question: What is a registry value cell (VK)?
+  answer: 'Value: name, type, data pointer, data length'
+- question: What is the registry HBIN structure?
+  answer: 'Hive bin: header (address, size) + cells (records, keys, values)'
+- question: What is a registry security cell (SK)?
+  answer: Security descriptor shared across keys with same ACL
+- question: What is the Windows Error Reporting (WER) folder?
+  answer: C:\ProgramData\Microsoft\Windows\WER — crash dumps and error reports
+- question: What is a Windows minidump (.dmp)?
+  answer: Small memory dump on crash — contains stack trace, loaded modules, CPU context
+- question: What is a Windows full memory dump?
+  answer: Complete contents of RAM when system crashes — large (~RAM size)
+- question: What is the Windows .log1/.log2 files?
+  answer: NTFS metadata log and transactional log backups for recovery
+- question: What is a forensic copy of a live system?
+  answer: 'Imaging a running system — challenges: file locks, volatile data, pagefile change'
+- question: What is a RAM capture tool for forensics?
+  answer: Magnet RAM Capture, WinPmem, or FTK Imager memory capture
+- question: What is a honeypot forensic analysis?
+  answer: Analyzing logs and activity from decoy systems to understand attacker behavior
+- question: What is a forensic timeline correlation?
+  answer: Matching events across multiple timelines to reconstruct incident
+- question: What is a hash set analysis?
+  answer: Comparing file hashes against known-bad or known-good hash sets
+- question: What is NSRL?
+  answer: National Software Reference Library - NIST database of known file hashes
+- question: What is a timeline zoom analysis?
+  answer: Focusing on specific time windows of interest around known events

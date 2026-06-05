@@ -1,0 +1,57 @@
+title: C2 Infrastructure Setup Guide
+description: Set up and configure command-and-control infrastructure — redirectors, domain fronting, HTTPS C2 profiles, and operational security for red team engagements.
+tags: [c2, infrastructure, red-team, redirector]
+prompt: >
+  Design and deploy C2 infrastructure for {engagement_name}.
+
+  ## Requirements
+  - C2 framework: {c2_framework} (Cobalt Strike / Sliver / Mythic / Havoc / Nighthawk)
+  - Redirector count: {redirector_count}
+  - Listener types needed: {listener_types} (HTTPS / DNS / SMB / TCP)
+  - Domains available: {domains}
+  - Teamserver IP: {teamserver_ip}
+  - OPSEC level: {opsec_level} (basic / stealth / advanced)
+  - Duration: {duration} days
+
+  ## Infrastructure Design
+
+  ### 1. Domain & Certificate Setup
+  - Domain fronting candidates (CDN-backed: CloudFront, Azure CDN, Cloudflare Workers)
+  - TLS certificates via Let's Encrypt or commercial CA
+  - CAA record management to prevent certificate issuance alerts
+  - Domain categorization check (avoid known security-vendor-tagged domains)
+
+  ### 2. Redirectors
+  - **Nginx reverse proxy** — forward HTTPS traffic to teamserver, add jitter
+  - **Apache mod_rewrite** — filter by User-Agent, cookie, URI path
+  - **iptables/nftables** — source IP allowlisting for redirector → teamserver
+  - **Redirector hardening**: no open ports besides 443, no version banners, fail2ban
+  - **Geo-fencing**: block traffic from security vendor ASNs, Tor exit nodes, datacenter IPs
+
+  ### 3. Domain Fronting
+  - Identify CDN that allows custom Host headers (CloudFront, Cloudflare, Azure Front Door)
+  - Configure C2 profile to use fronted domain in Host header
+  - Test fronting: curl to CDN edge with backend Host header
+
+  ### 4. C2 Profile Configuration
+  - **HTTP/S profile**: custom User-Agent mimicking common services (Mozilla, Chrome, PowerShell)
+  - **URI paths**: mimic API endpoints (/api/v1/status, /static/js/main.js)
+  - **Jitter & sleep**: {jitter}% jitter, {sleep_time}s base sleep
+  - **Padding**: random response padding to defeat size analysis
+  - **User-Agent rotation**: rotate across real browser fingerprints
+  - **Cookie handling**: session tracking via cookies, not URI parameters
+
+  ### 5. Egress / Kill Switch
+  - Fallback domains if primary CDN is blocked
+  - Malleable C2 profile re-randomization schedule (every 48h)
+  - Cleanup checklist: revoke certs, delete DNS records, decommission VPS, wipe logs
+
+  ### 6. Operational Security
+  - Teamserver access via SSH jump box (no direct internet exposure)
+  - Teamserver in front of VPN/proxy for outgoing traffic
+  - No personal information in VPS registrations (crypto, burner emails)
+  - Separate infrastructure for phishing vs. C2 (don't cross-contaminate)
+  - Logging: disable or minimal on redirectors (no disk persistence)
+
+  ## Output
+  Create a case with tasks for domain registration, redirector setup, profile deployment, testing, and cleanup. Include a network diagram and OPSEC checklist.

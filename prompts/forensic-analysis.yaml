@@ -1,0 +1,27 @@
+title: Forensic Disk Image Analysis
+description: Full forensic investigation of a disk image — triage, artifact extraction, timeline, and IOC hunting.
+tags: [forensics, ir]
+prompt: >
+  Perform a forensic analysis on the disk image at {image_path}.
+
+  ## Case Context
+  - Case ID: {case_id}
+  - Image format: {image_format} (raw/E01/aff)
+  - Suspicious artifacts to look for: {ioc_hints}
+  - Analysis goal: {analysis_goal}
+
+  ## Methodology
+  1. Verify image integrity (SHA256 hash against provided value if available)
+  2. Identify partition layout and filesystem types
+  3. Extract key forensic artifacts:
+     - Timeline of file system events
+     - Recently modified/accessed/deleted files
+     - User account and login history
+     - Network connections and configuration
+     - Browser history and download artifacts
+     - Prefetch/Amcache/RecentFiles (Windows) or bash history/system logs (Linux)
+  4. Search for IOCs (specific filenames, hashes, IPs, registry keys)
+  5. Correlate findings into a coherent timeline of activity
+
+  ## Output
+  Create a comprehensive case with timeline, extracted artifacts, IOC matches, and conclusions.

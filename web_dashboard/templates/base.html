@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var t = document.querySelector('meta[name="csrf-token"]');
+            if (!t) return;
+            var c = t.getAttribute('content');
+            var f = window.fetch;
+            window.fetch = function(u, o) {
+                o = o || {};
+                var m = (o.method || "GET").toUpperCase();
+                if (["GET","POST","PUT","DELETE","PATCH"].indexOf(m) >= 0) {
+                    o.credentials = "same-origin";
+                    var h = o.headers || {};
+                    if (h instanceof Headers) h.set("X-CSRF-Token", c);
+                    else if (Array.isArray(h)) h.push(["X-CSRF-Token", c]);
+                    else h["X-CSRF-Token"] = c;
+                    o.headers = h;
+                    if (o.body && typeof o.body === "string") {
+                        try { var b = JSON.parse(o.body);
+                            if (!b.csrf_token) { b.csrf_token = c; o.body = JSON.stringify(b); }
+                        } catch(e) {}
+                    }
+                }
+                return f(u, o);
+            };
+            var ox = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(m, u, a, us, pw) {
+                this._m = m.toUpperCase(); return ox.apply(this, arguments);
+            };
+            var xs = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function(b) {
+                if (["GET","POST","PUT","DELETE","PATCH"].indexOf(this._m) >= 0)
+                    this.setRequestHeader("X-CSRF-Token", c);
+                return xs.apply(this, arguments);
+            };
+        });
+    </script>
+
+    <title>{% block title %}CC Dashboard{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lucide-icons@0.130.0/dist/umd/lucide.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+    <nav class="bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between sticky top-0 z-50">
+        <div class="flex items-center gap-4">
+            <a href="/" class="text-lg font-bold text-indigo-400 tracking-wide">CC<span class="text-gray-400">/dashboard</span></a>
+            <span class="text-gray-600 text-sm">|</span>
+            <select id="case-selector" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200"
+                    onchange="if(this.value) window.location='/case/'+this.value">
+                <option value="">Select case...</option>
+            </select>
+        </div>
+        <div class="flex items-center gap-3">
+            <a href="/projects" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="columns" class="w-4 h-4"></i> Projects
+            </a>
+            <a href="/terminal" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="terminal" class="w-4 h-4"></i> Terminal
+            </a>
+            <a href="/tools" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="wrench" class="w-4 h-4"></i> Tools
+            </a>
+            <a href="/prompts" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="file-text" class="w-4 h-4"></i> Prompts
+            </a>
+            <a href="/findings" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="search" class="w-4 h-4"></i> Findings
+            </a>
+            <a href="/runbooks" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="book-open" class="w-4 h-4"></i> Runbooks
+            </a>
+            <a href="/rules" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="shield" class="w-4 h-4"></i> Rules
+            </a>
+            <a href="/assets" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="hard-drive" class="w-4 h-4"></i> Assets
+            </a>
+            <a href="/wifi-monitor" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="wifi" class="w-4 h-4"></i> WiFi
+            </a>
+            <a href="/flashcards" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="brain" class="w-4 h-4"></i> Brain
+            </a>
+            <a href="/ai" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="cpu" class="w-4 h-4"></i> AI
+            </a>
+            <a href="/jobs" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1 relative">
+                <i data-lucide="clock" class="w-4 h-4"></i> Jobs
+                <span id="job-badge" class="absolute -top-2 -right-3 bg-indigo-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center hidden" style="font-size:10px">0</span>
+            </a>
+            <a href="/debug" class="text-gray-500 hover:text-gray-100 text-sm flex items-center gap-1">
+                <i data-lucide="bug" class="w-4 h-4"></i> Debug
+            </a>
+        </div>
+    </nav>
+    <main class="p-4 max-w-7xl mx-auto">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Floating job queue widget -->
+    <div id="job-queue-container" class="fixed bottom-4 right-4 z-40 w-80 max-h-96 flex flex-col">
+        <button id="job-queue-toggle" onclick="toggleJobQueue()"
+                class="self-end mb-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg px-3 py-1.5 text-xs flex items-center gap-2 transition-colors">
+            <i data-lucide="list" class="w-3.5 h-3.5"></i>
+            <span>Recent Jobs</span>
+            <span id="job-badge-mini" class="bg-indigo-500 text-white rounded-full px-1.5 hidden text-xs">0</span>
+        </button>
+        <div id="job-queue-panel"
+             class="bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-y-auto hidden"
+             style="max-height: 320px;">
+            <div id="job-queue-widget">
+                <div class="text-gray-500 text-xs p-3 text-center">Connecting...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/job-queue.js') }}"></script>
+    <script>
+        lucide.createIcons();
+        fetch('/api/cases').then(r=>r.json()).then(cases=>{
+            const sel = document.getElementById('case-selector');
+            if(!sel) return;
+            cases.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.case_id;
+                opt.textContent = `${c.case_id} (${c.client || 'no client'} — ${c.status})`;
+                sel.appendChild(opt);
+            });
+        });
+
+        function toggleJobQueue() {
+            const panel = document.getElementById('job-queue-panel');
+            panel.classList.toggle('hidden');
+        }
+
+        // Update mini badge from widget state
+        document.addEventListener('DOMContentLoaded', function() {
+            const origRender = window.renderWidget;
+            setInterval(function() {
+                const container = document.getElementById('job-queue-widget');
+                if (!container) return;
+                const running = container.querySelectorAll('.job-row').length;
+                const mini = document.getElementById('job-badge-mini');
+                if (mini) {
+                    const count = container.querySelectorAll('[class*="animate-pulse"]').length;
+                    mini.textContent = count || '';
+                    mini.style.display = count ? 'inline' : 'none';
+                }
+            }, 2000);
+        });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+

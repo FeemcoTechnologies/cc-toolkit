@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}{{ 'New' if is_new else 'Edit' }} Rule — Rules{% endblock %}
+{% block head %}
+<style>
+    pre { tab-size: 4; }
+    .editor-textarea { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+        <i data-lucide="edit" class="w-6 h-6 text-indigo-400"></i>
+        <h1 class="text-xl font-semibold">{{ 'New' if is_new else 'Edit' }} Rule</h1>
+        {% if not is_new %}
+        <span class="text-xs font-mono text-gray-500">{{ rule.format }}/{{ rule.id }}</span>
+        {% endif %}
+    </div>
+    <div class="flex gap-2">
+        {% if not is_new %}
+        <a href="/rules/{{ rule.format }}/{{ rule.id }}" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Cancel</a>
+        {% else %}
+        <a href="/rules" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Cancel</a>
+        {% endif %}
+    </div>
+</div>
+
+{% if is_new %}
+<div class="mb-4">
+    <label class="text-xs text-gray-500 block mb-1">Format</label>
+    <select id="rule-format" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" onchange="switchFormat()">
+        <option value="semgrep" {{ 'selected' if format_name == 'semgrep' else '' }}>Semgrep</option>
+        <option value="sigma" {{ 'selected' if format_name == 'sigma' else '' }}>Sigma</option>
+        <option value="yara" {{ 'selected' if format_name == 'yara' else '' }}>YARA</option>
+        <option value="suricata" {{ 'selected' if format_name == 'suricata' else '' }}>Suricata</option>
+        <option value="nuclei" {{ 'selected' if format_name == 'nuclei' else '' }}>Nuclei</option>
+    </select>
+</div>
+{% endif %}
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-4">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Source</h2>
+    <textarea id="rule-content" class="editor-textarea w-full bg-gray-950 text-gray-300 text-sm p-4 rounded border border-gray-800 min-h-[400px]" style="max-height: 75vh;">{{ content }}</textarea>
+</div>
+
+<div class="flex gap-3 items-center">
+    <button onclick="saveRule()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">{{ 'Create' if is_new else 'Save' }}</button>
+    <div id="save-status" class="text-sm hidden"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function switchFormat() {
+    var fmt = document.getElementById('rule-format').value;
+    window.location.href = '/rules/new?format=' + fmt;
+}
+
+function saveRule() {
+    var content = document.getElementById('rule-content').value;
+    if (!content.trim()) { alert('Content cannot be empty'); return; }
+
+    var btn = document.querySelector('button[onclick="saveRule()"]');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    var status = document.getElementById('save-status');
+    status.className = 'text-sm text-yellow-400';
+    status.textContent = 'Validating...';
+    status.classList.remove('hidden');
+
+    {% if is_new %}
+    var fmt = document.getElementById('rule-format').value;
+    fetch('/api/rules/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({format: fmt, content: content}),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'created') {
+            status.textContent = 'Created! Redirecting...';
+            status.className = 'text-sm text-green-400';
+            setTimeout(function() { window.location.href = '/rules'; }, 1000);
+        } else {
+            status.textContent = 'Error: ' + (data.error || 'Unknown');
+            status.className = 'text-sm text-red-400';
+            btn.disabled = false;
+            btn.textContent = '{{ 'Create' if is_new else 'Save' }}';
+        }
+    })
+    .catch(function(err) {
+        status.textContent = 'Error: ' + err.message;
+        status.className = 'text-sm text-red-400';
+        btn.disabled = false;
+        btn.textContent = '{{ 'Create' if is_new else 'Save' }}';
+    });
+    {% else %}
+    fetch('/api/rules/{{ rule.format }}/{{ rule.id }}/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content: content}),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'saved') {
+            status.textContent = 'Saved!';
+            status.className = 'text-sm text-green-400';
+            setTimeout(function() { status.classList.add('hidden'); }, 2000);
+            btn.disabled = false;
+            btn.textContent = 'Save';
+        } else {
+            status.textContent = 'Error: ' + (data.error || 'Unknown');
+            status.className = 'text-sm text-red-400';
+            btn.disabled = false;
+            btn.textContent = 'Save';
+        }
+    })
+    .catch(function(err) {
+        status.textContent = 'Error: ' + err.message;
+        status.className = 'text-sm text-red-400';
+        btn.disabled = false;
+        btn.textContent = 'Save';
+    });
+    {% endif %}
+}
+</script>
+{% endblock %}

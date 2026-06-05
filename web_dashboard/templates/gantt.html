@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Timeline — {{ case.case_id }}{% endblock %}
+{% block head %}
+<style>
+    .gantt-bar { transition: all 0.2s ease; }
+    .gantt-bar:hover { filter: brightness(1.2); transform: scaleY(1.1); }
+    .gantt-row:nth-child(even) { background: rgba(31, 41, 55, 0.3); }
+    .gantt-row:hover { background: rgba(99, 102, 241, 0.08); }
+    .gantt-grid { background-image: repeating-linear-gradient(90deg, transparent, transparent 59px, rgba(55,65,81,0.5) 59px, rgba(55,65,81,0.5) 60px); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-4">
+            <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
+            <h1 class="text-lg font-semibold flex items-center gap-2">
+                <i data-lucide="chart-bar" class="w-5 h-5 text-indigo-400"></i>
+                Timeline Gantt — {{ case.case_id }}
+            </h1>
+        </div>
+        <div class="flex items-center gap-2 text-xs">
+            <label class="text-gray-400">Zoom:</label>
+            <select id="zoom-select" onchange="setZoom(this.value)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200">
+                <option value="7">Week</option>
+                <option value="30" selected>Month</option>
+                <option value="90">Quarter</option>
+                <option value="365">Year</option>
+            </select>
+            <button onclick="loadGantt()" class="bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded text-gray-400">
+                <i data-lucide="refresh-cw" class="w-3 h-3 inline"></i>
+            </button>
+        </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+        <!-- Legend -->
+        <div class="flex gap-4 px-3 py-2 border-b border-gray-800 text-xs text-gray-400">
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> Critical</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-orange-500"></span> High</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-yellow-500"></span> Medium</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> Finding</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-indigo-500"></span> Task</span>
+        </div>
+        <div id="gantt-container" class="overflow-auto" style="max-height: calc(100vh - 180px);">
+            <div class="text-gray-500 text-center py-12">Loading...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    var zoomDays = 30;
+    var allItems = [];
+
+    window.setZoom = function(days) {
+        zoomDays = parseInt(days);
+        renderGantt();
+    };
+
+    window.loadGantt = function() {
+        fetch('/api/case/{{ case.case_id }}/gantt/data')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                allItems = data.items || [];
+                renderGantt();
+            });
+    };
+
+    function renderGantt() {
+        var container = document.getElementById('gantt-container');
+        if (!allItems.length) {
+            container.innerHTML = '<div class="text-gray-500 text-center py-12"><i data-lucide="inbox" class="w-6 h-6 mx-auto mb-2"></i><p>No timeline data yet</p></div>';
+            lucide.createIcons();
+            return;
+        }
+
+        // Determine date range
+        var dates = allItems.map(function(i) { return i.start || ''; }).filter(Boolean);
+        dates.sort();
+        var startDate = dates.length ? new Date(dates[0]) : new Date();
+        var endDate = new Date(startDate);
+        endDate.setDate(endDate.getDate() + zoomDays);
+
+        var dayWidth = 60;
+        var totalWidth = zoomDays * dayWidth;
+        var rowHeight = 32;
+
+        var html = '<div class="gantt-grid" style="min-width:' + totalWidth + 'px">';
+        // Header row (dates)
+        html += '<div class="flex border-b border-gray-800" style="position:sticky;top:0;background:#111827;z-index:5">';
+        html += '<div class="w-56 shrink-0 px-2 py-1 text-xs text-gray-500 font-semibold border-r border-gray-800">Item</div>';
+        for (var d = 0; d < zoomDays; d++) {
+            var date = new Date(startDate);
+            date.setDate(date.getDate() + d);
+            var dayLabel = date.getDate();
+            var monthLabel = d === 0 ? date.toLocaleString('default', {month:'short'}) : '';
+            var isWeekend = date.getDay() === 0 || date.getDay() === 6;
+            html += '<div class="text-center shrink-0 border-r border-gray-800/50" style="width:' + dayWidth + 'px;background:' + (isWeekend ? 'rgba(55,65,81,0.3)' : 'transparent') + '">' +
+                '<div class="text-[10px] text-gray-600">' + monthLabel + '</div>' +
+                '<div class="text-xs ' + (isWeekend ? 'text-gray-600' : 'text-gray-400') + '">' + dayLabel + '</div>' +
+                '</div>';
+        }
+        html += '</div>';
+
+        // Rows
+        allItems.forEach(function(item, idx) {
+            var barColor = item.type === 'task' ? '#6366f1'
+                : item.severity === 'critical' ? '#ef4444'
+                : item.severity === 'high' ? '#f97316'
+                : item.severity === 'medium' ? '#eab308'
+                : item.severity === 'low' ? '#22c55e'
+                : '#6b7280';
+
+            var startOffset = 0;
+            var barWidth = dayWidth * 0.6;
+            if (item.start) {
+                var itemDate = new Date(item.start);
+                var diffDays = Math.floor((itemDate - startDate) / 86400000);
+                startOffset = diffDays * dayWidth;
+                if (startOffset < 0) startOffset = 0;
+            }
+
+            html += '<div class="gantt-row flex items-center border-b border-gray-800/50" style="height:' + rowHeight + 'px">' +
+                '<div class="w-56 shrink-0 px-2 py-1 text-xs truncate border-r border-gray-800 flex items-center gap-1">' +
+                '<span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:' + barColor + '"></span>' +
+                '<span class="truncate text-gray-300">' + escapeHtml(item.title) + '</span>' +
+                '<span class="text-gray-500 shrink-0 ml-auto">' + (item.type === 'finding' ? 'F' : item.type === 'task' ? 'T' : 'E') + '</span>' +
+                '</div>' +
+                '<div class="relative flex-1" style="height:' + rowHeight + 'px">' +
+                '<div class="gantt-bar absolute top-1/2 -translate-y-1/2 rounded-sm cursor-pointer" ' +
+                'style="left:' + startOffset + 'px;width:' + Math.max(barWidth, 4) + 'px;height:14px;background:' + barColor + ';opacity:0.8" ' +
+                'title="' + escapeHtml(item.title) + ' (' + (item.severity || item.status || '') + ')">' +
+                '</div></div></div>';
+        });
+
+        html += '</div>';
+        container.innerHTML = html;
+        lucide.createIcons();
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    loadGantt();
+})();
+</script>
+{% endblock %}

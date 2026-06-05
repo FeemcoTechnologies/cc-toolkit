@@ -1,0 +1,144 @@
+# v2 runbook — network + memory + disk forensics acquisition
+name: "Forensics Acquisition"
+description: "Collect live system artifacts: processes, network, memory, disk info, registry"
+version: "2.0"
+
+vars:
+  evidence_tag: ""
+  collector: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "Forensics acquisition on {target} — tag: {evidence_tag}"
+
+  - id: system_info
+    name: "Collect system info"
+    type: parallel
+    steps:
+      - id: hostname
+        name: "Hostname"
+        tool: hostname
+        args: []
+
+      - id: uname
+        name: "Kernel version"
+        tool: uname
+        args: ["-a"]
+
+      - id: uptime
+        name: "Uptime"
+        tool: uptime
+        args: []
+
+      - id: date
+        name: "System time (UTC)"
+        tool: date
+        args: ["-u"]
+
+  - id: network_artifacts
+    name: "Network artifacts"
+    type: parallel
+    steps:
+      - id: connections
+        name: "Active connections"
+        tool: ss
+        args: ["-tulnp", "-o", "{case_dir}/connections.txt"]
+        artifacts: ["{case_dir}/connections.txt"]
+
+      - id: arp_cache
+        name: "ARP cache"
+        tool: arp
+        args: ["-a", "-o", "{case_dir}/arp.txt"]
+        artifacts: ["{case_dir}/arp.txt"]
+
+      - id: routing
+        name: "Routing table"
+        tool: ip
+        args: ["route", "show"]
+
+      - id: interfaces
+        name: "Network interfaces"
+        tool: ip
+        args: ["addr"]
+
+  - id: process_artifacts
+    name: "Process artifacts"
+    tool: ps
+    args: ["aux", "-o", "{case_dir}/processes.txt"]
+    timeout: 30
+    artifacts: ["{case_dir}/processes.txt"]
+
+  - id: disk_artifacts
+    name: "Disk artifacts"
+    type: parallel
+    steps:
+      - id: mounts
+        name: "Mounted filesystems"
+        tool: df
+        args: ["-h"]
+
+      - id: disk_usage
+        name: "Disk usage"
+        tool: du
+        args: ["-sh", "/home", "/etc", "/var", "/tmp"]
+
+      - id: fdisk
+        name: "Partition table"
+        tool: fdisk
+        args: ["-l", "-o", "{case_dir}/partitions.txt"]
+        artifacts: ["{case_dir}/partitions.txt"]
+
+  - id: user_artifacts
+    name: "User artifacts"
+    type: parallel
+    steps:
+      - id: last_logins
+        name: "Last logins"
+        tool: last
+        args: ["-10"]
+
+      - id: passwd
+        name: "User accounts"
+        tool: cat
+        args: ["/etc/passwd"]
+
+      - id: sudoers
+        name: "Sudoers"
+        tool: cat
+        args: ["/etc/sudoers"]
+
+  - id: ask_memory
+    type: prompt
+    message: "Acquire memory dump? (requires avml or lime)"
+    then:
+      - id: memory_dump
+        name: "Memory acquisition via avml"
+        tool: avml
+        args: ["{case_dir}/memory.avml"]
+        timeout: 300
+        artifacts: ["{case_dir}/memory.avml"]
+
+  - id: hash_evidence
+    name: "Hash collected artifacts"
+    type: foreach
+    items: "{case_dir}"
+    var: evidence_file
+    steps:
+      - id: hash_it
+        name: "SHA256 hash"
+        tool: sha256sum
+        args: ["{case_dir}/{evidence_file}"]
+
+  - id: report
+    name: "Generate forensics report"
+    type: report
+    format: markdown
+    title: "Forensics Acquisition — {target} ({evidence_tag})"
+    output: "{case_dir}/acquisition-report.md"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Acquisition complete — {case_dir}"

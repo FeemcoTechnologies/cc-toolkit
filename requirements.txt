@@ -1,0 +1,48 @@
+# =============================================================================
+# Kali Command Center - Core Dependencies
+# =============================================================================
+# Install with: pip install -r requirements.txt
+# Python 3.10+ recommended
+# =============================================================================
+
+# --- Web Dashboard ---
+flask>=3.0
+
+# --- Config / Playbook parsing ---
+PyYAML>=6.0
+
+# --- Encrypted credential store ---
+cryptography>=41.0
+
+# --- DNS resolution (tool_wrappers: dns_track) ---
+dnspython>=2.4
+
+# --- MCP (Model Context Protocol) server ---
+mcp>=1.0
+
+# --- WebSocket terminal (optional, graceful fallback if missing) ---
+websockets>=12.0
+
+# --- PDF report generation (optional, graceful fallback if missing) ---
+weasyprint>=60.0
+
+# --- DOCX report generation (optional, graceful fallback if missing) ---
+python-docx>=1.1
+
+# --- Network scanning / traceroute (optional, graceful fallback if missing) ---
+scapy>=2.5
+
+# --- Network interface utilities (optional, graceful fallback if missing) ---
+netifaces>=0.11
+
+# --- Jupyter notebook execution (optional, used in MCP tools & CLI) ---
+papermill>=2.5
+
+# --- Interactive TUI dashboard (optional but recommended) ---
+prompt_toolkit>=3.0
+
+# --- System resource monitoring (used by TUI monitor screen) ---
+psutil>=5.9
+
+# --- Optional: Arsenal command cheatsheet integration ---
+# arsenal  # uncomment if you use Orange-Cyberdefense/arsenal

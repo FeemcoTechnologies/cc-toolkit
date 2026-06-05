@@ -1,0 +1,65 @@
+/* xterm overrides */
+.xterm { height: 100%; padding: 0; }
+.xterm-viewport { scrollbar-width: thin; scrollbar-color: #374151 transparent; }
+
+/* custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+/* iframe styling */
+iframe { border: none; }
+
+/* transitions */
+a, button { transition: all .15s ease; }
+
+/* code blocks */
+code { font-family: Menlo, Monaco, "Courier New", monospace; }
+
+/* Dashboard widget grid */
+#widget-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+}
+@media (min-width: 1024px) {
+    #widget-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+.widget-full {
+    grid-column: 1 / -1;
+}
+.widget-half {
+    grid-column: span 1;
+}
+
+/* Widget cards */
+.widget-card {
+    transition: opacity .15s ease, border-color .15s ease;
+}
+.widget-card:hover {
+    border-color: rgba(99, 102, 241, 0.3);
+}
+
+/* Stat cards */
+.stat-card {
+    transition: background .15s ease;
+}
+
+/* Customize modal drag handle */
+.drag-handle {
+    cursor: grab;
+}
+.drag-handle:active {
+    cursor: grabbing;
+}
+
+/* SortableJS drag ghost */
+.sortable-ghost {
+    opacity: 0.4;
+    background: rgba(99, 102, 241, 0.1);
+}
+.sortable-chosen {
+    background: rgba(99, 102, 241, 0.05);
+}

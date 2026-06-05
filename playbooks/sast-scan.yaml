@@ -1,0 +1,227 @@
+# v2 runbook — SAST & secrets scanning
+name: "SAST & Secrets Scan"
+description: "Static analysis of source code — Semgrep for pattern-based issues, Gitleaks/TruffleHog for secrets, Bandit for Python, dependency scanning"
+version: "2.0"
+
+vars:
+  target_path: ""
+  repo_url: ""
+  rules_path: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "SAST scan — {target_path} (case: {case_id})"
+
+  # Phase 0: Clone repo if URL provided
+  - id: ask_repo
+    type: prompt
+    message: "Clone repository to scan?"
+    then:
+      - id: clone_repo
+        name: "Clone git repository"
+        tool: git
+        args: ["clone", "--depth=1", "{repo_url}",
+               "{case_dir}/repo"]
+        timeout: 120
+        when: "has:repo_url"
+    else:
+      - id: copy_path
+        name: "Copy local path"
+        tool: cp
+        args: ["-r", "{target_path}", "{case_dir}/repo"]
+        timeout: 60
+
+  # Phase 1: Semgrep
+  - id: semgrep
+    name: "Semgrep static analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: sg_security
+        name: "Semgrep security rules"
+        tool: semgrep
+        args: ["scan",
+               "--config=auto",
+               "--config=p/security-audit",
+               "--config=p/owasp-top-ten",
+               "--output={case_dir}/semgrep_security.json",
+               "--json",
+               "--severity=ERROR,WARNING",
+               "{case_dir}/repo"]
+        timeout: 300
+        artifacts: ["{case_dir}/semgrep_security.json"]
+
+      - id: sg_custom
+        name: "Semgrep custom rules"
+        tool: semgrep
+        args: ["scan",
+               "--config={rules_path}",
+               "--output={case_dir}/semgrep_custom.json",
+               "--json",
+               "{case_dir}/repo"]
+        timeout: 300
+        when: "has:rules_path"
+
+      - id: sg_supply
+        name: "Semgrep supply chain"
+        tool: semgrep
+        args: ["scan",
+               "--config=p/supply-chain",
+               "--output={case_dir}/semgrep_supply_chain.json",
+               "--json",
+               "{case_dir}/repo"]
+        timeout: 300
+
+      - id: sg_contrib
+        name: "Semgrep community"
+        tool: semgrep
+        args: ["scan",
+               "--config=p/contrib",
+               "--output={case_dir}/semgrep_contrib.json",
+               "--json",
+               "{case_dir}/repo"]
+        timeout: 300
+
+  # Phase 2: Gitleaks
+  - id: gitleaks
+    name: "Gitleaks secret detection"
+    type: parallel
+    steps:
+      - id: gl_detect
+        name: "Gitleaks detection"
+        tool: gitleaks
+        args: ["detect",
+               "--source={case_dir}/repo",
+               "--report-path={case_dir}/gitleaks_report.json",
+               "--verbose"]
+        timeout: 120
+        artifacts: ["{case_dir}/gitleaks_report.json"]
+
+      - id: gl_full
+        name: "Gitleaks full history"
+        tool: gitleaks
+        args: ["detect",
+               "--source={case_dir}/repo",
+               "--no-git",
+               "--report-path={case_dir}/gitleaks_full.json",
+               "--verbose"]
+        timeout: 120
+
+  # Phase 3: TruffleHog
+  - id: trufflehog
+    name: "TruffleHog secret scanning"
+    type: parallel
+    steps:
+      - id: th_filesystem
+        name: "TruffleHog filesystem"
+        tool: trufflehog
+        args: ["filesystem",
+               "--directory={case_dir}/repo",
+               "--json",
+               "-o", "{case_dir}/trufflehog_results.json"]
+        timeout: 180
+        artifacts: ["{case_dir}/trufflehog_results.json"]
+
+      - id: th_git
+        name: "TruffleHog git history"
+        tool: trufflehog
+        args: ["git",
+               "--since-commit",
+               "--branch",
+               "--json",
+               "{case_dir}/repo",
+               "-o", "{case_dir}/trufflehog_git.json"]
+        timeout: 180
+        when: "has:repo_url"
+
+  # Phase 4: Language-specific scanners
+  - id: lang_scan
+    name: "Language-specific scanning"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: scan_bandit
+        name: "Bandit (Python)"
+        tool: bandit
+        args: ["-r", "{case_dir}/repo",
+               "-f", "json",
+               "-o", "{case_dir}/bandit_report.json"]
+        timeout: 120
+
+      - id: scan_eslint
+        name: "ESLint (JS/TS security)"
+        tool: eslint
+        args: ["--format=json",
+               "--ext=.js,.jsx,.ts,.tsx",
+               "--rulesdir=/usr/share/eslint-plugin-security",
+               "{case_dir}/repo",
+               "-o", "{case_dir}/eslint_security.json"]
+        timeout: 120
+
+      - id: scan_grype
+        name: "Grype vulnerability scan"
+        tool: grype
+        args: ["{case_dir}/repo",
+               "-o", "json",
+               "--file", "{case_dir}/grype_vulns.json"]
+        timeout: 300
+        artifacts: ["{case_dir}/grype_vulns.json"]
+
+      - id: scan_trivy
+        name: "Trivy filesystem scan"
+        tool: trivy
+        args: ["fs",
+               "--format=json",
+               "--output={case_dir}/trivy_results.json",
+               "{case_dir}/repo"]
+        timeout: 300
+
+      - id: scan_safety
+        name: "Safety (Python deps)"
+        tool: safety
+        args: ["check",
+               "--json",
+               "-o", "{case_dir}/safety_report.json"]
+        timeout: 120
+        workdir: "{case_dir}/repo"
+
+  # Phase 5: Deduplicate & triage
+  - id: triage
+    name: "Deduplicate findings"
+    type: parallel
+    steps:
+      - id: triage_script
+        name: "Merge & rank findings"
+        tool: python3
+        args: ["-c",
+               "\"import json,os; findings=[]; files=['gitleaks_report.json','trufflehog_results.json','semgrep_security.json','bandit_report.json','trivy_results.json']; base='{case_dir}'; [findings.extend(json.load(open(os.path.join(base,f))) if f.startswith('semgrep') else json.load(open(os.path.join(base,f)))) for f in files if os.path.exists(os.path.join(base,f))]; high=[f for f in findings if str(f.get('severity','')).upper()=='HIGH' or str(f.get('severity','')).upper()=='CRITICAL']; print(f'Total findings: {len(findings)}\\nHigh/Critical: {len(high)}\\nSecrets: {sum(1 for f in findings if \\\"secret\\\" in str(f).lower())}')\"",
+               "-o", "{case_dir}/finding_summary.txt"]
+        timeout: 30
+
+  # Phase 6: Report
+  - id: report
+    name: "Generate SAST report"
+    type: report
+    format: markdown
+    title: "SAST & Secrets Scan Report"
+    output: "{case_dir}/sast-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Path: {target_path}\n- Repo: {repo_url}\n- Case: {case_id}"
+      - heading: "Semgrep"
+        body: "- Security audit: {case_dir}/semgrep_security.json\n- Supply chain: {case_dir}/semgrep_supply_chain.json"
+      - heading: "Secrets"
+        body: "- Gitleaks: {case_dir}/gitleaks_report.json\n- TruffleHog: {case_dir}/trufflehog_results.json"
+      - heading: "Language"
+        body: "- Bandit: {case_dir}/bandit_report.json\n- ESLint: {case_dir}/eslint_security.json"
+      - heading: "Dependencies"
+        body: "- Grype: {case_dir}/grype_vulns.json\n- Trivy: {case_dir}/trivy_results.json\n- Safety: {case_dir}/safety_report.json"
+      - heading: "Summary"
+        body: "- Triage: {case_dir}/finding_summary.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "SAST scan complete — {case_dir}"

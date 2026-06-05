@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}{{ rule.id }} — Rules{% endblock %}
+{% block head %}
+<style>
+    pre { tab-size: 4; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+        <i data-lucide="{{ rule.format_meta.icon or 'shield' }}" class="w-6 h-6 text-indigo-400"></i>
+        <h1 class="text-xl font-semibold">{{ rule.title }}</h1>
+        <span class="text-xs font-mono text-gray-500">{{ rule.id }}</span>
+    </div>
+    <div class="flex gap-2">
+        {% if rule.format in ('nuclei', 'yara', 'semgrep') %}
+        <button onclick="openScanModal()" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 rounded text-sm flex items-center gap-1">
+            <i data-lucide="play" class="w-4 h-4"></i> Scan
+        </button>
+        {% endif %}
+        <a href="/rules/{{ rule.format }}/{{ rule.id }}/edit" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Edit</a>
+        <a href="/rules" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">&larr; All Rules</a>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Format</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.format_meta.label or rule.format }}</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Severity</p>
+        <p class="text-sm font-medium" style="color: {{ {'critical':'#ef4444','high':'#f97316','medium':'#eab308','low':'#22c55e','info':'#6b7280'}.get(rule.severity, '#6b7280') }}">{{ rule.severity|capitalize }}</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Author</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.author or 'Unknown' }}</p>
+    </div>
+    {% if rule.language %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Language</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.language }}</p>
+    </div>
+    {% endif %}
+    {% if rule.family %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Family</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.family }}</p>
+    </div>
+    {% endif %}
+    {% if rule.protocols %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Protocols</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.protocols | join(', ') }}</p>
+    </div>
+    {% endif %}
+    {% if rule.rule_count %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Rules in file</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.rule_count }}</p>
+    </div>
+    {% endif %}
+    {% if rule.string_count is defined %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <p class="text-xs text-gray-500">Strings</p>
+        <p class="text-sm font-medium text-gray-200">{{ rule.string_count }}</p>
+    </div>
+    {% endif %}
+</div>
+
+{% if rule.description %}
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-6">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Description</h2>
+    <p class="text-sm text-gray-300">{{ rule.description }}</p>
+</div>
+{% endif %}
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+    <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Source</h2>
+        <span class="text-xs text-gray-600">{{ rule.relpath }}</span>
+    </div>
+    <pre class="bg-gray-950 text-gray-300 text-sm p-4 rounded overflow-x-auto" style="max-height: 70vh;"><code>{{ rule.raw }}</code></pre>
+</div>
+
+{% if rule.format in ('nuclei', 'yara', 'semgrep') %}
+<!-- Scan Modal -->
+<div id="scanModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+    <div class="bg-gray-900 rounded-xl border border-gray-700 p-6 w-full max-w-lg mx-4">
+        <h2 class="text-lg font-semibold mb-4">Scan with {{ rule.format }} rule</h2>
+        <p class="text-sm text-gray-400 mb-4">Rule: <code class="text-indigo-400">{{ rule.id }}</code></p>
+        <label class="block text-sm text-gray-300 mb-1">
+            {% if rule.format == 'nuclei' %}Target URL{% elif rule.format == 'yara' %}Target file/directory{% else %}Target path{% endif %}
+        </label>
+        <input id="scanTarget" type="text" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-4"
+               placeholder="{% if rule.format == 'nuclei' %}https://example.com{% elif rule.format == 'yara' %}/path/to/scan{% else %}/path/to/code{% endif %}">
+        <div class="flex gap-2 justify-end">
+            <button onclick="closeScanModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Cancel</button>
+            <button onclick="startScan()" class="bg-emerald-700 hover:bg-emerald-600 px-4 py-2 rounded text-sm">Start Scan</button>
+        </div>
+        <div id="scanResult" class="mt-4 hidden">
+            <hr class="border-gray-700 mb-3">
+            <p id="scanStatus" class="text-sm text-gray-300"></p>
+            <pre id="scanOutput" class="bg-gray-950 text-gray-300 text-xs p-3 rounded overflow-x-auto mt-2 max-h-60 overflow-y-auto"></pre>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+function openScanModal() { document.getElementById('scanModal').classList.remove('hidden'); }
+function closeScanModal() {
+    document.getElementById('scanModal').classList.add('hidden');
+    document.getElementById('scanResult').classList.add('hidden');
+}
+
+async function startScan() {
+    const target = document.getElementById('scanTarget').value.trim();
+    if (!target) { alert('Please enter a target'); return; }
+    const btn = document.querySelector('#scanModal .bg-emerald-700');
+    btn.disabled = true; btn.textContent = 'Scanning...';
+    document.getElementById('scanResult').classList.remove('hidden');
+    document.getElementById('scanStatus').textContent = 'Starting scan...';
+    document.getElementById('scanOutput').textContent = '';
+
+    try {
+        const r = await fetch('/api/rules/{{ rule.format }}/{{ rule.id }}/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target })
+        });
+        const data = await r.json();
+        if (data.job_id) {
+            document.getElementById('scanStatus').textContent = 'Scan queued. Polling for results...';
+            pollJob(data.job_id);
+        } else {
+            document.getElementById('scanStatus').textContent = 'Error: ' + (data.error || 'Unknown');
+            btn.disabled = false; btn.textContent = 'Start Scan';
+        }
+    } catch(e) {
+        document.getElementById('scanStatus').textContent = 'Error: ' + e.message;
+        btn.disabled = false; btn.textContent = 'Start Scan';
+    }
+}
+
+async function pollJob(jobId) {
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+            const r = await fetch('/api/jobs/' + jobId, {
+                headers: {}
+            });
+            const job = await r.json();
+            document.getElementById('scanStatus').textContent =
+                '[' + job.status + '] ' + (job.message || '');
+            if (job.status === 'completed') {
+                const result = job.result || {};
+                const out = result.matches ? result.matches.map(m => m.rule + ' → ' + m.file).join('\n')
+                    : result.findings ? result.findings.map(f => JSON.stringify(f, null, 2)).join('\n')
+                    : JSON.stringify(result, null, 2);
+                document.getElementById('scanOutput').textContent = out || 'No results';
+                break;
+            }
+            if (job.status === 'failed') {
+                document.getElementById('scanOutput').textContent = job.error || 'Unknown error';
+                break;
+            }
+        } catch(e) {
+            document.getElementById('scanStatus').textContent = 'Poll error: ' + e.message;
+        }
+    }
+    document.querySelector('#scanModal .bg-emerald-700').disabled = false;
+    document.querySelector('#scanModal .bg-emerald-700').textContent = 'Start Scan';
+}
+</script>
+{% endblock %}

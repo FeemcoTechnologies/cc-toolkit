@@ -1,0 +1,403 @@
+title: CCCS
+description: Certified Cyber Compliance Specialist — compliance frameworks, risk management, auditing, policy, privacy, BCP/DR
+cards:
+- question: What is PCI DSS?
+  answer: Payment Card Industry Data Security Standard — 12 requirements for cardholder data security
+- question: How many requirements are in PCI DSS v4.0?
+  answer: 12 requirements across 6 control objectives
+- question: What is the PCI DSS build and maintain a secure network requirement?
+  answer: 'Requirement 1: Install and maintain firewall configuration; Requirement 2: Change vendor...'
+- question: What is the PCI DSS protect cardholder data requirement?
+  answer: 'Requirement 3: Protect stored cardholder data; Requirement 4: Encrypt transmission'
+- question: What is the PCI DSS vulnerability management requirement?
+  answer: 'Requirement 5: Use and update anti-malware; Requirement 6: Develop secure systems'
+- question: What is the PCI DSS access control requirement?
+  answer: 'Requirement 7: Restrict access by need-to-know; Requirement 8: Unique IDs; Requirement 9:...'
+- question: What is the PCI DSS monitoring requirement?
+  answer: 'Requirement 10: Track and monitor all access; Requirement 11: Regular testing'
+- question: What is the PCI DSS policy requirement?
+  answer: 'Requirement 12: Maintain information security policy'
+- question: What is the CDE (Cardholder Data Environment)?
+  answer: The people, processes, and technology that store, process, or transmit cardholder data
+- question: What is a SAQ (Self-Assessment Questionnaire)?
+  answer: Simplified PCI DSS validation for lower-volume merchants
+- question: What is an ASV (Approved Scanning Vendor)?
+  answer: External scanning company certified by PCI SSC to scan for vulnerabilities
+- question: What is a QSA (Qualified Security Assessor)?
+  answer: Company certified by PCI SSC to perform on-site PCI DSS assessments
+- question: What is the HIPAA Privacy Rule?
+  answer: Establishes standards for protected health information (PHI) use and disclosure
+- question: What is the HIPAA Security Rule?
+  answer: Requires administrative, physical, and technical safeguards for ePHI
+- question: What is the HIPAA Breach Notification Rule?
+  answer: Requires notification of PHI breaches within 60 days (or 72 for some states)
+- question: What are the three HIPAA safeguard categories?
+  answer: Administrative, Physical, Technical
+- question: What is a BAA (Business Associate Agreement)?
+  answer: HIPAA agreement required between covered entities and business associates handling PHI
+- question: What is SOC 2?
+  answer: Service Organization Control 2 — reports on controls for security, availability, processing...
+- question: What are the SOC 2 Trust Services Criteria?
+  answer: Security (common criteria), Availability, Processing Integrity, Confidentiality, Privacy
+- question: What is the difference between SOC 2 Type I and Type II?
+  answer: 'Type I: controls designed as of a point in time; Type II: controls operating effectively...'
+- question: What is ISO 27001?
+  answer: International standard for Information Security Management Systems (ISMS)
+- question: What is the ISMS (Information Security Management System)?
+  answer: Systematic approach to managing sensitive company information per ISO 27001
+- question: What is the PDCA cycle in ISO 27001?
+  answer: Plan → Do → Check → Act (continuous improvement cycle)
+- question: What are ISO 27002 controls?
+  answer: Reference set of 93 (recently 114) Annex A controls for ISO 27001 implementation
+- question: What is ISO 27001 certification?
+  answer: Third-party audit certifying the organization's ISMS meets the standard
+- question: What is GDPR?
+  answer: General Data Protection Regulation — EU law on data protection and privacy
+- question: What are GDPR data subject rights?
+  answer: Access, rectification, erasure, restriction, portability, object, automated decision-making
+- question: What is the GDPR breach notification timeline?
+  answer: 72 hours to notify supervisory authority
+- question: What is a DPO (Data Protection Officer)?
+  answer: Mandatory GDPR role for organizations processing large-scale special category data
+- question: What is a DPIA (Data Protection Impact Assessment)?
+  answer: GDPR requirement to assess privacy risks for high-risk processing activities
+- question: What are the lawful bases for processing under GDPR?
+  answer: Consent, contract, legal obligation, vital interests, public task, legitimate interests
+- question: What are SCCs (Standard Contractual Clauses)?
+  answer: GDPR-approved contracts for international data transfers
+- question: What is the NIST Cybersecurity Framework (CSF)?
+  answer: 'Framework of five functions: Identify, Protect, Detect, Respond, Recover'
+- question: What are the five NIST CSF functions?
+  answer: Identify, Protect, Detect, Respond, Recover
+- question: What is NIST SP 800-53?
+  answer: 'Security and privacy controls for federal information systems (800-53 rev 5: ~1000 controls)'
+- question: What is FedRAMP?
+  answer: Federal Risk and Authorization Management Program — standardized cloud security assessment
+- question: What is a risk assessment?
+  answer: Systematic identification, estimation, and prioritization of risks
+- question: What is NIST SP 800-30?
+  answer: Guide for conducting risk assessments (9-step process)
+- question: What is the OCTAVE risk assessment methodology?
+  answer: Operationally Critical Threat, Asset, and Vulnerability Evaluation — self-directed risk...
+- question: What is the FAIR risk analysis model?
+  answer: Factor Analysis of Information Risk — quantitative risk analysis
+- question: What is inherent risk?
+  answer: Risk level before any controls are applied
+- question: What is residual risk?
+  answer: Risk remaining after controls are implemented
+- question: What is risk appetite?
+  answer: Amount of risk an organization is willing to accept
+- question: What is risk tolerance?
+  answer: Specific acceptable deviation from risk appetite per risk type
+- question: What are the four risk treatment options?
+  answer: Avoid (eliminate), Transfer (insure/outsource), Mitigate (control), Accept (acknowledge)
+- question: What is DREAD risk scoring?
+  answer: Damage, Reproducibility, Exploitability, Affected Users, Discoverability
+- question: What is CVSS (Common Vulnerability Scoring System)?
+  answer: Standardized vulnerability severity scoring (0-10)
+- question: What are the CVSS 3.x metric groups?
+  answer: Base, Temporal, Environmental
+- question: What is a BIA (Business Impact Analysis)?
+  answer: Determines criticality of business functions and resource requirements
+- question: What is RTO (Recovery Time Objective)?
+  answer: Maximum acceptable time to restore a function after disruption
+- question: What is RPO (Recovery Point Objective)?
+  answer: Maximum acceptable data loss measured in time
+- question: What is MTD (Maximum Tolerable Downtime)?
+  answer: Total time a business function can be unavailable before causing irreparable harm
+- question: What are the phases of an audit?
+  answer: Planning → Fieldwork (testing) → Reporting → Follow-up
+- question: What is control testing?
+  answer: Evaluating if controls are designed and operating effectively
+- question: What is design effectiveness?
+  answer: The control, if operating as designed, would prevent/detect the risk
+- question: What is operating effectiveness?
+  answer: The control actually operates as designed over the audit period
+- question: What is evidence sampling?
+  answer: Selecting a subset of evidence to infer overall control effectiveness
+- question: What is a material weakness (SOX)?
+  answer: A deficiency that could result in material misstatement of financial reports
+- question: What is a significant deficiency (SOX)?
+  answer: Less severe than material weakness but still notable for oversight
+- question: What is SOX (Sarbanes-Oxley Act)?
+  answer: US law requiring internal controls over financial reporting (ICFR)
+- question: What is SOX Section 404?
+  answer: Requires management assessment and auditor attestation of internal controls
+- question: What is a security policy?
+  answer: High-level document stating management's intent and direction for security
+- question: What is a security standard?
+  answer: Mandatory specific controls or requirements (e.g., AES-256 encryption standard)
+- question: What is a security procedure?
+  answer: Step-by-step instructions for performing a task (e.g., account creation procedure)
+- question: What is a security guideline?
+  answer: Recommended (not mandatory) best practices
+- question: What is the policy lifecycle?
+  answer: Draft → Review → Approve → Communicate → Implement → Monitor → Review/Update
+- question: What is an Acceptable Use Policy (AUP)?
+  answer: Defines acceptable use of company IT resources
+- question: What is a data classification policy?
+  answer: Defines categories for data sensitivity (e.g., Public, Internal, Confidential, Restricted)
+- question: What is an Incident Response Policy?
+  answer: 'Establishes the IR framework: detection, containment, eradication, recovery'
+- question: What is a BCP (Business Continuity Plan)?
+  answer: Plan for maintaining business functions during and after a disruption
+- question: What is a DRP (Disaster Recovery Plan)?
+  answer: Technical plan for restoring IT systems after a disaster
+- question: What is the difference between BCP and DRP?
+  answer: BCP covers business functions; DRP is the IT recovery subset
+- question: What are hot/warm/cold sites?
+  answer: 'Hot: fully operational ready immediately; Warm: partially ready; Cold: empty facility'
+- question: What is a tabletop exercise?
+  answer: Discussion-based exercise testing plans and procedures without actual system failover
+- question: What is a third-party risk management (TPRM)?
+  answer: Process of identifying, assessing, and mitigating risks from vendors and partners
+- question: What is a vendor risk assessment questionnaire?
+  answer: Standardized questions to evaluate vendor security posture (SIG, CAIQ)
+- question: What is the Standardized Information Gathering (SIG) questionnaire?
+  answer: Industry-standard vendor security questionnaire by Shared Assessments
+- question: What is the CAIQ (Consensus Assessments Initiative Questionnaire)?
+  answer: CSA questionnaire for cloud vendor security assessment
+- question: What are vendor risk tiers?
+  answer: Categorization of vendors by data access and criticality (Tier 1 = high risk)
+- question: What is right to audit in a vendor contract?
+  answer: Clause allowing the customer to audit the vendor's security controls
+- question: What is an SLA (Service Level Agreement)?
+  answer: Contractual terms for service performance (uptime, response time, resolution time)
+- question: What is PII (Personally Identifiable Information)?
+  answer: Information that can identify a specific individual (name, SSN, email, IP)
+- question: What is PHI (Protected Health Information)?
+  answer: Health information linked to an individual (HIPAA protected)
+- question: What is PCI (Payment Card Information)?
+  answer: Cardholder data (PAN, expiration, CVV) — PCI DSS protected
+- question: What is a data inventory/map?
+  answer: Documentation of what data exists, where it's stored, how it flows
+- question: What is a data retention schedule?
+  answer: Policy specifying how long each data type is kept and when it is destroyed
+- question: What is a DSAR (Data Subject Access Request)?
+  answer: Request by an individual to access their personal data (GDPR right)
+- question: What is privacy by design?
+  answer: Building privacy into systems from the start rather than retrofitting
+- question: What is cookie compliance?
+  answer: GDPR ePrivacy requirement for website cookie consent banners
+- question: What is consent management?
+  answer: System for obtaining, recording, and honoring user privacy preferences
+- question: What is CMMC (Cybersecurity Maturity Model Certification)?
+  answer: US DOD framework for defense contractor cybersecurity (Levels 1-5)
+- question: What is GLBA (Gramm-Leach-Bliley Act)?
+  answer: US law requiring financial institutions to protect consumer financial information
+- question: What is FISMA (Federal Information Security Management Act)?
+  answer: US law requiring federal agencies to implement information security programs
+- question: What is the SEC cybersecurity disclosure rule?
+  answer: Requires public companies to disclose material cybersecurity incidents and policies
+- question: What are state breach notification laws?
+  answer: US state laws requiring notification of data breaches (vary by state, 50 states)
+- question: What is a GRC tool?
+  answer: Governance, Risk, and Compliance platform for managing policies, risks, audits, and issues
+- question: What are the key features of a GRC tool?
+  answer: Policy management, risk register, control testing, issue tracking, vendor management, reporting
+- question: What is Archer?
+  answer: RSA Archer — enterprise GRC platform (risk management, policy, audit)
+- question: What is ServiceNow GRC?
+  answer: ServiceNow platform's GRC module (risk, policy, vendor, compliance management)
+- question: What is OneTrust?
+  answer: Privacy management platform (cookie consent, DSAR, data mapping, DPIA)
+- question: What is AuditBoard?
+  answer: Cloud-based audit, risk, and compliance platform
+- question: What is a compliance audit?
+  answer: Systematic check that processes and controls meet regulatory/compliance requirements
+- question: What is an internal audit?
+  answer: Audit conducted by the organization's own internal audit function
+- question: What is an external audit?
+  answer: Audit conducted by an independent third party
+- question: What is the audit evidence standard?
+  answer: Sufficient, appropriate evidence to support the audit opinion
+- question: What is a finding in an audit?
+  answer: Gap between current state and required/expected state
+- question: What is a finding severity rating?
+  answer: 'Classification: critical, high, medium, low (or similar) based on risk'
+- question: What is a remediation plan?
+  answer: Documented steps to address audit findings with owners and deadlines
+- question: What is a risk register?
+  answer: Central repository of identified risks with scores, owners, and treatment plans
+- question: What is quantitative risk analysis?
+  answer: Risk analysis using numerical values (ALE, SLE, ARO, exposure factor)
+- question: What is SLE (Single Loss Expectancy)?
+  answer: Asset Value × Exposure Factor (expected loss from a single event)
+- question: What is ARO (Annualized Rate of Occurrence)?
+  answer: Expected number of loss events per year
+- question: What is ALE (Annualized Loss Expectancy)?
+  answer: SLE × ARO (expected annual loss from a risk)
+- question: What is qualitative risk analysis?
+  answer: Risk analysis using descriptive scales (high/medium/low) instead of numbers
+- question: What is a risk matrix?
+  answer: Grid of likelihood × impact used to prioritize risks
+- question: What is ISO 27005?
+  answer: Standard for information security risk management
+- question: What is ISO 27701?
+  answer: Privacy extension to ISO 27001 for Privacy Information Management
+- question: What is ISO 22301?
+  answer: Standard for Business Continuity Management Systems
+- question: What is the three lines of defense model?
+  answer: '1st: Operational management; 2nd: Compliance/Risk; 3rd: Internal Audit'
+- question: What is PCI DSS Requirement 9?
+  answer: Restrict physical access to cardholder data
+- question: What is PCI DSS Requirement 10?
+  answer: Track and monitor all access to cardholder data and systems
+- question: What is PCI DSS Requirement 11?
+  answer: Regularly test security systems and processes
+- question: What is PCI DSS Requirement 12?
+  answer: Maintain a policy addressing information security
+- question: What is a SOC 2 Type I report?
+  answer: Report on design of controls at a specific point in time
+- question: What is a SOC 2 Type II report?
+  answer: Report on operating effectiveness of controls over a period (typically 6-12 months)
+- question: What is a SOC 3 report?
+  answer: Publicly available summary of a SOC 2 Type II report (no confidential details)
+- question: What is the SOC 2 common criteria?
+  answer: 'The security criteria applicable to all SOC 2 engagements: CC1-CC9'
+- question: What is a control objective?
+  answer: Statement of the desired outcome of a control
+- question: What is compensating control?
+  answer: Alternate control that achieves the same objective when primary control cannot be applied
+- question: What is a segregation of duties (SoD) violation?
+  answer: When one person controls two conflicting functions (e.g., access + approval)
+- question: What is phishing simulation?
+  answer: Sending simulated phishing emails to train employees to recognize threats
+- question: What is the CIS Critical Security Controls?
+  answer: Prioritized set of 18 controls for cybersecurity defense
+- question: What is NIST 800-171?
+  answer: Protecting Controlled Unclassified Information (CUI) in non-federal systems
+- question: What is a corporate security policy?
+  answer: Board-level document setting the security direction and responsibilities
+- question: What is the minimum password length in PCI DSS?
+  answer: 7 characters (Requirement 8)
+- question: What PCI DSS requirement covers encryption of cardholder data?
+  answer: Requirement 4 — encrypt transmission of cardholder data across open networks
+- question: What is network segmentation in PCI DSS?
+  answer: Isolating the CDE from the rest of the network to reduce scope
+- question: What is the PCI DSS scoping process?
+  answer: Identify CDE, identify connected systems, apply controls to all in-scope systems
+- question: What is a PCI DSS ASV scan frequency?
+  answer: Quarterly external ASV scans and after any significant network change
+- question: What is a PCI DSS penetration testing requirement?
+  answer: Annual penetration testing (Requirement 11) and after significant changes
+- question: What is the PCI DSS change control process?
+  answer: Requirement 6 — documented change control for all system and network changes
+- question: What is the ISO 27001 clause structure?
+  answer: Clauses 0-3, Clause 4, 5, 6, 7, 8, 9, 10
+- question: What is an ISO 27001 Statement of Applicability (SoA)?
+  answer: Document listing which Annex A controls are implemented and justification for exclusions
+- question: What is an ISO 27001 internal audit?
+  answer: Internal audit of ISMS at planned intervals to verify compliance
+- question: What is an ISO 27001 management review?
+  answer: Top management review of ISMS at planned intervals for suitability and effectiveness
+- question: What are the ISO 27001 Annex A control domains?
+  answer: '14 domains: Information Security Policies, Organization, HR, Asset Mgmt, Access Control,...'
+- question: What is a HIPAA breach?
+  answer: Unauthorized acquisition, access, use, or disclosure of PHI compromising its security or...
+- question: What are HIPAA sanctions?
+  answer: 'Tiered civil penalties: $100-$50,000 per violation, up to $1.5M per year per standard'
+- question: What is a HIPAA authorization?
+  answer: Written permission from patient to use/disclose PHI for purposes other than treatment,...
+- question: What is the HIPAA minimum necessary standard?
+  answer: Only the minimum PHI necessary for the intended purpose should be used or disclosed
+- question: What is FedRAMP JAB?
+  answer: Joint Authorization Board — reviews FedRAMP packages and grants provisional authorization
+- question: What are FedRAMP impact levels?
+  answer: Low (limited impact), Moderate (serious adverse), High (severe/catastrophic)
+- question: What is a FedRAMP 3PAO?
+  answer: Third Party Assessment Organization — accredited to assess cloud services for FedRAMP
+- question: What is the NIST SP 800-53 control baseline?
+  answer: Minimum security controls for low, moderate, and high impact systems
+- question: What is NIST SP 800-53 rev 5?
+  answer: 'Latest revision: 20 control families, ~1,000 controls, privacy integration'
+- question: What is NIST SP 800-37 (RMF)?
+  answer: 'Risk Management Framework: Prepare → Categorize → Select → Implement → Assess → Authorize →...'
+- question: What is a Plan of Action and Milestones (POA&M)?
+  answer: Document tracking remediation of security weaknesses with responsible parties and dates
+- question: What is the NIST privacy framework?
+  answer: 'Core functions: Identify → Govern → Control → Communicate → Protect'
+- question: What is the SOC 2 point-in-time report?
+  answer: Type I report — controls were suitably designed as of a specific date
+- question: What is the SOC 2 period-of-time report?
+  answer: Type II report — controls operated effectively over a specified period
+- question: What is a SOC 2 bridge letter?
+  answer: Management letter covering the period since the last Type II report
+- question: What is the SOC 2 common criteria CC1?
+  answer: Control Environment — integrity, ethical values, board oversight
+- question: What is the SOC 2 common criteria CC2?
+  answer: Communication and Information — internal communication, whistleblower, communication with...
+- question: What is the SOC 2 common criteria CC3?
+  answer: Risk Assessment — risk identification and management
+- question: What is the SOC 2 common criteria CC4?
+  answer: Monitoring Activities — ongoing monitoring and separate evaluations
+- question: What is the SOC 2 common criteria CC5?
+  answer: Control Activities — policies and procedures that enforce management directives
+- question: What is the SOC 2 common criteria CC6?
+  answer: Logical and Physical Access Controls — access restrictions to assets and data
+- question: What is the SOC 2 common criteria CC7?
+  answer: System Operations — change management, incident response, monitoring
+- question: What is the SOC 2 common criteria CC8?
+  answer: Change Management — system changes are authorized, tested, and documented
+- question: What is the SOC 2 common criteria CC9?
+  answer: Risk Mitigation — vendor risk, business continuity, disaster recovery
+- question: What is GLBA compliance?
+  answer: Financial Privacy Rule, Safeguards Rule, Pretexting Protection — annual privacy notices...
+- question: What is a GLBA opt-out right?
+  answer: Consumers can opt out of having their nonpublic personal information shared with third parties
+- question: What is FERPA?
+  answer: Family Educational Rights and Privacy Act — protects student education records
+- question: What is COPPA?
+  answer: Children's Online Privacy Protection Act — parental consent for collecting data from...
+- question: What is PIPEDA?
+  answer: Canada's Personal Information Protection and Electronic Documents Act
+- question: What is LGPD?
+  answer: Brazil's General Data Protection Law — similar to GDPR
+- question: What is CCPA?
+  answer: California Consumer Privacy Act — right to know, delete, opt-out of sale of personal...
+- question: What is CPRA?
+  answer: California Privacy Rights Act — expanded CCPA with sensitive data categories and purpose...
+- question: What is the NYDFS Cybersecurity Regulation?
+  answer: 23 NYCRR 500 — New York financial services cybersecurity requirements
+- question: What is a risk control matrix?
+  answer: Document mapping risks to controls, control types, and control owners
+- question: What is a RACI matrix?
+  answer: Responsible, Accountable, Consulted, Informed — defines roles for tasks
+- question: What is the ISO 31000 risk management framework?
+  answer: Principles → Framework → Process for risk management
+- question: What is a risk owner?
+  answer: Person accountable for managing a specific risk to acceptable level
+- question: What is a control owner?
+  answer: Person responsible for operating a specific control
+- question: What is inherent vs residual risk calculation?
+  answer: Inherent = likelihood × impact before controls; Residual = after controls
+- question: What is a risk acceptance?
+  answer: Formal decision to accept a risk without further treatment
+- question: What is a risk exception?
+  answer: Temporary acceptance of a risk due to business necessity, with expiration date
+- question: What is a risk register review cadence?
+  answer: Typically quarterly review, with new risks added as identified
+- question: What is an audit program?
+  answer: 'Documented plan for a specific audit: objectives, scope, criteria, resources, procedures'
+- question: What is an audit checklist?
+  answer: List of control questions and requirements tested during fieldwork
+- question: What is an audit workpaper?
+  answer: Documentation of audit evidence, testing performed, and conclusions
+- question: What is an audit finding rating?
+  answer: 'Based on risk: Critical (immediate threat), High (significant), Medium (moderate), Low (minor)'
+- question: What is management response to a finding?
+  answer: Written commitment from management with remediation plan and timeline
+- question: What is an audit follow-up?
+  answer: Verifying that corrective actions were implemented and effective
+- question: What is a compliance obligation?
+  answer: Legal, regulatory, or contractual requirement that must be met
+- question: What is a control deficiency?
+  answer: A control is missing or not designed/operating effectively
+- question: What is a compensating control evaluation?
+  answer: Assessing if alternate controls achieve the same objective with acceptable rigor
+- question: What is a corporate security awareness program?
+  answer: Ongoing training to educate employees on security policies and threats
+- question: What is a phishing simulation program?
+  answer: Regular simulated phishing campaigns to measure and improve user awareness
+- question: What is the role of a Data Protection Officer (DPO)?
+  answer: Oversees data protection strategy and GDPR compliance for an organization

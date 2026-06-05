@@ -1,0 +1,48 @@
+title: Purple Team Exercise Plan
+description: Design and execute a purple team exercise — adversary emulation against defensive detection, with metrics on detection coverage, response time, and telemetry gaps.
+tags: [purple-team, adversary-emulation, detection, ato]
+prompt: >
+  Design a purple team exercise for {organization}.
+
+  ## Exercise Parameters
+  - Organization: {organization}
+  - Duration: {duration} days
+  - Attack scenarios: {scenarios} (e.g., ransomware deployment, credential theft, data exfiltration)
+  - Detection tools: {detection_tools} (SIEM / EDR / NDR / WAF / etc.)
+  - Purple team lead: {purple_lead}
+  - Blue team contacts: {blue_contacts}
+
+  ## Exercise Structure
+
+  ### Day 1: Planning & Setup
+  - Define scenarios with MITRE ATT&CK mappings
+  - Configure telemetry collection and measurement
+  - Establish comms channels and escalation paths
+  - Agree on abort criteria
+
+  ### Day 2-4: Execution (per scenario)
+  For each scenario, execute this cycle:
+  1. **Brief** — describe the TTPs to both teams, expected detections
+  2. **Execute** — run adversary emulation playbook (C2, lateral movement, persistence, exfil)
+  3. **Detect** — blue team identifies and responds; record detection time, coverage, and gaps
+  4. **Debrief** — review detections, missed alerts, telemetry gaps
+  5. **Improve** — create detection rules, alert tuning tasks for gaps found
+
+  ### Attack Scenarios to Cover
+  1. **Initial Access** — spear-phish with macro, password spray, exploit public-facing app
+  2. **Persistence** — scheduled task, WMI subscription, registry Run key, service creation
+  3. **Credential Access** — Mimikatz LSASS dump, Kerberoasting, DCSync simulation
+  4. **Lateral Movement** — SMB/PsExec, WinRM, WMI, RDP, SSH key abuse
+  5. **C2** — HTTPS beaconing, DNS tunneling, domain fronting, C2 profile rotation
+  6. **Exfiltration** — large outbound data transfer, cloud API upload, DNS exfil
+
+  ## Metrics to Track
+  - Detection coverage (% of TTPs detected within 1/5/30 minutes)
+  - Mean time to detect (MTTD) per TTP category
+  - Mean time to respond (MTTR)
+  - False positive rate during exercise
+  - Telemetry sources that were most/least valuable
+  - Detection rule coverage gap analysis
+
+  ## Output
+  Create a case with tasks for each phase, timeline entries per attack execution, and a purple team report with metrics, detection gaps, recommended Sigma/YARA rules, and SIEM tuning guidance.

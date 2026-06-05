@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ case.case_id }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+        <i data-lucide="edit" class="w-6 h-6 text-indigo-400"></i>
+        <h1 class="text-xl font-semibold">Edit {{ case.case_id }}</h1>
+        <span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{{ case.type }}</span>
+    </div>
+    <a href="/case/{{ case.case_id }}" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">&larr; Back to Dashboard</a>
+</div>
+
+<form id="case-edit-form" class="space-y-6" onsubmit="saveMeta(); return false">
+    <!-- Status -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-300 mb-2">Status</h2>
+        <select name="status" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-full max-w-xs">
+            <option value="open" {% if case.status == 'open' %}selected{% endif %}>Open</option>
+            <option value="pending" {% if case.status == 'pending' %}selected{% endif %}>Pending</option>
+            <option value="on-hold" {% if case.status == 'on-hold' %}selected{% endif %}>On Hold</option>
+            <option value="closed" {% if case.status == 'closed' %}selected{% endif %}>Closed</option>
+        </select>
+    </div>
+
+    <!-- Executive Summary -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-300 mb-2">Executive Summary</h2>
+        <textarea name="executive_summary" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[100px]" placeholder="Executive summary text...">{{ case.executive_summary or '' }}</textarea>
+    </div>
+
+    <!-- Key Observations -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-300 mb-2">Key Observations</h2>
+        <textarea name="key_observations" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[80px]" placeholder="Key observations...">{{ case.key_observations or '' }}</textarea>
+    </div>
+
+    <!-- Recommendations -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-300 mb-2">Recommendations</h2>
+        <textarea name="recommendations" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[80px]" placeholder="Recommendations...">{{ case.recommendations or '' }}</textarea>
+    </div>
+
+    <!-- Strengths -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-green-400 mb-2">Strengths</h2>
+        <div id="strengths-list" class="space-y-1 mb-2">
+            {% for s in (case.strengths or []) %}
+            <div class="flex items-center gap-2 text-sm text-gray-300 bg-gray-800 rounded px-2 py-1">
+                <span class="flex-1">{{ s }}</span>
+                <button type="button" onclick="removeStrength(this)" class="text-red-400 hover:text-red-300 text-xs">&times;</button>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="flex gap-2">
+            <input id="strength-input" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm flex-1" placeholder="Add a strength...">
+            <button type="button" onclick="addStrength()" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm">Add</button>
+        </div>
+    </div>
+
+    <!-- Weaknesses -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-red-400 mb-2">Weaknesses</h2>
+        <div id="weaknesses-list" class="space-y-1 mb-2">
+            {% for w in (case.weaknesses or []) %}
+            <div class="flex items-center gap-2 text-sm text-gray-300 bg-gray-800 rounded px-2 py-1">
+                <span class="flex-1">{{ w }}</span>
+                <button type="button" onclick="removeWeakness(this)" class="text-red-400 hover:text-red-300 text-xs">&times;</button>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="flex gap-2">
+            <input id="weakness-input" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm flex-1" placeholder="Add a weakness...">
+            <button type="button" onclick="addWeakness()" class="bg-red-700 hover:bg-red-600 px-3 py-1 rounded text-sm">Add</button>
+        </div>
+    </div>
+
+    <div class="flex gap-3">
+        <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Save Changes</button>
+        <a href="/case/{{ case.case_id }}" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm">Cancel</a>
+    </div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+async function saveMeta() {
+    const form = document.getElementById('case-edit-form');
+    const data = new FormData(form);
+    const payload = {};
+    data.forEach(function(v, k) { payload[k] = v; });
+    const r = await fetch('/api/case/{{ case.case_id }}/meta', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+    const result = await r.json();
+    if (result.status === 'ok') {
+        window.location.href = '/case/{{ case.case_id }}';
+    } else {
+        alert('Error: ' + (result.error || 'Unknown error'));
+    }
+}
+
+async function addStrength() {
+    const input = document.getElementById('strength-input');
+    if (!input.value.trim()) return;
+    const r = await fetch('/api/case/{{ case.case_id }}/strengths/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: input.value}),
+    });
+    const result = await r.json();
+    if (result.status === 'ok') {
+        location.reload();
+    }
+}
+
+async function removeStrength(btn) {
+    const items = btn.closest('.bg-gray-900').querySelectorAll('#strengths-list > div');
+    let idx = -1;
+    items.forEach(function(el, i) {
+        if (el.contains(btn)) idx = i;
+    });
+    if (idx < 0) return;
+    const r = await fetch('/api/case/{{ case.case_id }}/strengths/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: idx}),
+    });
+    const result = await r.json();
+    if (result.status === 'ok') {
+        location.reload();
+    }
+}
+
+async function addWeakness() {
+    const input = document.getElementById('weakness-input');
+    if (!input.value.trim()) return;
+    const r = await fetch('/api/case/{{ case.case_id }}/weaknesses/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: input.value}),
+    });
+    const result = await r.json();
+    if (result.status === 'ok') {
+        location.reload();
+    }
+}
+
+async function removeWeakness(btn) {
+    const items = btn.closest('.bg-gray-900').querySelectorAll('#weaknesses-list > div');
+    let idx = -1;
+    items.forEach(function(el, i) {
+        if (el.contains(btn)) idx = i;
+    });
+    if (idx < 0) return;
+    const r = await fetch('/api/case/{{ case.case_id }}/weaknesses/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: idx}),
+    });
+    const result = await r.json();
+    if (result.status === 'ok') {
+        location.reload();
+    }
+}
+</script>
+{% endblock %}

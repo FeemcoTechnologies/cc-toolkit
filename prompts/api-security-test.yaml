@@ -1,0 +1,23 @@
+title: API Security Testing
+description: Targeted API security assessment — auth bypasses, injection, rate limiting, mass assignment, and GraphQL introspection.
+tags: [api, web, pentest]
+prompt: >
+  Perform an API security assessment against {api_base_url}.
+
+  ## Scope
+  - Base URL: {api_base_url}
+  - Auth mechanism: {auth_type}
+  - API key / token: {api_token}
+  - Documentation/WSDL/OpenAPI spec: {api_docs}
+  - Endpoints to focus on: {target_endpoints}
+
+  ## Coverage
+  1. Authentication — test for missing auth on endpoints, token validation bypass, JWT attacks (alg none, weak secret, kid injection)
+  2. Authorization — IDOR between users/roles, privilege escalation via parameter tampering
+  3. Input validation — SQL injection in query params/body, NoSQL injection, SSTI, XXE
+  4. Rate limiting — bruteforce protection on login, reset password, and OTP endpoints
+  5. Mass assignment — try injecting unexpected fields in JSON bodies
+  6. GraphQL (if applicable) — introspection query, depth/complexity analysis, batching attacks
+
+  ## Output
+  Create a case with findings per endpoint, proof-of-concept requests (curl commands), and risk ratings.

@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}{{ finding.id }} — {{ case.case_id }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+        <i data-lucide="bug" class="w-6 h-6 text-indigo-400"></i>
+        <h1 class="text-xl font-semibold">{{ finding.id }} — {{ finding.title }}</h1>
+    </div>
+    <div class="flex gap-2">
+        <a href="/findings" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">All Findings</a>
+        <a href="/case/{{ case.case_id }}" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Dashboard</a>
+        <a href="/case/{{ case.case_id }}/board" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Board</a>
+        <button onclick="deleteFinding()" class="bg-red-800 hover:bg-red-700 px-3 py-1.5 rounded text-sm">Delete</button>
+    </div>
+</div>
+
+<form id="finding-form" onsubmit="saveFinding(); return false" class="space-y-4">
+    <!-- Title & Status -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="lg:col-span-2 bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">Title</label>
+            <input name="title" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.title }}">
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">Status</label>
+            <select name="status" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
+                <option value="unvalidated" {{ 'selected' if finding.status == 'unvalidated' else '' }}>Unvalidated</option>
+                <option value="validated" {{ 'selected' if finding.status == 'validated' else '' }}>Validated</option>
+                <option value="remediated" {{ 'selected' if finding.status == 'remediated' else '' }}>Remediated</option>
+                <option value="closed_other" {{ 'selected' if finding.status == 'closed_other' else '' }}>Closed (Other)</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Severity & Identifiers -->
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">Severity</label>
+            <select name="severity" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
+                <option value="info" {{ 'selected' if finding.severity == 'info' else '' }}>Info</option>
+                <option value="low" {{ 'selected' if finding.severity == 'low' else '' }}>Low</option>
+                <option value="medium" {{ 'selected' if finding.severity == 'medium' else '' }}>Medium</option>
+                <option value="high" {{ 'selected' if finding.severity == 'high' else '' }}>High</option>
+                <option value="critical" {{ 'selected' if finding.severity == 'critical' else '' }}>Critical</option>
+            </select>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">CVE</label>
+            <input name="cve" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.cve or '' }}" placeholder="CVE-xxxx-xxxx">
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">CWE</label>
+            <input name="cwe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.cwe or '' }}" placeholder="CWE-xxx">
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">Source</label>
+            <input name="source" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.source or '' }}">
+        </div>
+    </div>
+
+    <!-- Description -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="text-xs text-gray-500 block mb-1">Description</label>
+        <textarea name="description" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono min-h-[120px]">{{ finding.description or '' }}</textarea>
+    </div>
+
+    <!-- Impact -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="text-xs text-gray-500 block mb-1">Impact</label>
+        <textarea name="impact" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[80px]">{{ finding.impact or '' }}</textarea>
+    </div>
+
+    <!-- Remediation -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="text-xs text-gray-500 block mb-1">Remediation</label>
+        <textarea name="remediation" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[80px]">{{ finding.remediation or '' }}</textarea>
+    </div>
+
+    <!-- PoC -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="text-xs text-gray-500 block mb-1">Proof of Concept</label>
+        <textarea name="poc" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono min-h-[80px]">{{ finding.poc or '' }}</textarea>
+    </div>
+
+    <!-- References -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="text-xs text-gray-500 block mb-1">References</label>
+        <input name="references" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ (finding.references or []) | join(', ') }}" placeholder="Comma-separated URLs">
+    </div>
+
+    <!-- Evidence links -->
+    {% if finding.evidence_refs %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-300 mb-2">Linked Evidence</h2>
+        <ul class="text-sm space-y-1">
+            {% for ref in (finding.evidence_refs or []) %}
+            <li><a href="/cases/{{ case.case_id }}/evidence/{{ ref }}" class="text-indigo-400 hover:text-indigo-300 underline" target="_blank">{{ ref }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="flex gap-3">
+        <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Save</button>
+        <a href="/case/{{ case.case_id }}/board" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm">Cancel</a>
+    </div>
+    <div id="save-status" class="text-sm text-green-400 hidden">Saved!</div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+async function deleteFinding() {
+    if (!confirm('PERMANENTLY delete this finding? This cannot be undone.')) return;
+    if (!confirm('Are you sure?')) return;
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/finding/{{ finding.id }}/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+        });
+        if (!r.ok) {
+            var txt = await r.text();
+            throw new Error(r.status + ': ' + txt.slice(0, 200));
+        }
+        const result = await r.json();
+        if (result.status === 'deleted') {
+            window.location.href = '/case/{{ case.case_id }}/board';
+        } else {
+            alert('Delete failed: ' + (result.error || 'Unknown error'));
+        }
+    } catch(e) {
+        alert('Delete error: ' + e.message);
+    }
+}
+
+async function saveFinding() {
+    var status = document.getElementById('save-status');
+    try {
+        const form = document.getElementById('finding-form');
+        const data = new FormData(form);
+        const payload = {};
+        data.forEach(function(v, k) {
+            if (k === 'references') {
+                payload[k] = v ? v.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+            } else {
+                payload[k] = v;
+            }
+        });
+        const r = await fetch('/api/case/{{ case.case_id }}/finding/{{ finding.id }}/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) {
+            var txt = await r.text();
+            throw new Error(r.status + ': ' + txt.slice(0, 200));
+        }
+        const result = await r.json();
+        if (result.status === 'ok') {
+            status.textContent = 'Saved!';
+            status.className = 'text-sm text-green-400';
+            status.classList.remove('hidden');
+            setTimeout(function() { status.classList.add('hidden'); }, 2000);
+        } else {
+            status.textContent = 'Error: ' + (result.error || 'Unknown error');
+            status.className = 'text-sm text-red-400';
+            status.classList.remove('hidden');
+        }
+    } catch(e) {
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'text-sm text-red-400';
+        status.classList.remove('hidden');
+    }
+}
+</script>
+{% endblock %}

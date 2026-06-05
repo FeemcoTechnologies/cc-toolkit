@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Debug Log{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="bug" class="w-5 h-5 text-yellow-400"></i> Debug Log
+    </h1>
+    <div class="flex items-center gap-2">
+        <select id="log-level" onchange="loadLog()" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+            <option value="">All levels</option>
+            <option value="ERROR">Errors</option>
+            <option value="WARNING">Warnings</option>
+            <option value="INFO">Info</option>
+            <option value="DEBUG">Debug</option>
+        </select>
+        <button onclick="loadLog()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm flex items-center gap-1">
+            <i data-lucide="refresh-cw" class="w-3 h-3"></i> Refresh
+        </button>
+        <button onclick="flushLog()" class="bg-red-900 hover:bg-red-800 px-3 py-1 rounded text-sm flex items-center gap-1">
+            <i data-lucide="trash-2" class="w-3 h-3"></i> Clear
+        </button>
+    </div>
+</div>
+
+<div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+    <div class="px-3 py-2 border-b border-gray-800 text-xs text-gray-500 flex items-center justify-between">
+        <span>Recent <span id="log-count">0</span> entries</span>
+        <span class="text-gray-600">Server-side errors and warnings appear here automatically</span>
+    </div>
+    <div id="log-entries" class="max-h-[70vh] overflow-y-auto text-xs font-mono">
+        <div class="text-gray-500 p-4 text-center">Loading...</div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function loadLog() {
+    var level = document.getElementById('log-level').value;
+    var url = '/api/debug/log' + (level ? '?level=' + level : '');
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var el = document.getElementById('log-entries');
+            document.getElementById('log-count').textContent = data.total || 0;
+            var entries = data.entries || [];
+            if (!entries.length) {
+                el.innerHTML = '<div class="text-gray-500 p-4 text-center">No log entries' + (level ? ' at this level' : '') + '.</div>';
+                return;
+            }
+            var html = '';
+            entries.forEach(function(e) {
+                var ts = (e[0] || '').substring(11, 19);
+                var lvl = e[1] || 'INFO';
+                var msg = escapeHtml(e[2] || '');
+                var color = lvl === 'ERROR' ? 'text-red-400' : lvl === 'WARNING' ? 'text-yellow-400' : lvl === 'INFO' ? 'text-blue-400' : 'text-gray-500';
+                var bg = lvl === 'ERROR' ? 'bg-red-900/20' : lvl === 'WARNING' ? 'bg-yellow-900/20' : '';
+                html += '<div class="' + bg + ' px-3 py-1.5 border-b border-gray-800/50 flex gap-2">' +
+                    '<span class="text-gray-600 w-16 shrink-0">' + ts + '</span>' +
+                    '<span class="' + color + ' w-12 shrink-0 font-bold">' + lvl + '</span>' +
+                    '<span class="text-gray-300 break-all">' + msg + '</span></div>';
+            });
+            el.innerHTML = html;
+        })
+        .catch(function(e) {
+            document.getElementById('log-entries').innerHTML = '<div class="text-red-400 p-4 text-center">Failed to load: ' + e.message + '</div>';
+        });
+}
+
+function flushLog() {
+    if (!confirm('Clear the debug log ring buffer?')) return;
+    fetch('/api/debug/flush', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function() { loadLog(); })
+        .catch(function(e) { alert('Error: ' + e.message); });
+}
+
+function escapeHtml(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+document.addEventListener('DOMContentLoaded', loadLog);
+</script>
+{% endblock %}

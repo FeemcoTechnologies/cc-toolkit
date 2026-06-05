@@ -1,0 +1,397 @@
+# v3 runbook — multi-provider cloud enumeration
+# AWS, Azure, GCP, IBM Cloud, Akamai, Oracle Cloud (OCI), Alibaba Cloud (Aliyun), DigitalOcean, Vultr, Linode, Hetzner
+name: "Multi-Provider Cloud Enumeration"
+description: "Enumerate public cloud assets across AWS, Azure, GCP, IBM Cloud, Akamai, OCI, Alibaba Cloud, DigitalOcean, Vultr, Linode, and Hetzner — buckets, blobs, CDN, DNS, compute, and managed services"
+version: "3.0"
+
+vars:
+  cloud_provider: ""
+  cloud_org: ""
+  akamai_edgerc: ""
+  ibm_api_key: ""
+  oci_config: ""
+  alibaba_access_key: ""
+  digitalocean_token: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "Cloud enumeration for {target} on {cloud_provider} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: DNS / subdomain discovery (all providers) ----
+  - id: dns_recon
+    name: "Subdomain & DNS enumeration"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: subfinder
+        name: "Subfinder"
+        tool: subfinder
+        args: ["-silent", "-d", "{target}", "-o", "{case_dir}/cloud-subdomains.txt"]
+        timeout: 120
+        artifacts: ["{case_dir}/cloud-subdomains.txt"]
+
+      - id: dnsrecon
+        name: "DNS record types"
+        tool: dnsrecon
+        args: ["-d", "{target}", "-t", "std", "--csv", "{case_dir}/dnsrecon.csv"]
+        timeout: 120
+        artifacts: ["{case_dir}/dnsrecon.csv"]
+
+  # ---- Phase 2: AWS ----
+  - id: aws_enum
+    name: "AWS asset enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "aws"
+    then:
+      - id: aws_checks
+        type: parallel
+        steps:
+          - id: s3scanner
+            name: "S3 bucket enumeration"
+            tool: s3scanner
+            args: ["--buckets-file", "{case_dir}/cloud-subdomains.txt",
+                   "--out-file", "{case_dir}/s3_buckets_found.txt"]
+            timeout: 300
+            artifacts: ["{case_dir}/s3_buckets_found.txt"]
+
+          - id: aws_cloudfront
+            name: "CloudFront distributions"
+            tool: aws
+            args: ["cloudfront", "list-distributions",
+                   "--query", "DistributionList.Items[*].{id:Id,domain:DomainName,origin:Origins.Items[0].DomainName,aliases:Aliases.Items}",
+                   "-o", "{case_dir}/cloudfront_list.txt"]
+            timeout: 60
+
+          - id: aws_s3_ls
+            name: "List accessible S3 buckets"
+            tool: aws
+            args: ["s3", "ls", "--page-size", "100",
+                   "-o", "{case_dir}/aws_s3_buckets.txt"]
+            timeout: 60
+
+  # ---- Phase 3: Azure ----
+  - id: azure_enum
+    name: "Azure asset enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "azure"
+    then:
+      - id: azure_checks
+        type: parallel
+        steps:
+          - id: az_storage
+            name: "Azure Storage accounts"
+            tool: az
+            args: ["storage", "account", "list",
+                   "--query", "[].{name:name,location:location,kind:kind,primaryEndpoint:primaryEndpoints.blob}",
+                   "-o", "{case_dir}/azure_storage_accounts.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/azure_storage_accounts.txt"]
+
+          - id: az_blob_enum
+            name: "Blob container enumeration"
+            tool: curl
+            args: ["-s", "https://{target}.blob.core.windows.net/?comp=list",
+                   "-o", "{case_dir}/azure_blob_list.xml"]
+            timeout: 30
+
+          - id: az_vms
+            name: "Azure VMs"
+            tool: az
+            args: ["vm", "list",
+                   "--query", "[].{name:name,location:location,os:storageProfile.osDisk.osType,publicIPs:publicIPAddress}",
+                   "-o", "{case_dir}/azure_vms.txt"]
+            timeout: 60
+
+  # ---- Phase 4: GCP ----
+  - id: gcp_enum
+    name: "GCP asset enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "gcp"
+    then:
+      - id: gcp_checks
+        type: parallel
+        steps:
+          - id: gcp_storage
+            name: "GCS bucket listing"
+            tool: gsutil
+            args: ["ls", "-o", "{case_dir}/gcp_buckets.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/gcp_buckets.txt"]
+
+          - id: gcp_bucket_test
+            name: "Test public buckets from subdomains"
+            tool: curl
+            args: ["-s", "https://storage.googleapis.com/{target}",
+                   "-o", "{case_dir}/gcp_public_bucket.txt"]
+            timeout: 30
+
+  # ---- Phase 5: IBM Cloud ----
+  - id: ibm_enum
+    name: "IBM Cloud asset enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "ibm"
+    then:
+      - id: ibm_checks
+        type: parallel
+        steps:
+          - id: ibm_cos
+            name: "COS buckets"
+            tool: ibmcloud
+            args: ["cos", "buckets",
+                   "--output", "json",
+                   "-o", "{case_dir}/ibm_cos_buckets.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/ibm_cos_buckets.txt"]
+
+          - id: ibm_iam
+            name: "IAM access groups & service IDs"
+            tool: ibmcloud
+            args: ["iam", "access-groups",
+                   "--output", "json",
+                   "-o", "{case_dir}/ibm_iam_groups.txt"]
+            timeout: 60
+
+          - id: ibm_kms
+            name: "KMS keys"
+            tool: ibmcloud
+            args: ["kms", "keys",
+                   "--output", "json",
+                   "-o", "{case_dir}/ibm_kms_keys.txt"]
+            timeout: 60
+
+          - id: ibm_vpc
+            name: "VPCs & subnets"
+            tool: ibmcloud
+            args: ["is", "vpcs",
+                   "--output", "json",
+                   "-o", "{case_dir}/ibm_vpcs.txt"]
+            timeout: 60
+
+  # ---- Phase 6: Akamai ----
+  - id: akamai_enum
+    name: "Akamai asset enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "akamai"
+    then:
+      - id: akamai_checks
+        type: parallel
+        steps:
+          - id: akamai_properties
+            name: "Property Manager properties"
+            tool: akamai
+            args: ["--edgerc", "{akamai_edgerc}", "properties", "list",
+                   "--contract", "{target}",
+                   "-o", "{case_dir}/akamai_properties.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/akamai_properties.txt"]
+
+          - id: akamai_cps
+            name: "Certificate Provisioning System"
+            tool: akamai
+            args: ["--edgerc", "{akamai_edgerc}", "cps", "list",
+                   "-o", "{case_dir}/akamai_certificates.txt"]
+            timeout: 60
+
+          - id: akamai_waf
+            name: "WAF & security configs"
+            tool: akamai
+            args: ["--edgerc", "{akamai_edgerc}", "appsec", "list",
+                   "-o", "{case_dir}/akamai_waf_configs.txt"]
+            timeout: 60
+
+  # ---- Phase 7: Oracle Cloud (OCI) ----
+  - id: oci_enum
+    name: "Oracle Cloud enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "oci"
+    then:
+      - id: oci_checks
+        type: parallel
+        steps:
+          - id: oci_buckets
+            name: "Object Storage buckets"
+            tool: oci
+            args: ["os", "bucket", "list",
+                   "--compartment-id", "{target}",
+                   "-o", "{case_dir}/oci_buckets.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/oci_buckets.txt"]
+
+          - id: oci_compute
+            name: "Compute instances"
+            tool: oci
+            args: ["compute", "instance", "list",
+                   "--compartment-id", "{target}",
+                   "-o", "{case_dir}/oci_instances.txt"]
+            timeout: 60
+
+  # ---- Phase 8: Alibaba Cloud (Aliyun) ----
+  - id: alibaba_enum
+    name: "Alibaba Cloud enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "alibaba"
+    then:
+      - id: alibaba_checks
+        type: parallel
+        steps:
+          - id: alibaba_oss
+            name: "OSS bucket listing"
+            tool: aliyun
+            args: ["oss", "ls",
+                   "-o", "{case_dir}/alibaba_oss_buckets.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/alibaba_oss_buckets.txt"]
+
+          - id: alibaba_ecs
+            name: "ECS instances"
+            tool: aliyun
+            args: ["ecs", "DescribeInstances",
+                   "--output", "json",
+                   "-o", "{case_dir}/alibaba_ecs.txt"]
+            timeout: 60
+
+  # ---- Phase 9: DigitalOcean ----
+  - id: do_enum
+    name: "DigitalOcean enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "digitalocean"
+    then:
+      - id: do_checks
+        type: parallel
+        steps:
+          - id: do_spaces
+            name: "Spaces (object storage)"
+            tool: doctl
+            args: ["compute", "spaces", "list",
+                   "-o", "{case_dir}/do_spaces.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/do_spaces.txt"]
+
+          - id: do_droplets
+            name: "Droplets"
+            tool: doctl
+            args: ["compute", "droplet", "list",
+                   "-o", "{case_dir}/do_droplets.txt"]
+            timeout: 60
+
+          - id: do_firewalls
+            name: "Firewall rules"
+            tool: doctl
+            args: ["compute", "firewall", "list",
+                   "-o", "{case_dir}/do_firewalls.txt"]
+            timeout: 60
+
+  # ---- Phase 10: Vultr ----
+  - id: vultr_enum
+    name: "Vultr enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "vultr"
+    then:
+      - id: vultr_checks
+        type: parallel
+        steps:
+          - id: vultr_instances
+            name: "Vultr instances"
+            tool: vultr-cli
+            args: ["instance", "list",
+                   "-o", "{case_dir}/vultr_instances.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/vultr_instances.txt"]
+
+          - id: vultr_firewalls
+            name: "Firewall groups"
+            tool: vultr-cli
+            args: ["firewall", "group", "list",
+                   "-o", "{case_dir}/vultr_firewalls.txt"]
+            timeout: 60
+
+  # ---- Phase 11: Linode ----
+  - id: linode_enum
+    name: "Linode enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "linode"
+    then:
+      - id: linode_checks
+        type: parallel
+        steps:
+          - id: linode_instances
+            name: "Linodes"
+            tool: linode-cli
+            args: ["linodes", "list",
+                   "--json", "-o", "{case_dir}/linode_instances.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/linode_instances.txt"]
+
+          - id: linode_firewalls
+            name: "Firewall rules"
+            tool: linode-cli
+            args: ["firewalls", "list",
+                   "--json", "-o", "{case_dir}/linode_firewalls.txt"]
+            timeout: 60
+
+  # ---- Phase 12: Hetzner ----
+  - id: hetzner_enum
+    name: "Hetzner enumeration"
+    type: conditional
+    condition:
+      equals:
+        ref: cloud_provider
+        value: "hetzner"
+    then:
+      - id: hetzner_checks
+        type: parallel
+        steps:
+          - id: hetzner_servers
+            name: "Hetzner servers"
+            tool: hcloud
+            args: ["server", "list",
+                   "-o", "{case_dir}/hetzner_servers.txt"]
+            timeout: 60
+            artifacts: ["{case_dir}/hetzner_servers.txt"]
+
+          - id: hetzner_firewalls
+            name: "Firewall rules"
+            tool: hcloud
+            args: ["firewall", "list",
+                   "-o", "{case_dir}/hetzner_firewalls.txt"]
+            timeout: 60
+
+  # ---- Phase 13: Report ----
+  - id: report
+    name: "Cloud enumeration note"
+    type: log
+    message: |
+      Cloud enumeration complete for {target} on {cloud_provider}.
+      Results in {case_dir}/ — check provider-specific outputs and subdomain listings.

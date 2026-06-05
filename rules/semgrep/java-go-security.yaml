@@ -1,0 +1,211 @@
+rules:
+  - id: java.sql-injection
+    pattern: |
+      Statement $STMT = $CONN.createStatement();
+      $STMT.executeQuery("SELECT * FROM $TABLE WHERE " + $INPUT);
+    severity: ERROR
+    languages: [java]
+    message: SQL injection — use PreparedStatement with parameterized queries
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: java.command-injection
+    pattern: Runtime.getRuntime().exec($INPUT)
+    severity: ERROR
+    languages: [java]
+    message: Command injection — validate/sanitize input before exec
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: java.xss-servlet
+    pattern: |
+      $RESP.getWriter().println($INPUT);
+    severity: WARNING
+    languages: [java]
+    message: Potential XSS — encode output when writing user input to response
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: java.ldap-injection
+    pattern: |
+      String $FILTER = "(&(uid=" + $INPUT + "))";
+    severity: ERROR
+    languages: [java]
+    message: LDAP injection — use proper encoding or NameNotFoundException handling
+    metadata:
+      cwe: CWE-90
+      owasp: A1
+
+  - id: java.path-traversal
+    pattern: |
+      new File($INPUT)
+    severity: WARNING
+    languages: [java]
+    message: Path traversal risk — sanitize file path input
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: java.insecure-deserialization
+    pattern: |
+      ObjectInputStream $OIS = new ObjectInputStream($INPUT);
+      $OIS.readObject();
+    severity: ERROR
+    languages: [java]
+    message: Unsafe deserialization — validate input or use safer alternatives
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: java.ssl-verify-false
+    pattern: |
+      TrustManager[] $TM = new TrustManager[] { new X509TrustManager() {
+        public void checkClientTrusted(X509Certificate[] $C, String $A) {}
+        public void checkServerTrusted(X509Certificate[] $C, String $A) {}
+        public X509Certificate[] getAcceptedIssuers() { return null; }
+      }};
+    severity: ERROR
+    languages: [java]
+    message: SSL/TLS verification disabled — MITM vulnerability
+    metadata:
+      cwe: CWE-295
+      owasp: A3
+
+  - id: java.hardcoded-secret
+    pattern: |
+      $TYPE $VAR = "$SECRET";
+    severity: ERROR
+    languages: [java]
+    pattern-not: $VAR = "$PLACEHOLDER"
+    message: Hardcoded credential or secret
+    metadata:
+      cwe: CWE-798
+      owasp: A2
+
+  - id: java.nosql-injection
+    pattern: |
+      BasicDBObject $QUERY = new BasicDBObject("$FIELD", $INPUT);
+    severity: WARNING
+    languages: [java]
+    message: NoSQL injection potential — validate input for MongoDB queries
+    metadata:
+      cwe: CWE-943
+
+  - id: java.log-forging
+    pattern: |
+      log.info($INPUT);
+    severity: INFO
+    languages: [java]
+    message: Log forging — sanitize user input before logging
+    metadata:
+      cwe: CWE-117
+
+  - id: java.jndi-injection
+    pattern: |
+      InitialContext.lookup($INPUT)
+    severity: ERROR
+    languages: [java]
+    message: JNDI injection — avoid lookups with untrusted input
+    metadata:
+      cwe: CWE-917
+
+  - id: java.hardcoded-ip
+    pattern: |
+      $VAR = "10.$X.$Y.$Z";
+    severity: INFO
+    languages: [java]
+    message: Hardcoded internal IP address
+    metadata:
+      cwe: CWE-200
+---
+rules:
+  - id: go.sql-injection
+    pattern: |
+      db.Query("SELECT * FROM $TABLE WHERE " + $INPUT)
+    severity: ERROR
+    languages: [go]
+    message: SQL injection — use parameterized queries with $1 placeholders
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: go.command-injection
+    pattern: exec.Command("bash", "-c", $INPUT)
+    severity: ERROR
+    languages: [go]
+    message: Command injection — avoid shell invocation with user input
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: go.xss-template
+    pattern: |
+      tmpl.Execute($WRITER, $INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Potential XSS if template does not escape HTML
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: go.path-traversal
+    pattern: |
+      os.Open($INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Path traversal risk — validate/sanitize file path
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: go.insecure-deserialization
+    pattern: |
+      encoding/gob.NewDecoder($INPUT).Decode($OUT)
+    severity: WARNING
+    languages: [go]
+    message: Unsafe deserialization — gob/gob does not validate input types
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: go.ssrf
+    pattern: |
+      http.Get($INPUT)
+    severity: WARNING
+    languages: [go]
+    message: SSRF risk — validate URLs from user input
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: go.hardcoded-secret
+    pattern: |
+      $VAR := "$SECRET"
+    severity: ERROR
+    languages: [go]
+    message: Hardcoded credential
+    metadata:
+      cwe: CWE-798
+      owasp: A2
+
+  - id: go.insecure-crypto
+    pattern: |
+      md5.New()
+    severity: WARNING
+    languages: [go]
+    message: MD5 is not cryptographically secure — use SHA-256 or better
+    metadata:
+      cwe: CWE-327
+      owasp: A3
+
+  - id: go.race-channel
+    pattern: |
+      go func() { $VAR = $VALUE }()
+    severity: INFO
+    languages: [go]
+    message: Potential race condition on shared variable — use mutex
+    metadata:
+      cwe: CWE-362

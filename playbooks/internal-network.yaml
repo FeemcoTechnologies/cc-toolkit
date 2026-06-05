@@ -1,0 +1,45 @@
+# Internal network pentest playbook — AD-focused
+
+name: "Internal Network Pentest"
+description: "Active Directory / internal network assessment pipeline"
+target_required: true
+
+steps:
+  - name: "Quick port scan (top 1000)"
+    tool: "nmap"
+    args: ["-sS", "-sV", "-Pn", "--top-ports", "1000", "--open",
+           "-oA", "{case_dir}/nmap-top1000", "{target}"]
+    timeout: 300
+    pause: 2
+
+  - name: "SMB enumeration"
+    tool: "crackmapexec"
+    args: ["smb", "{target}"]
+    when: "on_port:445"
+    timeout: 60
+
+  - name: "SMB shares"
+    tool: "smbclient"
+    args: ["-L", "//{target}/", "-N"]
+    when: "on_port:445"
+    timeout: 30
+
+  - name: "LDAP enumeration"
+    tool: "ldapsearch"
+    args: ["-x", "-H", "ldap://{target}", "-b", "", "-s", "base",
+           "namingcontexts"]
+    when: "on_port:389"
+    timeout: 30
+
+  - name: "RPC enumeration"
+    tool: "rpcclient"
+    args: ["-U", "", "-N", "{target}"]
+    when: "on_port:135"
+    timeout: 30
+
+  - name: "Kerberos scan"
+    tool: "nmap"
+    args: ["--script", "krb5-enum-users", "-p", "88", "{target}",
+           "-oN", "{case_dir}/kerberos.txt"]
+    when: "on_port:88"
+    timeout: 60

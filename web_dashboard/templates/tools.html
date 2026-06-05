@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+{% block title %}CC / Tools{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold">Integrated Tools</h1>
+</div>
+
+<!-- Tab bar -->
+<div class="flex gap-1 mb-4 border-b border-gray-800">
+    <button onclick="switchToolTab('caido')" id="tab-caido" class="px-4 py-2 text-sm border-b-2 border-cyan-400 text-cyan-300 font-medium">Caido</button>
+    <button onclick="switchToolTab('jupyter')" id="tab-jupyter" class="px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">JupyterLab</button>
+    <button onclick="switchToolTab('runner')" id="tab-runner" class="px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Runner</button>
+</div>
+
+<!-- Caido iframe -->
+    <div id="panel-caido" class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden mb-4">
+        <div class="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+            <span class="text-sm text-cyan-400 flex items-center gap-1">
+                <i data-lucide="activity" class="w-4 h-4"></i> Caido
+            </span>
+            <a href="{{ config.caido_url }}" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300">Open in new tab</a>
+        </div>
+        <iframe src="{{ config.caido_url }}" class="w-full h-[700px]"></iframe>
+    </div>
+
+    <!-- JupyterLab -->
+    <div id="panel-jupyter" class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden mb-4 hidden">
+        <div class="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+            <span class="text-sm text-orange-400 flex items-center gap-1">
+                <i data-lucide="notebook" class="w-4 h-4"></i> JupyterLab
+            </span>
+            <a href="{{ config.jupyter_url }}/lab" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300">Open in new tab &rarr;</a>
+        </div>
+        <div class="px-3 py-2 bg-yellow-900/20 border-b border-yellow-900/30 text-xs text-yellow-400 flex items-center gap-2">
+            <i data-lucide="alert-triangle" class="w-3 h-3 shrink-0"></i>
+            <span>If blank, Jupyter blocks iframes. <a href="{{ config.jupyter_url }}/lab" target="_blank" class="underline">Open in new tab</a> instead.</span>
+        </div>
+        <iframe id="jupyter-frame" src="{{ config.jupyter_url }}/lab" class="w-full h-[700px]"></iframe>
+    </div>
+
+    <!-- Runner -->
+    <div id="panel-runner" class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden mb-4 hidden">
+        <div class="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+            <span class="text-sm text-green-400 flex items-center gap-1">
+                <i data-lucide="terminal" class="w-4 h-4"></i> Tool Runner
+            </span>
+        </div>
+        <div class="p-4 space-y-3">
+            <div class="flex gap-2">
+                <select id="runner-tool" class="bg-gray-950 border border-gray-800 rounded px-3 py-1.5 text-sm text-gray-200 flex-1">
+                    <optgroup label="── Reconnaissance ──">
+                    <option value="nmap">nmap</option>
+                    <option value="masscan">masscan</option>
+                    <option value="whatweb">whatweb</option>
+                    <option value="theHarvester">theHarvester</option>
+                    <option value="amass">amass</option>
+                    <option value="subfinder">subfinder</option>
+                    <option value="dnsrecon">dnsrecon</option>
+                    <option value="sublist3r">sublist3r</option>
+                    <option value="httpx">httpx</option>
+                    <option value="wappalyzer">wappalyzer</option>
+                    <option value="whois">whois</option>
+                    <option value="shodan">shodan</option>
+                    </optgroup>
+                    <optgroup label="── Web / Fuzzing ──">
+                    <option value="nuclei">nuclei</option>
+                    <option value="ffuf">ffuf</option>
+                    <option value="gobuster">gobuster</option>
+                    <option value="dirb">dirb</option>
+                    <option value="feroxbuster">feroxbuster</option>
+                    <option value="wfuzz">wfuzz</option>
+                    <option value="nikto">nikto</option>
+                    <option value="wpscan">wpscan</option>
+                    <option value="sqlmap">sqlmap</option>
+                    <option value="xsstrike">xsstrike</option>
+                    <option value="commix">commix</option>
+                    <option value="dalfox">dalfox</option>
+                    <option value="katana">katana</option>
+                    <option value="gospider">gospider</option>
+                    <option value="jwt_tool">jwt_tool</option>
+                    <option value="graphw00f">graphw00f</option>
+                    </optgroup>
+                    <optgroup label="── Active Directory ──">
+                    <option value="crackmapexec">crackmapexec</option>
+                    <option value="netexec">netexec</option>
+                    <option value="impacket-secretsdump">impacket-secretsdump</option>
+                    <option value="impacket-wmiexec">impacket-wmiexec</option>
+                    <option value="impacket-psexec">impacket-psexec</option>
+                    <option value="impacket-smbexec">impacket-smbexec</option>
+                    <option value="impacket-GetNPUsers">impacket-GetNPUsers</option>
+                    <option value="impacket-GetUserSPNs">impacket-GetUserSPNs</option>
+                    <option value="impacket-ticketer">impacket-ticketer</option>
+                    <option value="responder">responder</option>
+                    <option value="evil-winrm">evil-winrm</option>
+                    <option value="bloodhound-python">bloodhound-python</option>
+                    <option value="certipy">certipy</option>
+                    <option value="kerbrute">kerbrute</option>
+                    <option value="enum4linux-ng">enum4linux-ng</option>
+                    <option value="smbclient">smbclient</option>
+                    <option value="smbmap">smbmap</option>
+                    <option value="ldapsearch">ldapsearch</option>
+                    <option value="rpcclient">rpcclient</option>
+                    </optgroup>
+                    <optgroup label="── Password Cracking ──">
+                    <option value="hashcat">hashcat</option>
+                    <option value="john">john</option>
+                    <option value="hydra">hydra</option>
+                    <option value="medusa">medusa</option>
+                    <option value="crunch">crunch</option>
+                    <option value="cewl">cewl</option>
+                    <option value="aircrack-ng">aircrack-ng</option>
+                    <option value="fcrackzip">fcrackzip</option>
+                    </optgroup>
+                    <optgroup label="── Exploitation ──">
+                    <option value="msfconsole">msfconsole</option>
+                    <option value="msfvenom">msfvenom</option>
+                    <option value="searchsploit">searchsploit</option>
+                    </optgroup>
+                    <optgroup label="── WiFi / Wireless ──">
+                    <option value="airodump-ng">airodump-ng</option>
+                    <option value="aireplay-ng">aireplay-ng</option>
+                    <option value="airmon-ng">airmon-ng</option>
+                    <option value="airbase-ng">airbase-ng</option>
+                    <option value="bettercap">bettercap</option>
+                    <option value="kismet">kismet</option>
+                    <option value="reaver">reaver</option>
+                    <option value="hcxdumptool">hcxdumptool</option>
+                    <option value="hostapd">hostapd</option>
+                    <option value="dnsmasq">dnsmasq</option>
+                    <option value="iw">iw</option>
+                    <option value="iwconfig">iwconfig</option>
+                    </optgroup>
+                    <optgroup label="── Tunneling / Pivoting ──">
+                    <option value="chisel">chisel</option>
+                    <option value="socat">socat</option>
+                    <option value="sshuttle">sshuttle</option>
+                    <option value="proxychains">proxychains</option>
+                    <option value="ngrok">ngrok</option>
+                    <option value="stunnel">stunnel</option>
+                    </optgroup>
+                    <optgroup label="── Network Utilities ──">
+                    <option value="ping">ping</option>
+                    <option value="curl">curl</option>
+                    <option value="dig">dig</option>
+                    <option value="nc">nc</option>
+                    <option value="tcpdump">tcpdump</option>
+                    <option value="tshark">tshark</option>
+                    <option value="arp-scan">arp-scan</option>
+                    <option value="hping3">hping3</option>
+                    <option value="fping">fping</option>
+                    <option value="ssh">ssh</option>
+                    <option value="scp">scp</option>
+                    <option value="wget">wget</option>
+                    </optgroup>
+                    <optgroup label="── SAST / Code ──">
+                    <option value="semgrep">semgrep</option>
+                    <option value="bandit">bandit</option>
+                    <option value="gitleaks">gitleaks</option>
+                    <option value="trufflehog">trufflehog</option>
+                    </optgroup>
+                    <optgroup label="── Cloud / Container ──">
+                    <option value="aws">aws</option>
+                    <option value="kubectl">kubectl</option>
+                    <option value="docker">docker</option>
+                    <option value="trivy">trivy</option>
+                    <option value="grype">grype</option>
+                    </optgroup>
+                    <optgroup label="── Forensics / RE ──">
+                    <option value="yara">yara</option>
+                    <option value="strings">strings</option>
+                    <option value="binwalk">binwalk</option>
+                    <option value="foremost">foremost</option>
+                    <option value="bulk_extractor">bulk_extractor</option>
+                    <option value="exiftool">exiftool</option>
+                    <option value="volatility">volatility</option>
+                    <option value="objdump">objdump</option>
+                    <option value="readelf">readelf</option>
+                    <option value="gdb">gdb</option>
+                    <option value="radare2">radare2</option>
+                    <option value="ghidra">ghidra</option>
+                    <option value="upx">upx</option>
+                    <option value="olevba">olevba</option>
+                    </optgroup>
+                    <optgroup label="── Misc ──">
+                    <option value="openssl">openssl</option>
+                    <option value="gpg">gpg</option>
+                    <option value="hashid">hashid</option>
+                    <option value="tmux">tmux</option>
+                    <option value="screen">screen</option>
+                    <option value="ollama">ollama</option>
+                    </optgroup>
+                </select>
+                <input id="runner-args" type="text" placeholder="Arguments..." class="bg-gray-950 border border-gray-800 rounded px-3 py-1.5 text-sm text-gray-200 flex-[3]">
+                <button onclick="runToolRunner()" class="bg-green-700 hover:bg-green-600 px-4 py-1.5 rounded text-sm text-white shrink-0">Run</button>
+            </div>
+            <pre id="runner-output" class="bg-gray-950 rounded p-3 text-xs text-gray-300 font-mono leading-relaxed max-h-96 overflow-y-auto whitespace-pre-wrap hidden"></pre>
+        </div>
+    </div>
+
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold mb-3">Quick Actions</h2>
+        <div class="space-y-2">
+            <button onclick="runCCWithPrompt('nmap pipeline --target ', 'Enter target IP/host:')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">Nmap Pipeline</button>
+            <button onclick="window.location='/prompts'" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">Prompt Library</button>
+            <button onclick="runCC('tools list')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">List Tools</button>
+            <button onclick="window.location='/dns'" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">DNS Monitor</button>
+            <button onclick="runCC('wifi scan2')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">WiFi Scan</button>
+        </div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold mb-3">Case Quick Links</h2>
+        <div id="quick-cases" class="space-y-1">
+            <p class="text-gray-500 text-xs">Loading...</p>
+        </div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold mb-3">Report Formats</h2>
+        <div class="text-xs space-y-2 text-gray-400">
+            <p>Generate reports from any case:</p>
+            <button onclick="navigateToCase()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-xs text-white w-full">Go to Case Reports</button>
+        </div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold mb-3">System</h2>
+        <div id="sys-info" class="text-xs text-gray-500 space-y-1">
+            <p>Loading...</p>
+        </div>
+    </div>
+</div>
+
+<div id="tools-output" class="mt-4 bg-gray-900 rounded-lg border border-gray-800 p-4 hidden">
+    <h2 class="text-sm font-semibold mb-2">Output</h2>
+    <pre id="tools-output-text" class="text-xs text-gray-300 whitespace-pre-wrap"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentTab = 'caido';
+
+function switchToolTab(tab) {
+    currentTab = tab;
+    ['caido', 'jupyter', 'runner'].forEach(t => {
+        document.getElementById('panel-' + t).classList.toggle('hidden', t !== tab);
+        const btn = document.getElementById('tab-' + t);
+        if (t === tab) {
+            btn.className = 'px-4 py-2 text-sm border-b-2 border-cyan-400 text-cyan-300 font-medium';
+        } else {
+            btn.className = 'px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300';
+        }
+    });
+}
+
+async function runCC(cmd) {
+    const outputDiv = document.getElementById('tools-output');
+    const outputText = document.getElementById('tools-output-text');
+    outputDiv.classList.remove('hidden');
+    outputText.textContent = 'Running: ' + cmd + '...\n';
+    try {
+        const r = await fetch('/api/cc', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({command: cmd})
+        });
+        const result = await r.json();
+        let out = '';
+        if (result.rc !== undefined) out += 'Exit code: ' + result.rc + '\n';
+        if (result.stdout) out += '\n--- stdout ---\n' + result.stdout;
+        if (result.stderr) out += '\n--- stderr ---\n' + result.stderr;
+        if (!result.stdout && !result.stderr) out += '(no output)';
+        outputText.textContent = out;
+    } catch(e) {
+        outputText.textContent = 'Request failed: ' + e.message;
+    }
+}
+function runCCWithPrompt(cmd, promptMsg) {
+    const val = prompt(promptMsg);
+    if (val) runCC(cmd + val);
+}
+async function runToolRunner() {
+    const tool = document.getElementById('runner-tool').value;
+    const args = document.getElementById('runner-args').value;
+    const output = document.getElementById('runner-output');
+    output.classList.remove('hidden');
+    output.textContent = 'Running: ' + tool + ' ' + args + '...\n';
+    try {
+        const r = await fetch('/api/cc', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({command: tool + ' ' + args})
+        });
+        const result = await r.json();
+        let out = '';
+        if (result.rc !== undefined) out += 'Exit code: ' + result.rc + '\n';
+        if (result.stdout) out += '\n--- stdout ---\n' + result.stdout;
+        if (result.stderr) out += '\n--- stderr ---\n' + result.stderr;
+        if (!result.stdout && !result.stderr) out += '(no output)';
+        output.textContent = out;
+    } catch(e) {
+        output.textContent = 'Request failed: ' + e.message;
+    }
+}
+
+async function loadQuickCases() {
+    const r = await fetch('/api/cases');
+    const cases = await r.json();
+    const el = document.getElementById('quick-cases');
+    if (cases.length === 0) { el.innerHTML = '<p class="text-gray-500 text-xs">No cases</p>'; return; }
+    el.innerHTML = cases.slice(0, 5).map(c =>
+        `<a href="/case/${c.case_id}" class="block text-xs text-indigo-400 hover:text-indigo-300">${c.case_id} (${c.client || '?'})</a>`
+    ).join('');
+}
+function navigateToCase() {
+    const sel = document.getElementById('case-selector');
+    if (sel && sel.value) window.location = '/case/' + sel.value + '/report';
+}
+async function loadSysInfo() {
+    const r = await fetch('/api/cc', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({command: 'monitor'})
+    });
+    const result = await r.json();
+    const el = document.getElementById('sys-info');
+    if (result.stdout) {
+        const lines = result.stdout.trim().split('\n').slice(0, 6);
+        el.innerHTML = lines.map(l => '<p>' + l.replace(/</g,'&lt;') + '</p>').join('');
+    } else {
+        el.innerHTML = '<p>Unavailable</p>';
+    }
+}
+loadQuickCases();
+loadSysInfo();
+</script>
+{% endblock %}

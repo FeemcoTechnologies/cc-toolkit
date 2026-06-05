@@ -1,0 +1,224 @@
+# v2 runbook — Network share enumeration & exploitation
+name: "Network Share Enumeration"
+description: "Enumerate and test network shares: SMB null sessions, NFS exports, anonymous access, MS17-010, SMBGhost, password spraying"
+version: "2.0"
+
+vars:
+  share_host: ""
+  share_user: ""
+  share_pass: ""
+  domain: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "Network share enumeration — {share_host} (case: {case_id})"
+
+  # Phase 1: SMB version discovery
+  - id: smb_discovery
+    name: "SMB version discovery"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: smb_version
+        name: "SMB protocol version"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-protocols",
+               "{share_host}",
+               "-o", "{case_dir}/smb_protocols.nmap"]
+        timeout: 60
+        artifacts: ["{case_dir}/smb_protocols.nmap"]
+
+      - id: smb_os
+        name: "SMB OS detection"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-os-discovery",
+               "{share_host}",
+               "-o", "{case_dir}/smb_os.nmap"]
+        timeout: 60
+
+      - id: smb_security
+        name: "SMB security settings"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-security-mode",
+               "{share_host}",
+               "-o", "{case_dir}/smb_security.nmap"]
+        timeout: 60
+
+      - id: smb_ls
+        name: "SMB share list (anonymous)"
+        tool: smbclient
+        args: ["-L", "//{share_host}", "-N",
+               "-o", "{case_dir}/smb_share_list.txt"]
+        timeout: 30
+
+  # Phase 2: SMB null session & guest access
+  - id: smb_null
+    name: "SMB null session & guest enumeration"
+    type: parallel
+    steps:
+      - id: smb_null_enum
+        name: "Null session share enumeration"
+        tool: smbmap
+        args: ["-H", "{share_host}", "-u", "", "-p", "",
+               "-o", "{case_dir}/smbmap_null.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/smbmap_null.txt"]
+
+      - id: smb_guest
+        name: "Guest account access"
+        tool: smbmap
+        args: ["-H", "{share_host}", "-u", "guest", "-p", "",
+               "-o", "{case_dir}/smbmap_guest.txt"]
+        timeout: 60
+
+      - id: rpc_null
+        name: "RPC null session (users/groups)"
+        tool: rpcclient
+        args: ["-U", "", "-N", "{share_host}",
+               "-c", "enumdomusers;enumdomgroups;enumalsgroups builtin;srvinfo",
+               "-o", "{case_dir}/rpc_null_session.txt"]
+        timeout: 60
+
+      - id: enum4linux
+        name: "enum4linux full"
+        tool: enum4linux
+        args: ["-a", "{share_host}",
+               "-o", "{case_dir}/enum4linux.txt"]
+        timeout: 120
+
+  # Phase 3: SMB vulnerability checks
+  - id: smb_vulns
+    name: "SMB vulnerability scanning"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: ms17_010
+        name: "MS17-010 EternalBlue"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-vuln-ms17-010",
+               "{share_host}",
+               "-o", "{case_dir}/ms17_010.nmap"]
+        timeout: 60
+        artifacts: ["{case_dir}/ms17_010.nmap"]
+
+      - id: smbghost
+        name: "SMBGhost (CVE-2020-0796)"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-vuln-cve-2020-0796",
+               "{share_host}",
+               "-o", "{case_dir}/smbghost.nmap"]
+        timeout: 60
+
+      - id: smb_eternal_blue
+        name: "EternalBlue MSF check"
+        tool: msfconsole
+        args: ["-q", "-x",
+               "use auxiliary/scanner/smb/smb_ms17_010; set RHOSTS {share_host}; run; exit",
+               "-o", "{case_dir}/msf_ms17_010.txt"]
+        timeout: 120
+
+      - id: smb_signing
+        name: "SMB signing check"
+        tool: nmap
+        args: ["-p", "445", "--script", "smb-security-mode",
+               "{share_host}",
+               "-o", "{case_dir}/smb_signing.txt"]
+        timeout: 30
+
+  # Phase 4: NFS enumeration
+  - id: nfs_enum
+    name: "NFS enumeration"
+    type: parallel
+    steps:
+      - id: nfs_showmount
+        name: "Show NFS exports"
+        tool: showmount
+        args: ["-e", "{share_host}",
+               "-o", "{case_dir}/nfs_exports.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/nfs_exports.txt"]
+
+      - id: nfs_portmap
+        name: "NFS portmap check"
+        tool: nmap
+        args: ["-p", "111,2049", "--script", "nfs-*",
+               "{share_host}",
+               "-o", "{case_dir}/nfs_scan.nmap"]
+        timeout: 60
+
+  # Phase 5: Anonymous FTP / TFTP
+  - id: ftp_enum
+    name: "FTP / TFTP enumeration"
+    type: parallel
+    steps:
+      - id: ftp_anonymous
+        name: "FTP anonymous access"
+        tool: nmap
+        args: ["-p", "21", "--script", "ftp-anon",
+               "{share_host}",
+               "-o", "{case_dir}/ftp_anon.nmap"]
+        timeout: 30
+
+      - id: tftp_check
+        name: "TFTP accessible files"
+        tool: nmap
+        args: ["-p", "69", "-sU", "--script", "tftp-enumerate",
+               "{share_host}",
+               "-o", "{case_dir}/tftp_enum.nmap"]
+        timeout: 60
+
+  # Phase 6: SMB password spraying
+  - id: ask_spray
+    type: prompt
+    message: "Run password spray against SMB? (requires user list)"
+    then:
+      - id: smb_spray
+        name: "SMB password spray"
+        tool: crackmapexec
+        args: ["smb", "{share_host}",
+               "-u", "{case_dir}/users.txt",
+               "-p", "'{share_pass}'",
+               "--continue-on-success",
+               "-o", "{case_dir}/smb_spray.txt"]
+        timeout: 300
+        artifacts: ["{case_dir}/smb_spray.txt"]
+
+  # Phase 7: SMB share content traversal
+  - id: ask_deep
+    type: prompt
+    message: "Traverse accessible SMB shares and download contents?"
+    then:
+      - id: smb_recursive
+        name: "Recursive SMB share download"
+        tool: smbget
+        args: ["-R",
+               "smb://{share_host}/",
+               "-U", "{share_user}%{share_pass}",
+               "-o", "{case_dir}/smb_downloaded/"]
+        timeout: 600
+
+  # Phase 8: Report
+  - id: report
+    name: "Generate share enumeration report"
+    type: report
+    format: markdown
+    title: "Network Share Enumeration — {share_host}"
+    output: "{case_dir}/shares-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Host: {share_host}\n- Domain: {domain}\n- Case: {case_id}"
+      - heading: "SMB Access"
+        body: "- Shares: {case_dir}/smb_share_list.txt\n- Null session: {case_dir}/smbmap_null.txt\n- Guest access: {case_dir}/smbmap_guest.txt"
+      - heading: "Vulnerabilities"
+        body: "- MS17-010: {case_dir}/ms17_010.nmap\n- SMBGhost: {case_dir}/smbghost.nmap\n- SMB signing: {case_dir}/smb_signing.txt"
+      - heading: "NFS Exports"
+        body: "- Share list: {case_dir}/nfs_exports.txt"
+      - heading: "Credentials Found"
+        body: "- RPC users: {case_dir}/rpc_null_session.txt\n- Spray results: {case_dir}/smb_spray.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Network share enumeration complete — {case_dir}"

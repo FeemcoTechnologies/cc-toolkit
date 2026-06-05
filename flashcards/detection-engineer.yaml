@@ -1,0 +1,403 @@
+title: Detection Engineer
+description: SIEM, EDR, KQL, cloud detections, MITRE ATT&CK mapping, detection fidelity, testing frameworks, and automation
+cards:
+- question: In Splunk SPL, what is the difference between `stats` and `eventstats`?
+  answer: '`stats` aggregates by group and returns only the summary rows, discarding raw events....'
+- question: How do you create a scheduled correlation search in Splunk that alerts when more than 5 failed logons occur for the same user within 10 minutes?
+  answer: Use a scheduled search with `index=windows EventCode=4625 | stats count by Account_Name |...
+- question: What is the purpose of a Splunk lookup table in detection engineering?
+  answer: Lookups enrich raw events with context from external data sources — such as known-bad IPs,...
+- question: In KQL, what does the `materialize()` function do and when should you use it?
+  answer: '`materialize` caches the result of a tabular expression so it can be referenced multiple...'
+- question: How do you detect LSASS process dumping via CrowdStrike Falcon Custom IOA?
+  answer: Create a Custom IOA rule monitoring `ProcessAccess` events where the target process is...
+- question: What is the difference between a CrowdStrike IOA exclusion and a prevention policy exclusion?
+  answer: IOA exclusion tells Falcon not to generate alerts when a specific file, path, or SHA-256...
+- question: Write a KQL query to detect PowerShell execution with encoded command flags in Microsoft Defender for Endpoint.
+  answer: '`DeviceProcessEvents | where FileName == ''powershell.exe'' and ProcessCommandLine has...'
+- question: How does `make-series` differ from `summarize` in KQL?
+  answer: '`summarize` produces one row per unique combination of group-by keys and aggregate values....'
+- question: In Splunk, how would you detect DNS tunneling using a time-based beaconing search?
+  answer: Use `index=network sourcetype=dns | stats count by query, src_ip | eventstats stdev as...
+- question: What Windows Event ID corresponds to a scheduled task being created, and how would you detect malicious scheduled tasks in Splunk?
+  answer: 'Event ID 4698. In Splunk: `index=windows EventCode=4698 | search...'
+- question: What is the purpose of the `eval` command in Splunk SPL and give an example of using it for conditional risk scoring?
+  answer: '`eval` creates or modifies calculated fields using expressions. Example: `index=windows...'
+- question: In KQL, what does the `bin` function do and give a practical detection use case.
+  answer: '`bin` rounds a value — typically a timestamp — to a specified bucket width. Practical use:...'
+- question: What is MITRE ATT&CK Navigator and how do you use it for gap analysis?
+  answer: ATT&CK Navigator is a web-based tool for visualizing a security team's detection coverage...
+- question: How does Atomic Red Team's `Invoke-AtomicRedTeam` differ from executing tests manually?
+  answer: '`Invoke-AtomicRedTeam` is the official PowerShell framework that automates downloading,...'
+- question: What Windows Event ID 4688 fields are essential for detecting process injection?
+  answer: Key fields are `Creator Process Name`, `New Process Name`, `Process ID`, and `Command...
+- question: How do you write a Splunk correlation search for pass-the-hash lateral movement using Event ID 4624?
+  answer: '`index=windows EventCode=4624 Logon_Type=3 | search Account_Name=*$ | stats values as...'
+- question: What is a Splunk data model and how does it accelerate detection searches?
+  answer: data model normalizes heterogeneous sourcetypes into a common schema with defined fields...
+- question: In Microsoft Defender for Endpoint, what ASR rule would block Office applications from creating child processes, and what is its GUID?
+  answer: Rule 'Block Office applications from creating child processes' has GUID...
+- question: How do you detect AMSI bypass attempts in Windows Event Logs?
+  answer: Log AMSI provider and script block logging and look for patterns like `amsiInitFailed`,...
+- question: What is `external_data` in KQL and how is it useful for detection engineering?
+  answer: '`external_data` operator reads data from an external storage location as if it were a...'
+- question: Explain the difference between `subsearch` and `join` in Splunk SPL.
+  answer: subsearch runs first, returns its results to the outer search, and the outer search filters...
+- question: What Sysmon Event IDs cover network connections and named pipe creation?
+  answer: Sysmon ID 3 logs TCP/UDP connections with source and destination IP/port; Sysmon ID 18 logs...
+- question: How do you detect Kerberoasting using Splunk and Windows Event Logs?
+  answer: Monitor Event ID 4769 with `Ticket_Encryption_Type=0x17` and a high count of unique service...
+- question: What is a Splunk `transaction` command and give a detection scenario where it is superior to `stats`.
+  answer: '`transaction` groups events based on common fields with optional start/end markers and time...'
+- question: In CrowdStrike Falcon, what is an IOA rule and how does it differ from an IOM rule?
+  answer: IOA rules detect suspicious behavioral patterns — like process injection or registry...
+- question: Write a KQL query in Microsoft Sentinel to detect suspicious Azure AD sign-ins from anonymous IP addresses.
+  answer: '`SigninLogs | where RiskLevelDuringSignIn == ''medium'' or RiskLevelDuringSignIn == ''high'' |...'
+- question: What is the purpose of summary indexing in Splunk detection engineering?
+  answer: Summary indexing runs an expensive scheduled search once, writes the aggregated results to...
+- question: How does `union` differ from `join` in KQL?
+  answer: '`union` vertically concatenates two or more tables that share the same schema columns....'
+- question: What is the difference between Splunk alert triggering condition 'Number of Results' versus 'Number of Hosts'?
+  answer: '''Number of Results'' triggers when the total matching event count exceeds the threshold —...'
+- question: What event logs are essential for detecting process hollowing?
+  answer: Sysmon Event ID 8 when the target is a suspended process, combined with ID 1 showing the...
+- question: How do you map a Splunk detection search to a MITRE ATT&CK technique using tags?
+  answer: Assign `attack_name`, `attack_technique`, and `attack_id` as event-level or search-level...
+- question: In KQL, what is the `let` statement and how do you use it for layered detection queries?
+  answer: '`let` binds a name to an expression, lambda, or scalar for reuse within the query scope....'
+- question: How do you use Splunk `timechart` to detect data exfiltration spikes from a single host?
+  answer: '`index=proxy action=allow | timechart span=1h sum by src_ip | eval threshold = 1.5 * mvavg,...'
+- question: What Windows Event ID 7045 indicates and why is it important for detecting persistence?
+  answer: Event ID 7045 logs the creation of a new Windows service. Attackers use `sc.exe`,...
+- question: How do you tune a detection rule to reduce false positives using a Splunk lookup of known-good processes?
+  answer: Create a lookup file containing SHA-256 hashes of approved vendor binaries. In the search:...
+- question: What is the difference between Splunk eval function `mvcount()` and `count()` in a stats aggregation?
+  answer: '`mvcount` counts the number of elements in a multivalue field within a single event....'
+- question: How does M365 Defender's Cloud Discovery feature identify shadow IT?
+  answer: Cloud Discovery analyzes traffic logs from network appliances, firewall, and proxies...
+- question: In CrowdStrike, what is sensor grouping and how does it help detection tuning?
+  answer: Sensor grouping lets you assign Falcon sensors to logical groups and apply different...
+- question: What is the `series_fill_linear()` function in KQL and when would you use it in detection analytics?
+  answer: '`series_fill_linear` interpolates missing values in a time series by filling gaps with...'
+- question: Write a Splunk search using `transaction` to detect a potential ransomware encryption wave across multiple hosts.
+  answer: '`index=windows EventCode=4663 Object_Type="File" | eval extension = lower$", "\\1")) |...'
+- question: What Sysmon Event ID 10 detects and how does it help identify credential dumping?
+  answer: Sysmon ID 10 logs when one process opens a handle to another process with specific access...
+- question: How do you use CISA Known Exploited Vulnerabilities (KEV) catalog to prioritize detection gap remediation?
+  answer: Cross-reference the KEV list against your ATT&CK Navigator coverage heatmap. For each...
+- question: What is the Splunk `tstats` command and what are its requirements?
+  answer: '`tstats` runs statistical queries against indexed time-series data in acceleration or data...'
+- question: Write a KQL query in Azure Sentinel to detect GCP VPC flow log anomalies suggesting data exfiltration.
+  answer: '`GCP_VPC_Flows | where TimeGenerated > ago | summarize TotalBytes = sum by src_instance,...'
+- question: How do you detect WMI event subscription-based persistence in Windows?
+  answer: Monitor Event ID 5861 which logs permanent WMI event subscriptions. Key fields:...
+- question: What is a Splunk 'lookup table file' and what is the difference between a CSV lookup and a KV store lookup?
+  answer: CSV lookup is a static, read-only file loaded into memory — best for rarely changing data....
+- question: In Microsoft Defender for Endpoint KQL, how do you detect a suspicious child process of WinWord.exe?
+  answer: '`DeviceProcessEvents | where InitiatingProcessFileName == ''WINWORD.EXE'' and FileName in~ |...'
+- question: What are the benefits and drawbacks of Splunk `search` with `index=*` for detection?
+  answer: 'Benefit: it searches all indexes, ensuring no corner of data is missed — useful for...'
+- question: How do you detect RDP brute-force attacks in CrowdStrike Falcon?
+  answer: Create a Custom IOA rule tracking `ProcessRollup2` events where the command line includes...
+- question: What is a Splunk `macro` and give an example of how macros reduce search duplication.
+  answer: 'macro encapsulates a reusable SPL fragment with optional arguments. Example: `define...'
+- question: In KQL, how does `summarize` with `make_list` or `make_set` differ from `project` with aggregations?
+  answer: '`summarize make_list` creates a dynamic array of all values per group — duplicates allowed....'
+- question: How do you detect domain fronting with Zeek/Suricata logs in Splunk?
+  answer: Domain fronting uses a legitimate CDN Host header with a covert SNI. In Splunk:...
+- question: What is the difference between Splunk `fields -` and `fields +`?
+  answer: '`fields -field1,field2` removes specified fields from the results, reducing memory...'
+- question: What Event ID tracks PowerShell module logging and what can you detect with it?
+  answer: Event ID 4103 logs pipeline execution details including command invocations, parameter...
+- question: How do you detect pass-the-ticket (PtT) using Windows Event Logs?
+  answer: Monitor Event ID 4624 with Logon Type 9 and a ServiceName indicating Kerberos. Use...
+- question: What is the purpose of a Splunk `eval` function `if()` in a detection and give an example.
+  answer: '`if` enables inline conditional scoring. Example: `... | eval priority = if AND...'
+- question: How does Caldera's 'Stockpile' plugin support detection testing?
+  answer: Stockpile is Caldera's built-in plugin containing ~100 adversary abilities organized into...
+- question: What is JA3 hashing and how is it used for C2 detection?
+  answer: JA3 is a TLS fingerprint derived from the ClientHello packet fields. Detection engineers...
+- question: In Splunk, how do you use `rex` command to extract structured fields from unstructured logs?
+  answer: '`rex` extracts fields using named regex groups. Example: `index=proxy | rex field=url ""`...'
+- question: How do you detect UAC bypass using event logs?
+  answer: Monitor Event ID 4688 for `consent.exe` being launched, or Sysmon ID 1 detecting...
+- question: What is a Splunk `where` command and how does it differ from `search` in pipeline position?
+  answer: '`where` evaluates a boolean expression on already-searched fields using eval-like syntax....'
+- question: Write a KQL query in Microsoft Defender for Cloud to detect crypto mining connections.
+  answer: '`DeviceNetworkEvents | where RemotePort in | where Protocol == ''Tcp'' | where Timestamp >...'
+- question: What is a false positive (FP) rate and how do you calculate it for a detection rule?
+  answer: FP rate = /. A detection with 100 alerts where 90 are benign and 10 are true positives has...
+- question: What Sysmon Event IDs 11-16 cover and why are they important for file-based detection?
+  answer: ID 11, ID 12, ID 13, ID 14, ID 15, ID 16. These cover file writes to startup folders,...
+- question: How do you identify under-monitored MITRE ATT&CK techniques using telemetry source mapping?
+  answer: Create a matrix mapping each ATT&CK technique to the log sources or EDR telemetry fields...
+- question: What is Splunk `appendcols` and when should you use it instead of `join`?
+  answer: '`appendcols` copies columns from one search result set onto the end of the primary result...'
+- question: How does Microsoft Defender for Cloud Apps (MCAS) anomaly detection identify risky user behavior?
+  answer: MCAS uses UEBA-driven machine learning to baseline each user's activity. It generates...
+- question: In CrowdStrike, how do you detect a suspicious scheduled task using Custom IOA?
+  answer: Create a rule monitoring the `ScheduledTask` event type. Filter for task registration from...
+- question: What is the Splunk `inputlookup` command and when would you use it in detection?
+  answer: '`inputlookup` reads the content of a lookup file into the search pipeline as events. Use it...'
+- question: Write a KQL query to detect Windows Defender being disabled or tampered with.
+  answer: '`DeviceRegistryEvents | where ActionType == ''RegistryValueSet'' and RegistryKey has...'
+- question: What is Mean Time to Detect (MTTD) and Mean Time to Respond (MTTR) and how do detection rules affect them?
+  answer: MTTD is the average time between compromise and detection — fast detection via automated...
+- question: How do you detect BITS Jobs used for persistence or C2 in Splunk?
+  answer: 'Monitor Event ID 4690 and Event ID 59. Search: `index=windows EventCode=4690 | eval...'
+- question: What is the purpose of a Splunk `eval` function `tonumber()` in detection logic?
+  answer: '`tonumber` explicitly converts a string field to numeric type for mathematical operations....'
+- question: In KQL, how do you use the `join` kind `leftanti` for detection use cases?
+  answer: '`leftanti` returns rows from the left table with no matching row in the right table. Use to...'
+- question: What is a Splunk alert throttling setting and how do you configure it to prevent alert fatigue?
+  answer: Throttling suppresses duplicate alerts from the same source within a configurable time...
+- question: How do you detect service principal name (SPN) enumeration for Kerberoast targeting?
+  answer: Monitor Event ID 4662 with AccessMask indicating `Read All Properties` on Domain...
+- question: What is the difference between a 'prevention' and a 'detection' only policy in CrowdStrike Falcon?
+  answer: Prevention policy takes blocking actions when a malicious or suspicious event matches....
+- question: What are 'ASR Rules' in Microsoft Defender for Endpoint and name three high-value rules.
+  answer: Attack Surface Reduction rules are behavior-based controls that block common malware entry...
+- question: Write a KQL query to detect suspicious service installation (Event 7045 equivalent) in Microsoft Defender for Endpoint.
+  answer: '`DeviceEvents | where ActionType == ''ServiceInstalled'' | extend ServiceName = extractjson,...'
+- question: What is the Splunk `transaction` maxpause vs maxspan option?
+  answer: '`maxspan` sets the absolute maximum time between the first and last event in a transaction....'
+- question: How do you detect DNS tunneling using query length and entropy analysis in Splunk?
+  answer: '`index=dns | eval qlen = len | where qlen > 50 | eval entropy = len - len) | where entropy...'
+- question: How does the Splunk `rangemap` command simplify severity scoring in detections?
+  answer: '`rangemap` maps numerical values to named ranges. Example: `... | rangemap...'
+- question: What Windows Event IDs 5152-5158 cover and why are they important for network detection?
+  answer: 'IDs 5152-5158 are Windows Filtering Platform events: 5152, 5154, 5155, 5156, 5157, 5158....'
+- question: What is a Breach and Attack Simulation (BAS) tool and how does Picus Security operate?
+  answer: BAS tools automate the execution of simulated attacks against controls to validate...
+- question: In KQL, what does the `extend` operator do and how does it differ from `project`?
+  answer: '`extend` creates or modifies columns while keeping all existing columns in the result....'
+- question: How do you detect clipboard capture attempts by malware in Windows?
+  answer: Monitor for `GetClipboardData` API calls via ETW or Sysmon. Event ID 4688 process creation...
+- question: What is a Splunk 'data model acceleration' and what trade-offs does it introduce?
+  answer: Data model acceleration pre-computes and stores aggregated results for a data model's root...
+- question: How does Defender for Endpoint's 'advanced hunting' schema differ from raw Windows Event Logs?
+  answer: Advanced hunting uses KQL over a curated schema with tables like `DeviceProcessEvents`,...
+- question: How do you detect archive collection (zip/rar/7z) followed by exfiltration using Splunk?
+  answer: Correlate file creation for archive extensions and subsequent outbound connections:...
+- question: What is a true positive rate (recall) and how do you report it for a detection rule?
+  answer: Recall = TP /. It measures the proportion of real attacks the rule detects. Reported by...
+- question: What is the Splunk `dedup` command and give a detection use case?
+  answer: '`dedup` removes duplicate events based on specified field values, keeping the first...'
+- question: How does CrowdStrike's IOA detection engine differ from signature-based detection?
+  answer: IOA detects behavioral patterns — sequences of low-level sensor events that together...
+- question: What is the Splunk `mvexpand` command and how does it help in detection analysis?
+  answer: '`mvexpand` expands a multivalue field into separate events, one per value. Example:...'
+- question: How do you detect regsvr32.exe being used to execute remote COM scriptlets?
+  answer: Sysmon Event ID 1 or Windows Event 4688 for `regsvr32.exe` with command-line containing `/s...
+- question: In Sentinel, what is a watchlist and how is it used in analytic rules?
+  answer: watchlist is a CSV or TSV file stored in Sentinel that can be referenced in KQL analytic...
+- question: What is 'detection-as-code' (DaC) and what CI/CD practices should be applied to detection rules?
+  answer: DaC treats detection rules as source code stored in Git with versioning, peer review, and...
+- question: How do you detect an account created and immediately used for privilege escalation?
+  answer: Correlate Event ID 4720 with Event ID 4732 or Event ID 4672. Use Splunk transaction:...
+- question: In CrowdStrike Falcon, what is the 'Sensor Visibility' setting and how does it impact detections?
+  answer: 'Sensor Visibility controls which events the sensor collects: ''Full'' captures all telemetry,...'
+- question: What is the difference between a Splunk `savedsearch` and an `alert`?
+  answer: saved search is a query stored with a name, schedule, and optional acceleration — it runs...
+- question: Write a KQL query to detect potential LockBit ransomware encrypting files based on file extension changes.
+  answer: '`DeviceFileEvents | where Timestamp > ago | where ActionType == ''FileRenamed'' | extend...'
+- question: What Windows Event ID tracks registry value modifications (Event ID 4657 use cases)?
+  answer: Event ID 4657 logs registry value modifications including old/new values. Critical for...
+- question: How do you establish a baseline for alert threshold tuning on a new detection?
+  answer: Collect 14-30 days of telemetry without alerting. Calculate `mean +` events per day for the...
+- question: In KQL, what is the difference between `deviceNetworkEvents` and `deviceProcessEvents` in MDE schema?
+  answer: '`DeviceNetworkEvents` captures network connections made by processes. `DeviceProcessEvents`...'
+- question: What is a Splunk 'summary index' and how does it reduce search cost?
+  answer: summary index is a separate index fed by a scheduled search that pre-computes expensive...
+- question: How do you detect msbuild.exe (LOLBin) being used for in-memory execution?
+  answer: Monitor Event ID 4688 / Sysmon ID 1 for `msbuild.exe` executed from user-writable paths....
+- question: What is a ROC curve and how does it help in detection fidelity optimization?
+  answer: ROC curve plots True Positive Rate vs False Positive Rate across threshold values. The...
+- question: How does `join kind=innerunique` differ from the default KQL join?
+  answer: '`kind=innerunique` deduplicates rows from the left table on join keys before performing the...'
+- question: How do you detect suspicious MSHTA.exe execution patterns?
+  answer: 'Sysmon ID 1 or Event 4688: `mshta.exe` with `javascript:` or `vbscript:` in the command...'
+- question: What is a MITRE ATT&CK coverage score and how do you calculate it?
+  answer: Coverage score = /. A more nuanced score weights each technique by threat intel priority...
+- question: In CrowdStrike Falcon, what event type is generated when a process is blocked by a prevention policy?
+  answer: '`ProcessBlocked` event type. It includes the file path, SHA-256 hash, the rule or policy...'
+- question: Write a KQL query to identify brute-force attacks on Azure AD using SigninLogs.
+  answer: '`SigninLogs | where Status.errorCode == 50126 or Status.errorCode == 50053 or...'
+- question: What is the Splunk `lookup` command vs `inputlookup`?
+  answer: '`lookup` is used within a search to enrich results — it takes a field from your search and...'
+- question: How do you detect use of `wscript.exe` or `cscript.exe` to execute scripts from suspicious paths?
+  answer: Monitor Sysmon ID 1 / Event 4688 for script hosts running from user directories. KQL:...
+- question: What is the `series_decompose()` function in KQL and its use in anomaly detection?
+  answer: '`series_decompose` applies seasonal decomposition to a time series, splitting it into...'
+- question: How do you prevent a Splunk search from returning stale data due to data model acceleration lag?
+  answer: Append `where _time >= relative_time, "-15m@m")` to queries on accelerated data models —...
+- question: How does AMSI (Anti-Malware Scan Interface) work and how do attackers commonly bypass it?
+  answer: AMSI integrates with PowerShell, VBScript, JScript, and VBA to pass script content to...
+- question: In KQL, how do you use the `mv-expand` operator for detection queries?
+  answer: '`mv-expand` expands multi-value columns into multiple rows, one per array element. Example:...'
+- question: How do you detect credential dumping from registry hives (SAM, SYSTEM, SECURITY)?
+  answer: Monitor file egress from `C:\Windows\System32\config\*` via Sysmon ID 11 or Event 4663....
+- question: Describe the Splunk `search` pipeline order for optimizing detection queries.
+  answer: 'Optimal order: `index=` → `sourcetype=` → `earliest/latest` → field filters → `eval` →...'
+- question: How does XM Cyber's BAS platform differ from Atomic Red Team in testing approach?
+  answer: 'XM Cyber is attack-path-centric: it maps the entire environment and automatically discovers...'
+- question: In CrowdStrike Falcon, what is the `Detection Summary` event and what fields does it provide?
+  answer: '`DetectionSummary` is the primary alert event generated when Falcon correlates multiple...'
+- question: Write a KQL query in Azure Sentinel to detect GCP IAM audit log anomalies (privileged role assignment).
+  answer: '`GCPAuditLogs | where Operation.Name == ''google.iam.admin.v1.SetIamPolicy'' | extend BINDING...'
+- question: What is a Splunk `field extraction` and the difference between inline, props.conf, and transforms.conf?
+  answer: Inline extractions use `rex` in SPL. `props.conf` defines extraction rules at index time or...
+- question: How do you detect rundll32.exe executing DLLs from user-writable paths?
+  answer: 'Monitor Sysmon ID 7 or Event 4688. KQL: `DeviceProcessEvents | where FileName ==...'
+- question: What is the difference between `alert` severity and `incident` severity in Microsoft Sentinel?
+  answer: Alert severity is set by the analytic rule and reflects the rule author's assessment of a...
+- question: What are Splunk event types and how do they streamline triage?
+  answer: Event types are saved search-time tags that categorize events. Example:...
+- question: How do you detect sysinternals PsExec lateral movement using Windows Event Logs?
+  answer: Monitor Event ID 4624 Logon Type 3 followed by Event ID 4688 for `psexesvc.exe` execution....
+- question: What is the `where` vs `filter` operator in KQL and which should you prefer?
+  answer: '`where` and `filter` are functionally identical — both filter rows by a boolean expression....'
+- question: What is a Splunk `eval` function `split()` and how is it useful in parsing detections?
+  answer: '`split` splits string X into a multivalue field. Use: `| eval domains = split | eval domain...'
+- question: How does Azure UEBA differentiate from rule-based detections in Sentinel?
+  answer: Azure UEBA uses ML to establish baseline profiles of users, devices, and applications —...
+- question: In CrowdStrike, what is the process for staging a detection rule rollout?
+  answer: Create the rule in 'Detect Only' mode in a staging sensor group. Monitor 7-14 days of...
+- question: Write a KQL query to detect suspicious SMB connections from Domain Controllers (lateral movement indicator).
+  answer: '`DeviceNetworkEvents | where RemotePort == 445 and InitiatingProcessFileName != ''System'' |...'
+- question: How do you detect and handle false positives in a 'New Service Installation' detection?
+  answer: Implement an exclusion lookup for known-good vendor services. Whitelist specific image...
+- question: How does SafeBreach's BAS platform generate attacker 'methods' vs. generic TTP simulations?
+  answer: SafeBreach's Hacker's Playbook curates actual attacker methods derived from real-world...
+- question: In KQL, what is the `range` operator and how can you use it for detection baselining?
+  answer: '`range` generates a single-column table of sequential values. Example: `let Hours = range h...'
+- question: What are the three primary prevention levels in CrowdStrike Falcon sensor policies?
+  answer: '`Prevention` — blocks or kills malicious/suspicious activity automatically. `Detection` —...'
+- question: How do you detect a LOLBin chain — e.g., regsvr32 downloading and executing via COM?
+  answer: 'Correlate process creation events in sequence within a short window: `regsvr32.exe` →...'
+- question: Write a KQL query to detect Azure NSG flow log anomalies indicating port scanning.
+  answer: '`AzureDiagnostics | where Category == ''NetworkSecurityGroupFlowEvent'' | where FlowStatus_s...'
+- question: What is Splunk `metadata` command and how does it help with data discovery?
+  answer: '`metadata` returns summary information about indexed data: sourcetypes, hosts, sources, and...'
+- question: How do you detect `csc.exe` (C# compiler) being invoked on-the-fly by Office applications?
+  answer: 'KQL: `DeviceProcessEvents | where InitiatingProcessFileName in~ and FileName == ''csc.exe''...'
+- question: How does Defender for Endpoint's 'Custom Detections' differ from ASR rules?
+  answer: Custom detections are KQL-based analytic rules that run on advanced hunting data to surface...
+- question: What is a 'honeytoken' and how do you detect its access in KQL?
+  answer: honeytoken is a fake credential, file, or database record planted to lure attackers. In...
+- question: How do you create a Splunk lookup that auto-updates from an API every hour using a scheduled search?
+  answer: Create a scheduled search that runs the API call via the `url_get` or custom Python...
+- question: Write a KQL query to detect malicious OAuth app consent in Azure AD.
+  answer: '`AuditLogs | where OperationName == ''Consent to application'' | where Result == ''Success'' |...'
+- question: How do you detect DLL side-loading for persistence or privilege escalation?
+  answer: Monitor Sysmon ID 7 for DLLs loaded from user-writable paths by trusted executables. Also...
+- question: In Splunk, what does `fillnull` do and when is it needed in detection searches?
+  answer: '`fillnull` replaces null values in specified fields with a default value. Use it before...'
+- question: How does the Caldera Sandcat plugin differ from 54ndc47 plugin in detection testing?
+  answer: Sandcat is a Go-based agent that uses HTTP/HTTPS for C2 communication — it generates...
+- question: Write a KQL query to detect CloudTrail events for S3 bucket policy changes that grant public access.
+  answer: '`AWSCloudTrail | where EventName == ''PutBucketPolicy'' | extend Policy =...'
+- question: How does the `eval` function `like()` differ from `match()` in Splunk?
+  answer: '`like` uses SQL-style wildcard patterns — simpler but limited. `match` uses PCRE regex,...'
+- question: How do you detect 'installutil.exe' (LOLBin) being used to execute managed code?
+  answer: Monitor process creation for `installutil.exe` with command line containing `/LogFile=` or...
+- question: In KQL, how do you use the `percentiles()` aggregation function in detection queries?
+  answer: '`percentiles` returns multiple percentile estimates efficiently. Use to establish...'
+- question: How do you detect timestomping (modifying file timestamps to evade detection)?
+  answer: 'Detection via Sysmon ID 2 — logs original and modified creation time. KQL: `DeviceEvents |...'
+- question: Write a KQL query to detect Azure AD Identity Protection high-risk user sign-in and correlate with Defender alerts.
+  answer: '`let RiskyUsers = AADUserRiskEvents | where RiskLevel == ''high'' and TimeGenerated > ago |...'
+- question: What is the difference between 'prevention' and 'detection' in Microsoft Defender for Endpoint's ASR rules?
+  answer: ASR rules configured to 'Block' actively prevent the action. 'Audit' mode allows the action...
+- question: How do you detect suspicious `forfiles.exe` or `xcopy.exe` usage (data staging for exfiltration)?
+  answer: Monitor these File Management LOLBins when accessing changed files. KQL:...
+- question: In KQL, what is the difference between `datetime` and `timespan` data types?
+  answer: '`datetime` represents an absolute point in time. `timespan` represents a duration. Use...'
+- question: How do you detect a UAC bypass using the 'fodhelper.exe' technique?
+  answer: Monitor registry modification to `HKCU\Software\Classes\ms-settings\shell\open\command` and...
+- question: What is the Splunk `stats` function `dc()` and how does it differ from `count()`?
+  answer: '`dc` returns the distinct count of unique values for that field. `count` returns the total...'
+- question: How do you detect the 'PrintNightmare' CVE-2021-34527 exploitation via Windows Event Logs?
+  answer: Monitor Event ID 316 or 4. Sysmon ID 1 for `spoolsv.exe` spawning `rundll32.exe`. Also...
+- question: What is the Splunk `regex` command and how does it differ from `where match()`?
+  answer: '`regex` directly filters events matching a provided regular expression on a specified field...'
+- question: In KQL, what is the purpose of the `project-away` operator?
+  answer: '`project-away` removes specific columns from the result set while keeping all others. Use...'
+- question: What is the purpose of the `BehaviorAnalytics` table in Microsoft Sentinel and what scoring does it provide?
+  answer: '`BehaviorAnalytics` contains UEBA scoring: `AnomalyProbability`, `AnomalyScore`, and...'
+- question: How do you detect a compromise via Azure AD Connect synchronization account abuse?
+  answer: Monitor sign-ins from the `AAD_*` connector accounts. Detect unusual password resets...
+- question: How do AttackIQ and Picus differ in their approach to breach and attack simulation?
+  answer: AttackIQ is scenario-based — it runs full attack campaigns to test the entire kill chain...
+- question: Write a KQL query to detect suspicious Office application spawning LNK files (potential persistence).
+  answer: '`DeviceProcessEvents | where InitiatingProcessFileName in~ | where FileName == ''cmd.exe'' or...'
+- question: What is a 'suppression' rule in Microsoft Sentinel and how does it reduce alert fatigue?
+  answer: suppression in an analytic rule stops generating alerts for the same entity within a...
+- question: How do you detect `wmic.exe` used for process execution (lateral movement)?
+  answer: Event ID 4688 or Sysmon ID 1 for `wmic.exe` with `/node:` flag specifying a remote host. In...
+- question: In CrowdStrike Falcon, what is the role of the `prevention_policy` field in DetectionSummary events?
+  answer: '`prevention_policy` indicates which active prevention policy governed the sensor at...'
+- question: What is the `mvzip` Splunk function and how can it pair two multivalue fields?
+  answer: '`mvzip` combines two multivalue fields element-by-element into a single multivalue field....'
+- question: How do you detect a 'Skeleton Key' attack on a Domain Controller?
+  answer: 'Skeleton key malware patches LSASS to accept a master password. Detect via: abnormal logon...'
+- question: In KQL, what does the `datatable` operator do and how is it useful for detection testing?
+  answer: '`datatable` declares an in-memory table with specified column schemas and literal data....'
+- question: How do you detect `net.exe` enumeration of domain groups (reconnaissance)?
+  answer: Sysmon ID 1 / Event 4688 for `net.exe` with commands like `group`, `user`, `localgroup`,...
+- question: Write a KQL query in Azure Sentinel to detect Azure AD account enumeration (password spray indicator).
+  answer: '`SigninLogs | where ResultType == ''50126'' and ResultDescription == ''Invalid username or...'
+- question: How do you detect a WMI backdoor using permanent event consumers?
+  answer: 'Query the WMI repository for suspicious persistence: `Get-WmiObject -Namespace...'
+- question: What is the difference between 'custom detection' and 'hunting query' in Microsoft Sentinel?
+  answer: custom detection runs on a schedule, triggers alerts, and can generate incidents. A hunting...
+- question: How do you detect Azure CLI commands executed from a compromised machine?
+  answer: 'Monitor Sysmon ID 1/Event 4688 for `az.exe` execution. KQL: `DeviceProcessEvents | where...'
+- question: How do you detect AD CS (Active Directory Certificate Services) abuse - ESC8 (NTLM Relay to AD CS)?
+  answer: Monitor Windows Event ID 4876 or Event ID 4886. Combine with Web Application Proxy logs for...
+- question: What is the difference between a `threat intelligence` indicator and a `custom detection` in Microsoft Sentinel?
+  answer: Threat intelligence indicators are IOCs mapped to entities that Sentinel matches against...
+- question: How do you detect suspicious RDP connection from a non-employee device or unknown IP?
+  answer: Correlate Event ID 4624 Logon Type 10 with a lookup of known corporate devices and VPN exit...
+- question: What is `series_periods_detect()` in KQL and how does it detect beaconing?
+  answer: '`series_periods_detect` automatically identifies periodic patterns in a time series using...'
+- question: How do you detect EternalBlue (MS17-010) exploitation via SMB logs?
+  answer: Monitor Event ID 5145 with extreme access patterns, or Sysmon ID 3 for SMB connections with...
+- question: What is a Splunk `workflow_action` and how can it automate response in detection?
+  answer: workflow action is a link on a field value in Splunk UI that triggers an external action....
+- question: How does detection-as-code handle rule versioning and rollback?
+  answer: 'Each detection rule is a file stored in Git. Version tags on releases. Rollback: revert the...'
+- question: In Splunk, what is the `strcat` command and how does it help in detection?
+  answer: '`strcat` concatenates field values into a new field. Use: `index=proxy | strcat src_ip ":"...'
+- question: What is a SOC feedback loop and what KPIs are measured quarterly for detection improvement?
+  answer: SOC feedback loop is a structured process where analysts report false positives, detection...
+- question: How do you create a Splunk data model for network traffic detections?
+  answer: Define a data model in Settings > Data Models with an 'All_Network_Traffic' dataset...
+- question: How do you detect suspicious `certutil.exe` usage for encoding and exfiltration of data?
+  answer: Sysmon ID 1 / Event 4688 for `certutil.exe` with `-encode` or `-decode` flags on...
+- question: What is a KQL user-defined function and how do you use it to standardize detection logic?
+  answer: user-defined function is a reusable query body stored in a database or created with `let` +...
+- question: How do you detect `powershell.exe` downloading and executing a payload (fileless malware)?
+  answer: Monitor Sysmon ID 1 / Event 4688 for powershell with `-Command`, `-EncodedCommand`, or...
+- question: What is an 'alert fatigue' metric and what threshold indicates problematic rules?
+  answer: 'Alert fatigue occurs when analysts ignore alerts due to high volume. Metric: Alerts per...'
+- question: In Splunk, how do you implement a sliding window threshold using the `streamstats` command?
+  answer: '`streamstats` calculates statistics over a sliding window of events. Example:...'
+- question: What metric defines the `alert-to-incident ratio` and why is it important for detection ROI?
+  answer: Alert-to-incident ratio = Number of confirmed incidents / Total number of alerts. A ratio...
+- question: How do you detect a Golden Ticket attack using Windows Event Logs?
+  answer: Monitor Event ID 4624 with Logon Type 2 or 10 where the account has high privileges but the...
+- question: What is the difference between a `DetectionSummary` and a `ProcessRollup2` event in CrowdStrike?
+  answer: '`DetectionSummary` is the high-level alert event — it describes the detected behavior,...'
+- question: What are three key detection metrics a SOC manager should review monthly for detection effectiveness?
+  answer: MTTD — trend should decrease. FP rate per rule — rules exceeding 20% require tuning....
+- question: How do you detect LSA Protection (RunAsPPL) bypass attempts?
+  answer: Event ID 4688 for process creation of `mimikatz.exe` / `mimidrv.sys`. Also monitor registry...
+- question: How do you build a detection rule for Log4Shell (CVE-2021-44228) exploitation attempts using network logs?
+  answer: Detect JNDI injection patterns in HTTP headers, user agents, and URL parameters:...
+- question: What is a 'tagging rule' in Splunk and how does it support MITRE ATT&CK mapping?
+  answer: Tagging rules in `tags.conf` automatically apply key-value tags to events when field values...
+- question: How do you detect a 'stolen token' used for lateral movement via Invoke-TheHash or similar tools?
+  answer: Monitor Event ID 4624 Logon Type 3 with `Authentication_Package=NTLM` and...
+- question: How do you detect a DCSync attack via directory replication service abuse?
+  answer: Monitor Event ID 4662 where `AccessMask` indicates `DS-Replication-Get-Changes` or...

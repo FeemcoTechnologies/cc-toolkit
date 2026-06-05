@@ -1,0 +1,403 @@
+title: CCIS
+description: Certified Cyber Intelligence Specialist — threat intelligence, CTI frameworks, analysis methods, OSINT, reporting
+cards:
+- question: What are the phases of the intelligence lifecycle?
+  answer: Direction → Collection → Processing → Analysis → Dissemination → Feedback
+- question: What happens in the Direction phase?
+  answer: Define intel requirements, priorities, gaps — what decisions need intelligence support
+- question: What happens in the Collection phase?
+  answer: Gathering raw data from various sources (OSINT, HUMINT, SIGINT, TECHINT)
+- question: What happens in the Processing phase?
+  answer: Collating, converting, and translating raw data into usable format
+- question: What happens in the Analysis phase?
+  answer: Evaluating, analyzing, and integrating processed data into intelligence
+- question: What happens in the Dissemination phase?
+  answer: Delivering intelligence products to consumers (executives, analysts, operators)
+- question: What happens in the Feedback phase?
+  answer: Consumer feedback refines future direction and collection priorities
+- question: What are intelligence requirements (IRs/PIRs)?
+  answer: Specific questions that drive intelligence collection
+- question: What is strategic intelligence?
+  answer: High-level, long-term intelligence for decision-makers (threat landscape, trends)
+- question: What is operational intelligence?
+  answer: Medium-term intelligence for planning operations (campaigns, TTP evolution)
+- question: What is tactical intelligence?
+  answer: Short-term, actionable intelligence for immediate operations (IoCs, attack signatures)
+- question: What is technical intelligence?
+  answer: Deep analysis of technical artifacts (malware analysis, vulnerability research)
+- question: What is the Admiralty Scale?
+  answer: System for rating intelligence source reliability and information confidence (A-F, 1-6)
+- question: What is the Admiralty Scale source reliability?
+  answer: ', B, C, D, E, F'
+- question: What is the Admiralty Scale information confidence?
+  answer: 1, 2, 3, 4, 5, 6
+- question: What is the Diamond Model?
+  answer: 'Intrusion analysis framework: Adversary, Capability, Infrastructure, Victim'
+- question: What are the six phases of the Cyber Kill Chain?
+  answer: Reconnaissance → Weaponization → Delivery → Exploitation → Installation → C2 → Actions on...
+- question: What is MITRE ATT&CK?
+  answer: Knowledge base of adversary tactics, techniques, and procedures based on real-world...
+- question: How many tactics are in MITRE ATT&CK (Enterprise v14)?
+  answer: '14 tactics: Reconnaissance through Impact'
+- question: What is a technique in ATT&CK?
+  answer: A specific method an adversary uses to achieve a tactical objective
+- question: What is a sub-technique?
+  answer: A more detailed variant of a technique (e.g., T1059.001 = PowerShell)
+- question: What is a software entry in ATT&CK?
+  answer: Malware or tools used by adversaries (classified as tool or malware)
+- question: What is a group entry in ATT&CK?
+  answer: Known threat actor groups with associated techniques and software
+- question: What is a campaign in ATT&CK?
+  answer: Set of intrusions with common adversary goals over a specific period
+- question: What is the ATT&CK data source?
+  answer: Type of telemetry that can detect a technique (e.g., process creation, network connection)
+- question: What is the Unified Kill Chain?
+  answer: 18-phase kill chain combining Lockheed Martin, MITRE ATT&CK, and others
+- question: What is the STIX standard?
+  answer: Structured Threat Information Expression — standardized language for CTI data
+- question: What is TAXII?
+  answer: Trusted Automated Exchange of Intelligence Information — protocol for STIX sharing
+- question: What is MISP?
+  answer: Malware Information Sharing Platform — open-source threat intelligence platform
+- question: What is a MISP event?
+  answer: Container for related attributes (IoCs) with a specific threat context
+- question: What is a MISP attribute?
+  answer: Individual IoC (IP, hash, domain, email, etc.) with type, category, and timestamp
+- question: What is a MISP galaxy?
+  answer: Knowledge base linked to events/attributes (MITRE ATT&CK, threat actors, ransomware)
+- question: What is OpenCTI?
+  answer: Open-source threat intelligence platform built on STIX 2.1 with workspaces and connectors
+- question: What is the OpenCTI architecture?
+  answer: Frontend UI + GraphQL API + ElasticSearch + RabbitMQ + connectors
+- question: What is TheHive?
+  answer: Open-source case management platform for incident response and threat intelligence
+- question: What is an IoC (Indicator of Compromise)?
+  answer: Forensic evidence of an intrusion (IP, hash, domain, registry key, file path)
+- question: What is an IoA (Indicator of Attack)?
+  answer: Behavioral indicators showing attack in progress (unlike IoC which is forensic)
+- question: What are atomic indicators?
+  answer: Indicators that cannot be broken down (IP address, email address, hash)
+- question: What are computed indicators?
+  answer: Indicators derived from other data (path, registry key, mutex)
+- question: What are behavioral indicators?
+  answer: Patterns of activity (beaconing, login patterns, process chains)
+- question: What is TLP (Traffic Light Protocol)?
+  answer: 'Classification system for sharing: WHITE, GREEN, AMBER, RED'
+- question: What is a TLP:RED indicator?
+  answer: For named recipients only — no further sharing
+- question: What is TLP:AMBER?
+  answer: Limited sharing within the organization and clients with a need-to-know
+- question: What is TLP:GREEN?
+  answer: May be shared within the cybersecurity community
+- question: What is TLP:WHITE?
+  answer: Public — no restrictions on sharing
+- question: What is OSINT?
+  answer: Open Source Intelligence — intelligence from publicly available sources
+- question: What are OSINT sources?
+  answer: Social media, news, public databases, search engines, paste sites, dark web, academic papers
+- question: What is HUMINT?
+  answer: Human Intelligence — information from human sources (informants, interviews)
+- question: What is SIGINT?
+  answer: Signals Intelligence — intercepted communications and electronic signals
+- question: What is TECHINT?
+  answer: Technical Intelligence — analysis of technical systems and equipment
+- question: What is an intelligence gap?
+  answer: Missing information needed to answer an intelligence requirement
+- question: What is structured analytic technique (SAT)?
+  answer: Formal method to reduce bias and improve analysis quality
+- question: What is Analysis of Competing Hypotheses (ACH)?
+  answer: Systematically comparing evidence against multiple hypotheses to avoid confirmation bias
+- question: What is a what-if analysis?
+  answer: Asking 'what if my hypothesis is wrong?' to identify alternative outcomes
+- question: What is devil's advocacy?
+  answer: Assigning someone to argue against the prevailing hypothesis
+- question: What is red teaming?
+  answer: Simulating an adversary's perspective to test assumptions and defenses
+- question: What is premortem?
+  answer: Imagining a future failure has occurred and working backward to identify causes
+- question: What is confirmation bias?
+  answer: Tendency to favor information that confirms existing beliefs
+- question: What is anchoring bias?
+  answer: Over-relying on the first piece of information encountered
+- question: What is groupthink?
+  answer: Pressure to conform within a group, suppressing dissenting views
+- question: What is mirror imaging?
+  answer: Assuming others think the same way you do
+- question: What is availability heuristic?
+  answer: Overestimating likelihood of events that come easily to mind
+- question: What is estimative language?
+  answer: Phrasing that conveys confidence levels (e.g., 'likely', 'unlikely', 'almost certainly')
+- question: What is the NATO estimative probability scale?
+  answer: Almost Certain (>90%), Probable (60-90%), Possible (40-60%), Improbable (10-40%), Remote (<10%)
+- question: What is a link analysis chart?
+  answer: Visual representation of relationships between entities (people, orgs, IPs, domains)
+- question: What is a timeline analysis?
+  answer: Chronological ordering of events to identify patterns and causal relationships
+- question: What is geospatial intelligence (GEOINT)?
+  answer: Analysis of geographic information and satellite imagery
+- question: What is pattern analysis?
+  answer: Identifying recurring sequences or behaviors across multiple observations
+- question: What is anomaly detection?
+  answer: Identifying deviations from established baselines
+- question: What is trend analysis?
+  answer: Tracking changes in threat activity over time
+- question: What is a threat report?
+  answer: Detailed analysis of a specific threat, actor, or campaign
+- question: What is an executive brief?
+  answer: High-level intelligence summary for non-technical decision-makers
+- question: What is an advisory?
+  answer: Timely warning about an imminent threat or vulnerability
+- question: What is an alert?
+  answer: Urgent notification of a current or imminent threat (often automated)
+- question: What is a threat bulletin?
+  answer: Regular (weekly/monthly) summary of new threats and trends
+- question: What is a threat actor profile?
+  answer: Detailed analysis of a specific threat actor's TTPs, targeting, and capabilities
+- question: What is a campaign analysis?
+  answer: Deep dive into a specific intrusion campaign with timelines and attribution
+- question: What is the NIST IR lifecycle?
+  answer: Preparation → Detection & Analysis → Containment, Eradication, Recovery → Post-Incident
+- question: What is the intelligence-to-operations pipeline?
+  answer: Intel → Detect → Investigate → Respond → Feedback (intel-informed operations)
+- question: What is the Tor network?
+  answer: Anonymous communication network using onion routing (layered encryption)
+- question: What is I2P (Invisible Internet Project)?
+  answer: Anonymous overlay network focused on hidden services
+- question: What are dark web markets?
+  answer: E-commerce sites on Tor/I2P selling illegal goods and services
+- question: What is blockchain analysis?
+  answer: Tracking cryptocurrency transactions on public ledgers to identify entities
+- question: What is wallet clustering?
+  answer: Grouping cryptocurrency addresses controlled by the same entity
+- question: What is threat attribution?
+  answer: Identifying the actor behind an attack based on TTPs, infrastructure, and tradecraft
+- question: What are attribution pitfalls?
+  answer: False flags, public infrastructure pivoting, copycat attacks, punting on weak evidence
+- question: What is OPSEC (Operations Security)?
+  answer: Process to protect sensitive information from adversaries
+- question: What is a honeypot?
+  answer: Decoy system designed to attract and detect attackers
+- question: What is a honeytoken?
+  answer: Decoy data (fake credentials, files, database records) that triggers alerts when accessed
+- question: What is a canary token?
+  answer: Unique token (URL, document, DNS name) that alerts when accessed
+- question: What is deception technology?
+  answer: Placing decoys across network to detect lateral movement
+- question: What is an ISAC?
+  answer: Information Sharing and Analysis Center — sector-specific threat intel sharing group
+- question: What is FS-ISAC?
+  answer: Financial Services ISAC — threat sharing for banking/finance sector
+- question: What is MS-ISAC?
+  answer: Multi-State ISAC — threat sharing for US state/local governments
+- question: What is a TTP?
+  answer: Tactics, Techniques, and Procedures — the behavior pattern of an adversary
+- question: What is the Pyramid of Pain?
+  answer: 'IoC hierarchy: Hash → IP → Domain → Host Artifacts → Network Artifacts → Tools → TTPs'
+- question: Why are TTPs at the top of the Pyramid of Pain?
+  answer: TTPs are hardest for adversaries to change, making them most valuable for detection
+- question: Why are hashes at the bottom of the Pyramid of Pain?
+  answer: Hashes are easiest for adversaries to change (recompile slightly different binary)
+- question: What is threat intelligence maturity?
+  answer: 'Capability levels: Level 1, Level 2, Level 3, Level 4'
+- question: What is TTP intelligence?
+  answer: Deep understanding of adversary methods, not just IoCs
+- question: What is the difference between data, information, and intelligence?
+  answer: Data → Processed → Information → Analyzed → Intelligence
+- question: What is the intelligence cycle in practice?
+  answer: Continuous iterative process, not a one-time linear flow
+- question: What is Bellingcat?
+  answer: Open-source investigative journalism group known for OSINT analysis
+- question: What is Shodan?
+  answer: Search engine for internet-connected devices and services
+- question: What is Censys?
+  answer: Search engine for internet assets (IPs, domains, certificates)
+- question: What is VirusTotal?
+  answer: File/URL analysis platform with multi-AV scanning and threat intel
+- question: What is MalwareBazaar?
+  answer: Community platform for sharing malware samples
+- question: What is URLhaus?
+  answer: Community platform for sharing malicious URLs
+- question: What is ThreatFox?
+  answer: Community platform for sharing IoCs
+- question: What is Feodo Tracker?
+  answer: Dridex/Emotet/IcedID botnet C2 tracker
+- question: What is AlienVault OTX?
+  answer: Open Threat Exchange — community threat intelligence platform
+- question: What is Recorded Future?
+  answer: Commercial threat intelligence platform with OSINT + dark web collection
+- question: What is CrowdStrike Falcon Intel?
+  answer: Commercial threat intelligence with adversary profiling and attribution
+- question: What is IBM X-Force?
+  answer: IBM's threat intelligence and research division
+- question: What is Mandiant Threat Intelligence?
+  answer: Commercial threat intelligence with deep actor and campaign research
+- question: What is an intelligence product format?
+  answer: 'Structured format: Title, classification, key findings, analysis, outlook, recommendations'
+- question: What is an NIE (National Intelligence Estimate)?
+  answer: US intelligence community's most authoritative written assessment
+- question: What is an EPM (Executive Panel Memo)?
+  answer: Executive-level intelligence summary
+- question: What is source protection in CTI?
+  answer: Protecting intelligence sources and methods from exposure
+- question: What is need-to-know?
+  answer: Principle that intelligence is shared only with those who need it for their duties
+- question: What is the difference between tactical and strategic CTI?
+  answer: 'Tactical: IoCs, immediate response. Strategic: trends, adversary intent, long-term planning'
+- question: What is a purple team?
+  answer: Collaboration between red (attack) and blue (defense) teams to improve both
+- question: What is the intelligence value chain?
+  answer: Collection → Analysis → Production → Dissemination → Action (measureable security outcomes)
+- question: What is FINTEL (Financial Intelligence)?
+  answer: Analysis of financial data and transactions for illicit finance tracking
+- question: What is SOCMINT (Social Media Intelligence)?
+  answer: Intelligence gathered from social media platforms
+- question: What is SIGINT (Signals Intelligence)?
+  answer: Interception of signals/communications between people or systems
+- question: What is GEOINT (Geospatial Intelligence)?
+  answer: Analysis of imagery, maps, terrain data
+- question: What is a false flag operation?
+  answer: Attack made to appear as if conducted by a different actor to mislead attribution
+- question: What is a cyber mercenary?
+  answer: For-hire hackers conducting attacks for financial gain on behalf of clients
+- question: What is hacktivism?
+  answer: Cyber attacks motivated by political or social activism
+- question: What is an ATP (Advanced Persistent Threat)?
+  answer: State-sponsored or highly resourced threat actor with long-term access objectives
+- question: What is a cyber crime group?
+  answer: Financially motivated organized crime group conducting cyber attacks
+- question: What is the Intelligence Preparation of the Battlefield (IPB)?
+  answer: Systematic analysis of the operational environment for military/intelligence planning
+- question: What is the OODA loop?
+  answer: Observe → Orient → Decide → Act — decision-making cycle adapted for cybersecurity
+- question: What is a SIGINT intercept?
+  answer: Captured communication signal for intelligence purposes
+- question: What is ELINT?
+  answer: Electronic Intelligence — intelligence from electronic emissions (radar, jammers)
+- question: What is COMINT?
+  answer: Communications Intelligence — intelligence from intercepted communications
+- question: What is FISINT?
+  answer: Foreign Instrumentation Signals Intelligence — telemetry, tracking, command data
+- question: What is measurement and signature intelligence (MASINT)?
+  answer: Technical intelligence from distinct physical signatures (radar, acoustic, nuclear, chemical)
+- question: What is a SIGDEV?
+  answer: Signals development — analyzing unknown signals to extract intelligence
+- question: What is traffic analysis?
+  answer: Analyzing communication patterns (volume, timing, routing) without content
+- question: What is the 5-Eyes alliance?
+  answer: US, UK, Canada, Australia, New Zealand — intelligence sharing agreement
+- question: What is the 9-Eyes alliance?
+  answer: 5-Eyes + Denmark, France, Netherlands, Norway
+- question: What is the 14-Eyes alliance?
+  answer: 9-Eyes + Belgium, Germany, Italy, Spain, Sweden
+- question: What is a FVEY (Five Eyes) intelligence sharing principle?
+  answer: Nations agree not to spy on each other and share signals intelligence
+- question: What is the NSA?
+  answer: National Security Agency — US SIGINT and security agency
+- question: What is GCHQ?
+  answer: Government Communications Headquarters — UK SIGINT and security agency
+- question: What is an intelligence fusion center?
+  answer: Multi-agency center combining intelligence from multiple sources for analysis
+- question: What is all-source intelligence?
+  answer: Intelligence integrating information from all collection disciplines
+- question: What is a J2 position?
+  answer: Military intelligence staff position (J2 = Intelligence at joint command level)
+- question: What is a G2 position?
+  answer: Military intelligence officer at the division/brigade level
+- question: What is the National Intelligence Strategy?
+  answer: US intelligence community strategic direction document
+- question: What is the Intelligence Reform and Terrorism Prevention Act (IRTPA)?
+  answer: 2004 US law reorganizing intelligence community after 9/11
+- question: What is the DNI?
+  answer: Director of National Intelligence — oversees US intelligence community
+- question: What is the CIA?
+  answer: Central Intelligence Agency — US foreign human intelligence (HUMINT) agency
+- question: What is the DIA?
+  answer: Defense Intelligence Agency — US military intelligence agency
+- question: What is the FBI's intelligence role?
+  answer: Domestic intelligence and counterintelligence in the US
+- question: What is the NCTC?
+  answer: National Counterterrorism Center — US counterterrorism intelligence fusion
+- question: What is an intelligence cycle failure?
+  answer: Breakdown in the intelligence process leading to missed warnings or inaccurate assessments
+- question: What was the intelligence failure of 9/11?
+  answer: Failure to connect disparate intelligence — 'failure of imagination' per 9/11 Commission
+- question: What is politization of intelligence?
+  answer: Distorting intelligence to support predetermined policy positions
+- question: What is intelligence oversight?
+  answer: Congressional and executive branch monitoring of intelligence activities
+- question: What is the FISA court?
+  answer: Foreign Intelligence Surveillance Court — authorizes surveillance warrants
+- question: What is FISA Section 702?
+  answer: Allows targeting non-US persons outside US for foreign intelligence collection
+- question: What is a National Security Letter (NSL)?
+  answer: FBI administrative subpoena for records — includes gag order
+- question: What is the USA PATRIOT Act?
+  answer: Post-9/11 law expanding surveillance and intelligence authority
+- question: What is a warrant canary?
+  answer: Published statement that no NSL/warrant has been received; removal indicates secret subpoena
+- question: What is a classified national security information level?
+  answer: Confidential (low), Secret (medium), Top Secret (high), SCI (sensitive compartmented)
+- question: What is SCI?
+  answer: Sensitive Compartmented Information — higher classification with additional handling controls
+- question: What is a SAP?
+  answer: Special Access Program — highly classified programs with restricted access
+- question: What is NOFORN?
+  answer: Not Releasable to Foreign Nationals — restricted to US persons
+- question: What is a BDA (Battle Damage Assessment)?
+  answer: Assessment of damage inflicted on a target after a military operation
+- question: What is SIGINT reporting format (SIGINT)?
+  answer: Formatted report with header, body, and footer
+- question: What is a daily intelligence summary?
+  answer: Regular intelligence update on current threats and developments
+- question: What is a threat assessment?
+  answer: 'Evaluation of a specific threat: capability, intent, opportunity, history'
+- question: What is a vulnerability assessment in intelligence?
+  answer: Identifying weaknesses that could be exploited by a threat
+- question: What is the Intelligence Community Directive (ICD) 203?
+  answer: 'Analytic standards: sourcing, uncertainty, consistency, objectivity'
+- question: What is ICD 206?
+  answer: Sourcing requirements for intelligence products — origin, reliability, confidence
+- question: What is ICD 208?
+  answer: Write for maximum utility — clear, concise, timely intelligence products
+- question: What is analytic integrity?
+  answer: Basing analysis on evidence, considering alternatives, avoiding bias
+- question: What is alternative futures analysis?
+  answer: Developing multiple plausible futures rather than a single prediction
+- question: What is a signpost in intelligence?
+  answer: Observable indicator that an event or decision is likely
+- question: What is a trigger event?
+  answer: Event that signals a change in threat posture or activity
+- question: What is the PIR (Priority Intelligence Requirement) process?
+  answer: Commander's prioritized intelligence needs that drive collection
+- question: What is a collection plan?
+  answer: Document detailing what intelligence needs to be collected and by which source
+- question: What is a sensor in intelligence collection?
+  answer: Any collection capability (technical, human, open source)
+- question: What is triangulation in intelligence analysis?
+  answer: Using multiple independent sources to corroborate an assessment
+- question: What is source validation?
+  answer: Assessing source reliability and access to information claimed
+- question: What is source identity protection?
+  answer: Protecting source identity to maintain access and safety
+- question: What is a cover story?
+  answer: Fabricated explanation for intelligence gathering activities
+- question: What is a legend in intelligence?
+  answer: Complete fabricated identity for a covert intelligence officer
+- question: What is a case officer?
+  answer: Intelligence officer who recruits and handles human sources
+- question: What is a dead drop?
+  answer: Pre-arranged location for secretly exchanging materials
+- question: What is brush pass?
+  answer: Brief physical exchange in passing between intelligence officers
+- question: What is a signal intelligence reporting convention?
+  answer: FVEY reporting standards for format, caveats, and classification
+- question: What is the MICE recruitment model?
+  answer: 'Motivation for spies: Money, Ideology, Compromise, Ego'
+- question: What is the RASCLS recruitment approach?
+  answer: 'Recruitment factors: Reciprocation, Authority, Scarcity, Consistency, Liking, Social proof'
+- question: What is surveillance detection?
+  answer: Identifying physical or technical surveillance through countermeasures
+- question: What is a surveillance detection route (SDR)?
+  answer: Pre-planned route to identify if being followed
+- question: What is an intelligence cutoff date?
+  answer: Date after which intelligence is considered potentially outdated

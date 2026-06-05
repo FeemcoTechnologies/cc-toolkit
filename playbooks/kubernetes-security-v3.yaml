@@ -1,0 +1,587 @@
+# v3 runbook — Kubernetes security deep-dive
+# Covers k8s, k3s, microk8s, kind, minikube, EKS, AKS, GKE, OpenShift, Rancher
+name: "Kubernetes Security Assessment"
+description: "Deep-dive K8s security audit: RBAC escalation paths, network modules (CNI/service mesh/ingress), admission controllers (OPA/Kyverno), pod security (PSA/PSS), secrets in etcd, and multi-provider cluster hardening"
+version: "3.0"
+
+vars:
+  kube_config: ""
+  kube_context: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "Kubernetes security audit — cluster: {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Cluster discovery & provider detection ----
+  - id: cluster_discovery
+    name: "Cluster metadata & provider fingerprint"
+    type: parallel
+    max_workers: 8
+    steps:
+      - id: k8s_version
+        name: "K8s version"
+        tool: kubectl
+        args: ["version", "--short", "-o", "{case_dir}/k8s_version.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/k8s_version.txt"]
+
+      - id: k8s_nodes
+        name: "Node list & OS"
+        tool: kubectl
+        args: ["get", "nodes", "-o", "wide", "-o", "{case_dir}/k8s_nodes.txt"]
+        timeout: 30
+
+      - id: k8s_provider
+        name: "Provider detection (EKS/AKS/GKE/k3s/OpenShift)"
+        tool: kubectl
+        args: ["get", "nodes", "-o", "jsonpath={.items[*].spec.providerID}",
+               "-o", "{case_dir}/k8s_provider.txt"]
+        timeout: 30
+
+      - id: k8s_namespaces
+        name: "All namespaces"
+        tool: kubectl
+        args: ["get", "namespaces", "-o", "wide", "-o", "{case_dir}/k8s_namespaces.txt"]
+        timeout: 30
+
+      - id: k8s_api_versions
+        name: "API versions & capabilities"
+        tool: kubectl
+        args: ["api-versions", "-o", "{case_dir}/k8s_api_versions.txt"]
+        timeout: 30
+
+      - id: k8s_components
+        name: "Control-plane component health"
+        tool: kubectl
+        args: ["get", "componentstatuses", "-o", "{case_dir}/k8s_components.txt"]
+        timeout: 30
+
+      - id: k3s_check
+        name: "k3s-specific detection"
+        tool: kubectl
+        args: ["get", "nodes", "-o", "json",
+               "|", "jq", "'.items[].metadata.labels | with_entries(select(.key | contains(\"k3s\")))'",
+               "-o", "{case_dir}/k3s_detect.txt"]
+        timeout: 30
+
+      - id: openshift_check
+        name: "OpenShift route detection"
+        tool: kubectl
+        args: ["api-resources", "--api-group=route.openshift.io",
+               "-o", "{case_dir}/openshift_detect.txt"]
+        timeout: 30
+
+  # ---- Phase 2: Network modules ----
+  - id: network_modules
+    name: "CNI, NetworkPolicies, service mesh & ingress"
+    type: parallel
+    max_workers: 10
+    steps:
+      - id: cni_detect
+        name: "CNI plugin detection (Calico/Cilium/Flannel/Weave/Antrea)"
+        tool: kubectl
+        args: ["get", "pods", "-n", "kube-system",
+               "-l", "k8s-app in (calico-node,cilium,flannel,weave-net,antrea-agent)",
+               "-o", "{case_dir}/cni_plugins.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/cni_plugins.txt"]
+
+      - id: cni_daemonsets
+        name: "CNI DaemonSets (broad match)"
+        tool: kubectl
+        args: ["get", "daemonsets", "--all-namespaces",
+               "-o", "wide",
+               "|", "grep", "-iE", "(calico|cilium|flannel|weave|antrea|canal|romana|kube-router)",
+               "-o", "{case_dir}/cni_daemonsets.txt"]
+        timeout: 30
+
+      - id: calico_ippool
+        name: "Calico IP pools"
+        tool: calicoctl
+        args: ["get", "ippool", "-o", "{case_dir}/calico_ippools.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/calico_ippools.txt"]
+
+      - id: cilium_status
+        name: "Cilium agent status"
+        tool: cilium
+        args: ["status", "--verbose", "-o", "{case_dir}/cilium_status.txt"]
+        timeout: 30
+
+      - id: network_policies
+        name: "All NetworkPolicies"
+        tool: kubectl
+        args: ["get", "networkpolicies", "--all-namespaces",
+               "-o", "wide", "-o", "{case_dir}/network_policies.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/network_policies.txt"]
+
+      - id: netpol_default_deny
+        name: "Namespaces without default-deny"
+        tool: kubectl
+        args: ["get", "namespaces", "-o", "json",
+               "|", "jq", "-r",
+               "'.items[] | select(.spec.finalizers[]? | contains(\"kubernetes\")) | .metadata.name'",
+               "|", "while", "read", "ns;", "do",
+               "if ! kubectl get networkpolicy -n \"$ns\" -o name | grep -q .;",
+               "then echo \"NO NETPOL: $ns\"; fi; done",
+               "-o", "{case_dir}/netpol_missing.txt"]
+        timeout: 120
+        artifacts: ["{case_dir}/netpol_missing.txt"]
+
+      - id: ingress_controllers
+        name: "Ingress controllers (NGINX/Traefik/HAProxy/Contour/Kong/AWS ALB)"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces",
+               "-l", "app in (ingress-nginx,traefik,haproxy,contour,kong,kong-ingress,aws-load-balancer-controller,azure-application-gateway)",
+               "-o", "{case_dir}/ingress_controllers.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ingress_controllers.txt"]
+
+      - id: ingress_annotation
+        name: "All ingress resources"
+        tool: kubectl
+        args: ["get", "ingress", "--all-namespaces",
+               "-o", "json",
+               "|", "jq", "'.items[] | {ns: .metadata.namespace, name: .metadata.name, host: .spec.rules[0].host, tls: .spec.tls != null}'",
+               "-o", "{case_dir}/ingress_resources.txt"]
+        timeout: 30
+
+      - id: service_mesh
+        name: "Service mesh detection (Istio/Linkerd/Kuma/Consul)"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces",
+               "-l", "app in (istiod,istio-ingressgateway,linkerd-proxy,kuma-control-plane,consul-connect-injector)",
+               "-o", "{case_dir}/service_mesh.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/service_mesh.txt"]
+
+      - id: k8s_dns
+        name: "DNS resolution check (CoreDNS/kube-dns)"
+        tool: kubectl
+        args: ["get", "pods", "-n", "kube-system",
+               "-l", "k8s-app in (coredns,kube-dns)",
+               "-o", "wide", "-o", "{case_dir}/k8s_dns.txt"]
+        timeout: 30
+
+  # ---- Phase 3: RBAC escalation paths ----
+  - id: rbac_audit
+    name: "RBAC deep-dive & escalation paths"
+    type: parallel
+    max_workers: 8
+    steps:
+      - id: cluster_roles
+        name: "ClusterRoleBindings (wildcard subjects)"
+        tool: kubectl
+        args: ["get", "clusterrolebindings", "-o", "wide",
+               "-o", "{case_dir}/cluster_role_bindings.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/cluster_role_bindings.txt"]
+
+      - id: clusterrole_wildcard
+        name: "ClusterRoles with wildcard verbs/resources"
+        tool: kubectl
+        args: ["get", "clusterroles", "-o", "json",
+               "|", "jq", "'.items[] | select(.rules[]?.verbs? | index(\"*\")) | .metadata.name'",
+               "-o", "{case_dir}/clusterrole_wildcard.txt"]
+        timeout: 30
+
+      - id: rolebindings
+        name: "RoleBindings (all namespaces)"
+        tool: kubectl
+        args: ["get", "rolebindings", "--all-namespaces",
+               "-o", "wide", "-o", "{case_dir}/role_bindings.txt"]
+        timeout: 60
+
+      - id: sa_token_automount
+        name: "ServiceAccounts with automount enabled"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.automountServiceAccountToken != false) | .metadata.namespace + \"/\" + .metadata.name'",
+               "-o", "{case_dir}/sa_automount.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/sa_automount.txt"]
+
+      - id: sa_cluster_admin
+        name: "ServiceAccounts bound to cluster-admin"
+        tool: kubectl
+        args: ["get", "clusterrolebindings", "cluster-admin",
+               "-o", "json",
+               "|", "jq", "'.subjects[] | select(.kind == \"ServiceAccount\") | .namespace + \"/\" + .name'",
+               "-o", "{case_dir}/sa_cluster_admin.txt"]
+        timeout: 30
+
+      - id: can_i_escalate
+        name: "Permission check — impersonate / bind / escalate"
+        tool: kubectl
+        args: ["auth", "can-i", "create", "clusterrolebindings",
+               "-o", "{case_dir}/can_i_escalate.txt"]
+        timeout: 30
+
+      - id: whoami
+        name: "Current user/SA permissions"
+        tool: kubectl
+        args: ["auth", "whoami", "-o", "{case_dir}/k8s_whoami.txt"]
+        timeout: 30
+
+      - id: krew_who_can
+        name: "who-can for risky verbs (if krew installed)"
+        tool: kubectl
+        args: ["who-can", "exec", "pods",
+               "-o", "{case_dir}/who_can_exec.txt"]
+        timeout: 30
+
+  # ---- Phase 4: Pod Security ----
+  - id: pod_security
+    name: "Pod Security Standards (PSS/PSA) & Security Contexts"
+    type: parallel
+    max_workers: 8
+    steps:
+      - id: psa_labels
+        name: "Pod Security Admission labels (enforce/audit/warn)"
+        tool: kubectl
+        args: ["get", "namespaces", "-o", "json",
+               "|", "jq", "'.items[] | {ns: .metadata.name, labels: .metadata.labels} | select(.labels.\"pod-security.kubernetes.io/enforce\" != null or .labels.\"pod-security.kubernetes.io/audit\" != null)'",
+               "-o", "{case_dir}/psa_labels.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/psa_labels.txt"]
+
+      - id: privileged_pods
+        name: "Privileged containers"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.containers[]?.securityContext?.privileged == true) | .metadata.namespace + \"/\" + .metadata.name'",
+               "-o", "{case_dir}/privileged_pods.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/privileged_pods.txt"]
+
+      - id: root_containers
+        name: "Containers running as root (no runAsNonRoot)"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.containers[]?.securityContext?.runAsNonRoot != true) | .metadata.namespace + \"/\" + .metadata.name'",
+               "-o", "{case_dir}/root_containers.txt"]
+        timeout: 60
+
+      - id: host_network
+        name: "Host network / hostPID / hostIPC"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.hostNetwork == true or .spec.hostPID == true or .spec.hostIPC == true) | .metadata.namespace + \"/\" + .metadata.name + \" hostNet:\" + (.spec.hostNetwork | tostring) + \" hostPID:\" + (.spec.hostPID | tostring)'",
+               "-o", "{case_dir}/host_namespace_pods.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/host_namespace_pods.txt"]
+
+      - id: hostpath_volumes
+        name: "HostPath volume mounts"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.volumes[]?.hostPath != null) | .metadata.namespace + \"/\" + .metadata.name + \" -> \" + (.spec.volumes[]?.hostPath.path // \"\")'",
+               "-o", "{case_dir}/hostpath_volumes.txt"]
+        timeout: 60
+
+      - id: seccomp
+        name: "Seccomp / AppArmor / Capabilities"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.containers[]?.securityContext?.seccompProfile == null and .metadata.annotations[\"container.apparmor.security.beta.kubernetes.io/*\"] == null) | .metadata.namespace + \"/\" + .metadata.name'",
+               "-o", "{case_dir}/seccomp_missing.txt"]
+        timeout: 60
+
+      - id: capabilities
+        name: "Pods with dangerous Linux capabilities"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'.items[] | select(.spec.containers[]?.securityContext?.capabilities?.add? | index(\"SYS_ADMIN\") != null or index(\"NET_ADMIN\") != null or index(\"SYS_PTRACE\") != null) | .metadata.namespace + \"/\" + .metadata.name'",
+               "-o", "{case_dir}/dangerous_capabilities.txt"]
+        timeout: 60
+
+  # ---- Phase 5: Admission controllers ----
+  - id: admission_controllers
+    name: "Admission webhooks, OPA/Gatekeeper, Kyverno"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: mutating_webhooks
+        name: "MutatingWebhookConfigurations"
+        tool: kubectl
+        args: ["get", "mutatingwebhookconfigurations",
+               "-o", "wide", "-o", "{case_dir}/mutating_webhooks.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/mutating_webhooks.txt"]
+
+      - id: validating_webhooks
+        name: "ValidatingWebhookConfigurations"
+        tool: kubectl
+        args: ["get", "validatingwebhookconfigurations",
+               "-o", "wide", "-o", "{case_dir}/validating_webhooks.txt"]
+        timeout: 30
+
+      - id: opa_gatekeeper
+        name: "OPA/Gatekeeper constraints"
+        tool: kubectl
+        args: ["get", "constrainttemplates",
+               "-o", "{case_dir}/gatekeeper_templates.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/gatekeeper_templates.txt"]
+
+      - id: kyverno_policies
+        name: "Kyverno policies"
+        tool: kubectl
+        args: ["get", "clusterpolicies",
+               "-o", "wide", "-o", "{case_dir}/kyverno_policies.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/kyverno_policies.txt"]
+
+      - id: kyverno_validate
+        name: "Kyverno validate reports"
+        tool: kubectl
+        args: ["get", "policyreports", "--all-namespaces",
+               "-o", "{case_dir}/kyverno_reports.txt"]
+        timeout: 60
+
+  # ---- Phase 6: Secrets & etcd ----
+  - id: secrets_audit
+    name: "Secrets exposure & etcd access"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: secrets_list
+        name: "All secrets (names only)"
+        tool: kubectl
+        args: ["get", "secrets", "--all-namespaces",
+               "-o", "{case_dir}/secrets_list.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/secrets_list.txt"]
+
+      - id: secrets_dockerconfig
+        name: "dockerconfigjson secrets (registry creds)"
+        tool: kubectl
+        args: ["get", "secrets", "--all-namespaces",
+               "-o", "json",
+               "|", "jq", "'.items[] | select(.type == \"kubernetes.io/dockerconfigjson\") | .metadata.namespace + \"/\" + .metadata.name'",
+               "-o", "{case_dir}/dockerconfig_secrets.txt"]
+        timeout: 60
+
+      - id: secrets_tls
+        name: "TLS secrets (expiry check)"
+        tool: kubectl
+        args: ["get", "secrets", "--all-namespaces",
+               "-o", "json",
+               "|", "jq", "'.items[] | select(.type == \"kubernetes.io/tls\") | {ns: .metadata.namespace, name: .metadata.name}'",
+               "-o", "{case_dir}/tls_secrets.txt"]
+        timeout: 60
+
+      - id: etcd_check
+        name: "etcd pod and config"
+        tool: kubectl
+        args: ["get", "pods", "-n", "kube-system",
+               "-l", "component=etcd",
+               "-o", "wide", "-o", "{case_dir}/etcd_pod.txt"]
+        timeout: 30
+
+      - id: external_secrets
+        name: "External Secrets Operator / SealedSecrets"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces",
+               "-l", "app in (sealed-secrets,external-secrets,vault-agent-injector)",
+               "-o", "{case_dir}/external_secrets.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/external_secrets.txt"]
+
+  # ---- Phase 7: Resource abuse & quotas ----
+  - id: resource_audit
+    name: "Resource quotas, limits, and abuse vectors"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: resource_quotas
+        name: "ResourceQuotas by namespace"
+        tool: kubectl
+        args: ["get", "resourcequotas", "--all-namespaces",
+               "-o", "wide", "-o", "{case_dir}/resource_quotas.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/resource_quotas.txt"]
+
+      - id: limit_ranges
+        name: "LimitRanges by namespace"
+        tool: kubectl
+        args: ["get", "limitranges", "--all-namespaces",
+               "-o", "wide", "-o", "{case_dir}/limit_ranges.txt"]
+        timeout: 30
+
+      - id: pod_density
+        name: "Pod density per node"
+        tool: kubectl
+        args: ["get", "pods", "--all-namespaces", "-o", "json",
+               "|", "jq", "'Pod count: ' + ([.items[] | .spec.nodeName] | length | tostring)",
+               "-o", "{case_dir}/pod_density.txt"]
+        timeout: 30
+
+      - id: hpa_list
+        name: "HorizontalPodAutoscalers"
+        tool: kubectl
+        args: ["get", "hpa", "--all-namespaces",
+               "-o", "wide", "-o", "{case_dir}/hpa_list.txt"]
+        timeout: 30
+
+  # ---- Phase 8: PodSecurityPolicy (deprecated) / OPA fallback ----
+  - id: legacy_psp
+    name: "Legacy PSP check (pre-1.25)"
+    type: conditional
+    condition:
+      any_contains:
+        ref: k8s_version
+        values: ["1.24", "1.23", "1.22", "1.21", "1.20"]
+    then:
+      - id: psp_list
+        name: "PodSecurityPolicies"
+        tool: kubectl
+        args: ["get", "psp", "-o", "wide", "-o", "{case_dir}/psp_list.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/psp_list.txt"]
+
+  # ---- Phase 9: Provider-specific checks ----
+  - id: provider_checks
+    name: "Provider-specific security checks"
+    type: sequential
+    steps:
+      - id: eks_check
+        name: "EKS-specific (IRSA, cluster logging)"
+        type: conditional
+        condition:
+          any_contains:
+            ref: k8s_provider
+            values: ["aws", "eks"]
+        then:
+          - id: eks_irsa
+            name: "IAM Roles for ServiceAccounts"
+            tool: kubectl
+            args: ["get", "pods", "--all-namespaces", "-o", "json",
+                   "|", "jq", "'.items[] | select(.spec.containers[]?.env[]?.valueFrom?.fieldRef?" +
+                   "fieldPath == \"spec.serviceAccountName\") | .metadata.namespace + \"/\" + .metadata.name'",
+                   "-o", "{case_dir}/eks_pods.txt"]
+            timeout: 30
+          - id: eks_config
+            name: "EKS cluster config"
+            tool: aws
+            args: ["eks", "describe-cluster", "--name", "{target}",
+                   "--query", "cluster.{logging:logging.clusterLogging, endpoint:endpointPublicAccess, version:version}",
+                   "-o", "{case_dir}/eks_config.txt"]
+            timeout: 60
+
+      - id: aks_check
+        name: "AKS-specific (Azure AD, managed identity)"
+        type: conditional
+        condition:
+          any_contains:
+            ref: k8s_provider
+            values: ["azure", "aks"]
+        then:
+          - id: aks_ad
+            name: "AKS Azure AD integration"
+            tool: kubectl
+            args: ["get", "clusterrolebindings", "-o", "json",
+                   "|", "jq", "'.items[] | select(.subjects[]?.apiGroup == \"rbac.authorization.k8s.io\" and .subjects[]?.kind == \"Group\") | .metadata.name'",
+                   "-o", "{case_dir}/aks_ad_bindings.txt"]
+            timeout: 30
+
+      - id: gke_check
+        name: "GKE-specific (Workload Identity, metadata concealment)"
+        type: conditional
+        condition:
+          any_contains:
+            ref: k8s_provider
+            values: ["gce", "gke"]
+        then:
+          - id: gke_wi
+            name: "GKE Workload Identity"
+            tool: kubectl
+            args: ["get", "pods", "--all-namespaces", "-o", "json",
+                   "|", "jq", "'.items[] | select(.metadata.annotations.\"iam.gke.io/gcp-service-account\" != null) | .metadata.namespace + \"/\" + .metadata.name + \" -> \" + .metadata.annotations.\"iam.gke.io/gcp-service-account\"'",
+                   "-o", "{case_dir}/gke_wi.txt"]
+            timeout: 30
+
+      - id: k3s_checks
+        name: "k3s-specific (embedded etcd, traefik, local-path-provisioner)"
+        type: conditional
+        condition:
+          any_contains:
+            ref: k3s_detect
+            values: ["k3s"]
+        then:
+          - id: k3s_traefik
+            name: "k3s default ingress (Traefik)"
+            tool: kubectl
+            args: ["get", "pods", "-n", "kube-system",
+                   "-l", "app.kubernetes.io/name=traefik",
+                   "-o", "wide", "-o", "{case_dir}/k3s_traefik.txt"]
+            timeout: 30
+          - id: k3s_etcd
+            name: "k3s embedded etcd"
+            tool: kubectl
+            args: ["get", "pods", "-n", "kube-system",
+                   "-l", "app=etcd",
+                   "-o", "{case_dir}/k3s_etcd.txt"]
+            timeout: 30
+
+      - id: openshift_checks
+        name: "OpenShift-specific (SCC, routes, SecurityContextConstraints)"
+        type: conditional
+        condition:
+          any_contains:
+            ref: openshift_detect
+            values: ["routes"]
+        then:
+          - id: oc_scc
+            name: "OpenShift SecurityContextConstraints"
+            tool: oc
+            args: ["get", "scc", "-o", "wide", "-o", "{case_dir}/openshift_scc.txt"]
+            timeout: 30
+          - id: oc_routes
+            name: "OpenShift routes (ingress equivalent)"
+            tool: oc
+            args: ["get", "routes", "--all-namespaces",
+                   "-o", "wide", "-o", "{case_dir}/openshift_routes.txt"]
+            timeout: 30
+
+  # ---- Phase 10: Compliance benchmarks ----
+  - id: compliance
+    name: "CIS benchmarks & kube-bench"
+    type: conditional
+    condition:
+      any:
+        - exists: "kube-bench"
+    then:
+      - id: kube_bench
+        name: "kube-bench CIS scan"
+        tool: kube-bench
+        args: ["run", "--targets", "master,node,controlplane,etcd,policies",
+               "--json", "-o", "{case_dir}/kube_bench_results.json"]
+        timeout: 600
+        artifacts: ["{case_dir}/kube_bench_results.json"]
+
+      - id: kube_hunter
+        name: "kube-hunter vulnerability scan"
+        tool: kube-hunter
+        args: ["--pod", "--report", "json",
+               "--log", "{case_dir}/kube_hunter.json"]
+        timeout: 300
+        artifacts: ["{case_dir}/kube_hunter.json"]
+
+  # ---- Phase 11: Report ----
+  - id: report
+    name: "K8s security assessment note"
+    type: log
+    message: |
+      Kubernetes security assessment complete for cluster {target}.
+      Results in {case_dir}/:
+      - Network: cni_plugins, network_policies, netpol_missing, ingress_controllers, service_mesh
+      - RBAC: cluster_role_bindings, clusterrole_wildcard, sa_automount, sa_cluster_admin
+      - Pod Security: privileged_pods, root_containers, host_namespace_pods, dangerous_capabilities
+      - Admission: mutating_webhooks, validating_webhooks, gatekeeper_templates, kyverno_policies
+      - Secrets: secrets_list, dockerconfig_secrets, tls_secrets, external_secrets
+      - Provider: eks/aks/gke/k3s/openshift specifics
+      - Compliance: kube_bench_results, kube_hunter

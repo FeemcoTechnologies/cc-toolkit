@@ -1,0 +1,41 @@
+# Forensics acquisition playbook — collect evidence from a target system
+
+name: "Forensics Acquisition"
+description: "Collect forensic artifacts: memory, disk info, network connections, logs"
+target_required: false
+
+steps:
+  - name: "Collect system info"
+    tool: "uname"
+    args: ["-a"]
+    timeout: 10
+
+  - name: "List mounted filesystems"
+    tool: "df"
+    args: ["-h"]
+    timeout: 10
+
+  - name: "Network connections"
+    tool: "ss"
+    args: ["-tulnp"]
+    timeout: 10
+
+  - name: "Running processes"
+    tool: "ps"
+    args: ["auxf"]
+    timeout: 10
+
+  - name: "Collect bash history"
+    tool: "bash"
+    args: ["-c", "cat ~/.bash_history ~/.zsh_history 2>/dev/null || echo 'no history'"]
+    timeout: 10
+
+  - name: "List listening services"
+    tool: "ss"
+    args: ["-tlnp"]
+    timeout: 10
+
+  - name: "ARP cache"
+    tool: "arp"
+    args: ["-a"]
+    timeout: 10

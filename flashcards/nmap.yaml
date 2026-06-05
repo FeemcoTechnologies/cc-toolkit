@@ -1,0 +1,403 @@
+title: Nmap
+description: Complete Nmap reference — scan types, NSE, evasion, performance tuning, and workflows
+cards:
+- question: What is the nmap command for a TCP SYN stealth scan?
+  answer: nmap -sS <target>
+- question: What is the nmap command for a TCP connect scan?
+  answer: nmap -sT <target>
+- question: What is the nmap command for a UDP scan?
+  answer: nmap -sU <target>
+- question: What is the nmap command for a TCP ACK scan?
+  answer: nmap -sA <target>
+- question: What is the nmap command for a TCP Window scan?
+  answer: nmap -sW <target>
+- question: What is the nmap command for a TCP Maimon scan?
+  answer: nmap -sM <target>
+- question: What is the nmap command for a TCP Null scan?
+  answer: nmap -sN <target>
+- question: What is the nmap command for a TCP FIN scan?
+  answer: nmap -sF <target>
+- question: What is the nmap command for a TCP Xmas scan?
+  answer: nmap -sX <target>
+- question: What is the nmap command for an IP protocol scan?
+  answer: nmap -sO <target>
+- question: What is the nmap command for an Idle (zombie) scan?
+  answer: nmap -sI <zombie_host> <target>
+- question: What is the nmap command for a SCTP INIT scan?
+  answer: nmap -sY <target>
+- question: What is the nmap command for a SCTP COOKIE_ECHO scan?
+  answer: nmap -sZ <target>
+- question: Which scan type sends SYN only and is the default for root?
+  answer: -sS (TCP SYN stealth scan) — never completes the handshake
+- question: Which scan type completes the full TCP handshake and is the default for non-root?
+  answer: -sT (TCP connect scan) — uses the connect() syscall
+- question: Which scan type is significantly slower due to ICMP rate-limiting?
+  answer: -sU (UDP scan)
+- question: Which scan type sends ACK packets to map firewall rules?
+  answer: -sA (TCP ACK scan) — distinguishes filtered vs unfiltered
+- question: Which scan type uses the TCP window field to determine port state?
+  answer: -sW (TCP Window scan)
+- question: Which scan type sends FIN/ACK packets named after the researcher who discovered it?
+  answer: -sM (TCP Maimon scan) — BSD systems may treat FIN/ACK as FIN
+- question: Which scan type sends packets with no flags set?
+  answer: -sN (TCP Null scan)
+- question: Which scan type sends packets with only the FIN flag set?
+  answer: -sF (TCP FIN scan)
+- question: Which scan type sends packets with FIN, URG, and PUSH flags set?
+  answer: -sX (TCP Xmas scan)
+- question: Which scan type determines which IP protocols a target supports?
+  answer: -sO (IP protocol scan)
+- question: Which scan type uses a zombie host with predictable IP ID sequences?
+  answer: -sI (Idle scan)
+- question: What is the timing template flag for paranoid slowness?
+  answer: -T0 — serial scan, 5-minute wait between probes, IDS evasion
+- question: What is the timing template flag for sneaky scans?
+  answer: -T1 — serial scan, 15-second wait between probes
+- question: What is the timing template flag for polite scanning?
+  answer: -T2 — serial scan, 0.4-second wait, less bandwidth
+- question: What is the timing template flag for normal scan speed?
+  answer: -T3 — default timing, parallel scanning enabled
+- question: What is the timing template flag for aggressive scanning?
+  answer: -T4 — faster than default, assumes good network, common for LAN
+- question: What is the timing template flag for insane scanning?
+  answer: -T5 — fastest possible, may overload network or drop packets
+- question: When should you use -T0 or -T1?
+  answer: When evading IDS/IPS on a heavily monitored network
+- question: When should you use -T2?
+  answer: When conserving bandwidth or minimizing network impact
+- question: When should you use -T4?
+  answer: On fast local networks — the most common pentest choice for LAN
+- question: What nmap flag enables the Nmap Scripting Engine?
+  answer: -sC (default scripts) or --script (specific scripts)
+- question: What is the command to run all default NSE scripts?
+  answer: nmap -sC <target>
+- question: What is the command to run a specific NSE script category?
+  answer: nmap --script <category> <target> (e.g., --script vuln)
+- question: List all NSE script categories.
+  answer: auth, broadcast, brute, default, discovery, dos, exploit, external, fuzzer, intrusive,...
+- question: What is the NSE 'safe' category?
+  answer: Scripts unlikely to crash targets or cause disruption
+- question: What is the NSE 'vuln' category?
+  answer: Scripts that check for specific known vulnerabilities
+- question: What is the NSE 'exploit' category?
+  answer: Scripts that actively exploit vulnerabilities
+- question: What is the NSE 'discovery' category?
+  answer: Scripts that discover hosts, services, directories, and network info
+- question: What is the NSE 'auth' category?
+  answer: Scripts dealing with authentication credentials and enumeration
+- question: What is the NSE 'default' category?
+  answer: Scripts run by -sC — safe, non-intrusive, useful info
+- question: What is the NSE 'intrusive' category?
+  answer: Scripts aggressive enough to crash services or trigger alerts
+- question: What is the NSE 'brute' category?
+  answer: Scripts that brute-force services (SSH, HTTP, FTP, MySQL)
+- question: Name three notable NSE scripts for vulnerability scanning.
+  answer: http-vuln-cve2017-5638 (Struts2), smb-vuln-ms17-010 (EternalBlue), ssl-heartbleed
+- question: Name three notable NSE scripts for service discovery.
+  answer: http-title, dns-zone-transfer, smb-enum-shares
+- question: Name three notable NSE scripts for brute-force.
+  answer: ssh-brute, http-form-brute, mysql-brute
+- question: Name three notable NSE scripts for safe enumeration.
+  answer: whois-domain, dns-nsid, http-headers
+- question: How do you pass arguments to an NSE script?
+  answer: nmap --script <script> --script-args <arg1=val1,arg2=val2>
+- question: What Lua library do NSE scripts use by default?
+  answer: nmap — provides nmap.registry, nmap.new_socket, port/packet helpers
+- question: What are the main phases of an NSE script execution?
+  answer: prerule, hostrule, portrule, postrule, and action
+- question: What is the basic structure of a custom NSE script?
+  answer: description, author, license, categories fields. Then rule + action functions
+- question: How do you write an NSE script that runs against every open port?
+  answer: portrule = function(host, port) return port.state == 'open' end
+- question: How do you write an NSE script that runs once per host?
+  answer: hostrule = function(host) return true end
+- question: How do you write results to NSE output?
+  answer: Use nmap.registry to store data, return a string from the action function
+- question: What is the command to list all available NSE scripts?
+  answer: nmap --script-help all | less (or ls /usr/share/nmap/scripts/)
+- question: What flag saves output in normal format?
+  answer: -oN <file>
+- question: What flag saves output in XML format?
+  answer: -oX <file>
+- question: What flag saves output in greppable format?
+  answer: -oG <file>
+- question: What flag saves output in all formats simultaneously?
+  answer: -oA <basename> — produces .nmap, .xml, and .gnmap files
+- question: What command converts nmap XML to HTML using xsltproc?
+  answer: xsltproc -o output.html /usr/share/nmap/nmap.xsl results.xml
+- question: What is nmap-bootstrap.xsl?
+  answer: An XSL stylesheet that generates modern responsive HTML reports from nmap XML
+- question: How do you generate an nmap-bootstrap HTML report?
+  answer: xsltproc -o report.html nmap-bootstrap.xsl scan.xml
+- question: What flag enables verbose output?
+  answer: -v or -vv for increased verbosity
+- question: What flag enables debugging output?
+  answer: -d or -dd for increased debug level
+- question: Why use -oG (greppable format)?
+  answer: Easy to grep/awk for IPs, ports, and status — good for automation
+- question: What flag sends decoy IPs to obscure the scanner origin?
+  answer: -D <decoy1,decoy2,...> or -D RND:<count>
+- question: What does -D RND:10 do?
+  answer: Generates 10 random decoy IPs mixed with your real IP
+- question: What flag spoofs the source port for firewall evasion?
+  answer: -g <port> or --source-port <port>
+- question: Why use source port 53 or 80 as a decoy?
+  answer: Some firewalls allow common ports like DNS(53) or HTTP(80) without inspection
+- question: What flag sets the MTU for packet fragmentation?
+  answer: --mtu <size> (must be a multiple of 8)
+- question: What flag appends random data to packets?
+  answer: --data-length <bytes>
+- question: What flag sends packets with invalid checksums?
+  answer: --badsum — tests firewall responses
+- question: What flag fragments packets into 8-byte chunks?
+  answer: -f (fragmentation) — splits IP header into smaller packets
+- question: How do you use multiple -f flags?
+  answer: -ff = 16-byte fragments, -fff = 24-byte, etc.
+- question: What flag randomizes the order of scanned hosts?
+  answer: --randomize-hosts
+- question: What flag spoofs the MAC address?
+  answer: --spoof-mac <mac/vendor/0>
+- question: What does --spoof-mac 0 do?
+  answer: Generates a completely random MAC address
+- question: What is an Idle scan and how does it work?
+  answer: -sI bounces scan off a zombie with predictable IP ID; target sees the zombie
+- question: What flag adds a delay between probes to evade rate-limiting?
+  answer: --scan-delay <time> (e.g., --scan-delay 1s)
+- question: What flag sets the minimum packet-sending rate?
+  answer: --min-rate <number>
+- question: What flag sets the maximum packet-sending rate?
+  answer: --max-rate <number>
+- question: When would you use --min-rate 10000?
+  answer: On a fast local network to speed up scanning significantly
+- question: When would you use --max-rate 10?
+  answer: When evading IDS or rate-limiting on a sensitive target
+- question: What flag sets the minimum number of probes in parallel?
+  answer: --min-parallelism <number>
+- question: What flag sets the maximum number of probes in parallel?
+  answer: --max-parallelism <number>
+- question: What flag sets the minimum group size for target hosts?
+  answer: --min-hostgroup <number>
+- question: What flag sets the maximum group size for target hosts?
+  answer: --max-hostgroup <number>
+- question: What flag sets the minimum RTT timeout?
+  answer: --min-rtt-timeout <time>
+- question: What flag sets the maximum RTT timeout?
+  answer: --max-rtt-timeout <time>
+- question: What flag sets the initial RTT timeout?
+  answer: --initial-rtt-timeout <time>
+- question: What flag aborts a host scan after a specified time?
+  answer: --host-timeout <time> (e.g., --host-timeout 30m)
+- question: What flag performs an ARP ping discovery?
+  answer: -PR (ARP ping) — most reliable for LAN, default on Ethernet
+- question: What flag performs a TCP SYN ping discovery?
+  answer: -PS <ports> (e.g., -PS80,443)
+- question: What flag performs a TCP ACK ping discovery?
+  answer: -PA <ports> (e.g., -PA80)
+- question: What flag performs an ICMP echo ping discovery?
+  answer: -PE (ICMP echo request)
+- question: What flag performs an ICMP timestamp ping discovery?
+  answer: -PP (ICMP timestamp request)
+- question: What flag performs a UDP ping discovery?
+  answer: -PU <ports> (e.g., -PU53,161)
+- question: What flag disables host discovery entirely?
+  answer: -Pn (no-ping) — treats all hosts as online
+- question: What does the --traceroute flag do?
+  answer: Performs traceroute to each target after the port scan
+- question: Which ping sweep technique is most reliable for LAN discovery?
+  answer: ARP ping (-PR) — non-routable, non-blockable on local Ethernet
+- question: What flag enables service version detection?
+  answer: -sV
+- question: What flag controls service probe intensity (0-9)?
+  answer: --version-intensity <0-9> (higher = more probes)
+- question: What flag performs light service detection?
+  answer: --version-light (intensity 2)
+- question: What flag performs maximum service detection?
+  answer: --version-all (intensity 9)
+- question: What is the default version intensity in nmap?
+  answer: '7'
+- question: What are service probes in nmap?
+  answer: Predefined probe strings sent to match service fingerprints in nmap-service-probes
+- question: What is the nmap-service-probes file?
+  answer: A database of service probes and response match patterns used by -sV
+- question: What flag enables OS detection?
+  answer: -O
+- question: What does OS fingerprinting rely on?
+  answer: TCP/IP stack behavior differences — TTL, window size, DF flag, options ordering
+- question: What flag forces nmap to guess OS more aggressively?
+  answer: --osscan-guess (or --fuzzy)
+- question: What flag limits OS detection to only promising targets?
+  answer: --osscan-limit — skips if no open or closed port is found
+- question: How do you specify a CIDR range as a target?
+  answer: nmap 192.168.1.0/24
+- question: How do you specify an IP range as a target?
+  answer: nmap 192.168.1.1-50
+- question: How do you read targets from a file?
+  answer: -iL <file> (one target per line)
+- question: How do you exclude hosts from a scan?
+  answer: --exclude <host1,host2> or --excludefile <file>
+- question: How do you specify target ports?
+  answer: -p <ports> (e.g., -p22,80,443 or -p1-1000 or -p-)
+- question: What flag scans the top N most common ports?
+  answer: --top-ports <N> (e.g., --top-ports 100)
+- question: What flag scans ports in random order?
+  answer: --randomize-ports
+- question: What flag disables reverse DNS resolution?
+  answer: -n (no DNS)
+- question: What flag enables reverse DNS resolution?
+  answer: -R (always resolve DNS)
+- question: What flag specifies custom DNS servers?
+  answer: --dns-servers <server1,server2>
+- question: What is the typical pentest workflow for nmap?
+  answer: 1. Discovery scan 2. Port enumeration 3. Service detection 4. NSE vuln scan 5. Report...
+- question: What is a typical initial discovery command?
+  answer: nmap -sn 192.168.1.0/24 (ping sweep only)
+- question: What is a typical full port enumeration command?
+  answer: nmap -p- -T4 -oA full-tcp 192.168.1.1
+- question: What is a typical service detection command?
+  answer: nmap -sV -sC -p22,80,443 -oA service-scan 192.168.1.1
+- question: What is a typical NSE vulnerability scan command?
+  answer: nmap --script vuln -p22,80,443 -oA vuln-scan 192.168.1.1
+- question: What is a typical comprehensive pentest command?
+  answer: nmap -sS -sV -sC -O -A -p- -T4 -oA comprehensive 192.168.1.1
+- question: What does the -A flag do?
+  answer: Aggressive scan — enables -O, -sV, -sC, and traceroute
+- question: How do you scan IPv6 targets?
+  answer: nmap -6 <target>
+- question: How do you specify a network interface?
+  answer: -e <interface> (e.g., -e eth0)
+- question: What flag sends packets with a specific TTL?
+  answer: --ttl <value>
+- question: What is Zenmap?
+  answer: Official graphical frontend for nmap with GUI, profiles, topology view
+- question: How do you compare two scan results in Zenmap?
+  answer: Use the Compare Scans tool under the Tools menu
+- question: What are Zenmap scan profiles?
+  answer: Pre-configured presets like Quick Scan, Intense Scan, Ping Scan
+- question: How does masscan compare to nmap?
+  answer: Masscan is optimized for speed, can scan entire internet in minutes; nmap is more feature-rich
+- question: How does rustscan compare to nmap?
+  answer: Rustscan is very fast for port discovery but relies on nmap for service detection
+- question: How does naabu compare to nmap?
+  answer: Naabu is a fast scanner from ProjectDiscovery for automation pipelines; integrates with...
+- question: When would you choose masscan over nmap?
+  answer: When scanning large ranges or the entire internet at maximum speed
+- question: When would you choose rustscan over nmap?
+  answer: When you need fast port discovery with automatic nmap handoff
+- question: When would you choose naabu over nmap?
+  answer: When using the ProjectDiscovery toolchain (httpx, nuclei, subfinder)
+- question: What does the --open flag do?
+  answer: Only shows hosts with open ports, filtering out non-responsive ones
+- question: What flag shows why nmap determined a specific port state?
+  answer: --reason
+- question: What flag specifies a custom nmap data file location?
+  answer: --datadir <directory>
+- question: What is the nmap-services file?
+  answer: Database mapping port numbers to common service names
+- question: What is the nmap-rpc file?
+  answer: Database for RPC program number to name resolution
+- question: What is the nmap-os-db file?
+  answer: OS fingerprint database used by -O to match TCP/IP responses
+- question: How do you update the nmap version/probe database?
+  answer: sudo nmap --script-updatedb
+- question: What does the --exclude-ports flag do?
+  answer: --exclude-ports <ports> — excludes specified ports from scanning
+- question: What is the difference between -sS and -sT?
+  answer: -sS sends SYN-only, never completes handshake (stealth); -sT completes full handshake
+- question: Why are Null, FIN, and Xmas scans effective against some systems?
+  answer: 'RFC 793: closed ports respond RST; open ports drop packet silently — non-compliant OSes are...'
+- question: What is the main limitation of Null, FIN, and Xmas scans?
+  answer: Microsoft Windows and many Cisco devices drop all such packets regardless of port state
+- question: How do you combine multiple NSE script categories?
+  answer: nmap --script 'default or safe or discovery' <target>
+- question: How do you run NSE scripts by wildcard pattern?
+  answer: nmap --script 'ssh-*' <target> (runs all SSH-related scripts)
+- question: What does http-enum NSE script do?
+  answer: Enumerates directories/files on web servers (like gobuster/dirb)
+- question: What does smb-os-discovery NSE script do?
+  answer: Retrieves OS info from SMB (Windows version, domain, server name)
+- question: What does ssl-cert NSE script do?
+  answer: Retrieves SSL/TLS certificate info (issuer, subject, validity, SANs)
+- question: What does http-title NSE script do?
+  answer: Fetches the title tag from HTTP pages
+- question: What does dns-brute NSE script do?
+  answer: Brute-forces DNS subdomains using a wordlist
+- question: What is the NSE script http-shellshock?
+  answer: Checks for Shellshock (CVE-2014-6271) in CGI scripts
+- question: What is the NSE script smb-vuln-ms17-010?
+  answer: Checks for MS17-010 (EternalBlue) in SMBv1
+- question: What is the NSE script ssl-heartbleed?
+  answer: Tests for Heartbleed (CVE-2014-0160) in OpenSSL
+- question: What is the first step in writing a custom NSE script?
+  answer: Create a .lua file in /usr/share/nmap/scripts/ with standard NSE header fields
+- question: How do you load a custom NSE script at runtime?
+  answer: nmap --script /path/to/script.nse <target>
+- question: What is NSE script library loading?
+  answer: local http = require 'http' to load nmap libraries for HTTP, SMB, DNS, etc.
+- question: What does the NSE 'shortport' library provide?
+  answer: Portrule helpers like shortport.portnumber, shortport.service for common matching
+- question: What flag performs a scan through a SOCKS proxy?
+  answer: --proxies <url> (e.g., --proxies socks4://127.0.0.1:1080)
+- question: What flag sets the number of retries for port probes?
+  answer: --max-retries <number>
+- question: What flag prints the packet trace for debugging?
+  answer: --packet-trace
+- question: What does the --iflist flag do?
+  answer: Lists available network interfaces and routes, then exits
+- question: How do you resume an aborted scan?
+  answer: --resume <partial_results>.nmap
+- question: What is the maximum port number nmap can scan?
+  answer: '65535'
+- question: What is the minimum privilege requirement for raw socket scans?
+  answer: Root/sudo for -sS, -sU, -sY, -O; non-root defaults to -sT
+- question: What are the six port states nmap can report?
+  answer: open, closed, filtered, unfiltered, open|filtered, closed|filtered
+- question: What does the 'filtered' port state mean?
+  answer: Nmap cannot determine open/closed because a firewall drops probes
+- question: What does the 'unfiltered' port state mean?
+  answer: Port is accessible but nmap cannot determine open/closed from ACK scans
+- question: What does the 'open|filtered' state mean?
+  answer: Nmap cannot distinguish open from filtered — common with UDP, Null, FIN, Xmas scans
+- question: How does nmap determine the 'open' port state?
+  answer: Target responds with SYN/ACK (SYN scan) or an expected service response
+- question: How does nmap determine the 'closed' port state?
+  answer: Target responds with a RST packet
+- question: How does nmap determine the 'filtered' port state?
+  answer: No response, ICMP unreachable, or ICMP administratively prohibited
+- question: What flag displays the nmap version?
+  answer: nmap -V or nmap --version
+- question: How do you scan for the Heartbleed vulnerability?
+  answer: nmap -sV --script ssl-heartbleed -p 443 <target>
+- question: How do you enumerate SMB shares with nmap?
+  answer: nmap -p 445 --script smb-enum-shares <target>
+- question: How do you check for EternalBlue with nmap?
+  answer: nmap -p 445 --script smb-vuln-ms17-010 <target>
+- question: How do you perform a DNS zone transfer test?
+  answer: nmap --script dns-zone-transfer --script-args dns-zone-transfer.domain=example.com <server>
+- question: What is the nmap command to scan all TCP and UDP ports?
+  answer: nmap -sSU -p- <target>
+- question: How do you scan a single host with all safe scripts?
+  answer: nmap --script safe <target>
+- question: How do you save scan results with timestamps?
+  answer: nmap -oA scan-$(date +%Y%m%d-%H%M%S) <target>
+- question: What is a practical command for a web server audit?
+  answer: nmap -sV -sC --script http-enum,http-headers,http-title,ssl-cert -p 80,443 <target>
+- question: How do you combine source port spoofing with fragmentation?
+  answer: nmap -sS -g 53 -f <target>
+- question: How do you achieve maximum stealth with nmap?
+  answer: nmap -sS -D RND:15 -g 53 -f --data-length 100 -T2 <target>
+- question: What does --data-length 100 do for evasion?
+  answer: Pads packets to 100 bytes to evade firewalls filtering by packet size
+- question: What flag shows host and port status in a machine-readable format?
+  answer: -oG (greppable format) for use with grep and automation
+- question: How do you scan a single port on multiple hosts?
+  answer: nmap -p 443 --open 192.168.1.0/24
+- question: How do you check for HTTP methods with nmap?
+  answer: nmap --script http-methods --script-args http-methods.url-path=/test -p 80 <target>
+- question: What does the NSE script http-enum use for directory brute-forcing?
+  answer: It uses the built-in nmap wordlist for directory/file discovery
+- question: What flag reduces host group size for slower, stealthier scans?
+  answer: --max-hostgroup 1 (scan one host at a time, more stealthy)
+- question: What is the difference between --min-rate and --min-parallelism?
+  answer: --min-rate sets minimum overall packet rate; --min-parallelism sets minimum concurrent probes
+- question: How do you scan with specific IP options set?
+  answer: --ip-options <options> — set record route, timestamp, etc.

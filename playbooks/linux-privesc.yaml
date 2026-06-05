@@ -1,0 +1,287 @@
+# v2 runbook — Linux privilege escalation enumeration
+name: "Linux Privilege Escalation"
+description: "Enumerate Linux system for privilege escalation vectors: SUID, capabilities, cron, kernel exploits, sudo, services, docker"
+version: "2.0"
+
+vars:
+  target_user: ""
+  target_key: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Linux privilege escalation enumeration — {target} (case: {case_id})"
+
+steps:
+  # Phase 1: System info
+  - id: system_info
+    name: "System information"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: uname
+        name: "Kernel version"
+        tool: uname
+        args: ["-a", "-o", "{case_dir}/uname.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/uname.txt"]
+
+      - id: release
+        name: "OS release"
+        tool: cat
+        args: ["/etc/os-release", "-o", "{case_dir}/os-release.txt"]
+        timeout: 30
+
+      - id: hostname
+        name: "Hostname"
+        tool: hostname
+        args: []
+
+      - id: env_vars
+        name: "Environment variables"
+        tool: env
+        args: ["-o", "{case_dir}/env.txt"]
+        timeout: 30
+
+      - id: cpu_info
+        name: "CPU info"
+        tool: lscpu
+        args: ["-o", "{case_dir}/cpu.txt"]
+        timeout: 30
+
+  # Phase 2: User enumeration
+  - id: user_enum
+    name: "User enumeration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: id_current
+        name: "Current user & groups"
+        tool: id
+        args: ["-o", "{case_dir}/id.txt"]
+        timeout: 30
+
+      - id: passwd_users
+        name: "All users (/etc/passwd)"
+        tool: cat
+        args: ["/etc/passwd", "-o", "{case_dir}/passwd.txt"]
+        timeout: 30
+
+      - id: sudoers
+        name: "Sudoers list"
+        tool: cat
+        args: ["/etc/sudoers", "-o", "{case_dir}/sudoers.txt"]
+        timeout: 30
+
+      - id: sudo_l
+        name: "Sudo -l (current user)"
+        tool: sudo
+        args: ["-l", "-o", "{case_dir}/sudo_l.txt"]
+        timeout: 30
+
+  # Phase 3: SUID / SGID
+  - id: suid_sgid
+    name: "SUID/SGID binaries"
+    type: parallel
+    steps:
+      - id: suid
+        name: "SUID binaries"
+        tool: find
+        args: ["/", "-perm", "-4000", "-type", "f",
+               "2>/dev/null",
+               "-o", "{case_dir}/suid.txt"]
+        timeout: 120
+        artifacts: ["{case_dir}/suid.txt"]
+
+      - id: sgid
+        name: "SGID binaries"
+        tool: find
+        args: ["/", "-perm", "-2000", "-type", "f",
+               "2>/dev/null",
+               "-o", "{case_dir}/sgid.txt"]
+        timeout: 120
+
+  # Phase 4: Capabilities
+  - id: capabilities
+    name: "Capabilities"
+    type: parallel
+    steps:
+      - id: getcap
+        name: "File capabilities"
+        tool: getcap
+        args: ["-r", "/", "2>/dev/null",
+               "-o", "{case_dir}/capabilities.txt"]
+        timeout: 120
+
+  # Phase 5: Cron jobs
+  - id: cron
+    name: "Cron jobs"
+    type: parallel
+    steps:
+      - id: cron_tabs
+        name: "User crontabs"
+        tool: ls
+        args: ["-la", "/var/spool/cron/",
+               "-o", "{case_dir}/cron_tabs.txt"]
+        timeout: 30
+
+      - id: cron_sys
+        name: "System crontabs"
+        tool: cat
+        args: ["/etc/crontab", "-o", "{case_dir}/cron_system.txt"]
+        timeout: 30
+
+      - id: cron_d
+        name: "Cron.d files"
+        tool: ls
+        args: ["-la", "/etc/cron.d/",
+               "-o", "{case_dir}/cron_d.txt"]
+        timeout: 30
+
+  # Phase 6: Service enumeration
+  - id: services
+    name: "Service enumeration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: running_services
+        name: "Running services"
+        tool: systemctl
+        args: ["list-units", "--type=service", "--state=running",
+               "-o", "{case_dir}/services.txt"]
+        timeout: 60
+
+      - id: writable_services
+        name: "Writable service files"
+        tool: find
+        args: ["/etc/systemd", "-type", "f", "-writable",
+               "2>/dev/null",
+               "-o", "{case_dir}/writable_services.txt"]
+        timeout: 60
+
+      - id: exposed_ports
+        name: "Listening ports"
+        tool: ss
+        args: ["-tlnp",
+               "-o", "{case_dir}/listening_ports.txt"]
+        timeout: 30
+
+      - id: docker_check
+        name: "Docker group membership"
+        tool: groups
+        args: ["|", "grep", "docker",
+               "-o", "{case_dir}/docker_group.txt"]
+        timeout: 30
+
+  # Phase 7: Writable files & directories
+  - id: writable_paths
+    name: "Writable paths & interesting files"
+    type: parallel
+    steps:
+      - id: writable_etc
+        name: "Writable files in /etc"
+        tool: find
+        args: ["/etc", "-type", "f", "-writable",
+               "2>/dev/null",
+               "-o", "{case_dir}/writable_etc.txt"]
+        timeout: 120
+
+      - id: writable_path
+        name: "Writable PATH directories"
+        tool: find
+        args: ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
+               "/usr/bin", "/sbin", "/bin",
+               "-writable", "-type", "d",
+               "2>/dev/null",
+               "-o", "{case_dir}/writable_path.txt"]
+        timeout: 60
+
+      - id: interesting_files
+        name: "Interesting files"
+        tool: find
+        args: ["/", "-type", "f",
+               "(", "-name", "*.kdbx",
+               "-o", "-name", ".ssh",
+               "-o", "-name", "id_rsa",
+               "-o", "-name", "*.pem",
+               "-o", "-name", "*.ovpn",
+               "-o", "-name", "*.gpg",
+               "-o", "-name", "*.bak",
+               "-o", "-name", "*.old",
+               ")",
+               "2>/dev/null",
+               "-o", "{case_dir}/interesting_files.txt"]
+        timeout: 120
+
+  # Phase 8: Kernel exploit check
+  - id: kernel_exploit
+    name: "Kernel exploit check"
+    type: parallel
+    steps:
+      - id: linux_exploit_suggester
+        name: "Linux Exploit Suggester"
+        tool: perl
+        args: ["/usr/share/linux-exploit-suggester/linux-exploit-suggester.pl",
+               "--uname", "{case_dir}/uname.txt",
+               "-o", "{case_dir}/kernel_exploits.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/kernel_exploits.txt"]
+
+  # Phase 9: Network & lateral movement
+  - id: network_enum
+    name: "Network enumeration"
+    type: parallel
+    steps:
+      - id: ifconfig
+        name: "Network interfaces"
+        tool: ip
+        args: ["addr",
+               "-o", "{case_dir}/interfaces.txt"]
+        timeout: 30
+
+      - id: hosts_file
+        name: "Hosts file"
+        tool: cat
+        args: ["/etc/hosts",
+               "-o", "{case_dir}/hosts.txt"]
+        timeout: 30
+
+      - id: known_hosts
+        name: "SSH known_hosts"
+        tool: cat
+        args: ["~/.ssh/known_hosts",
+               "-o", "{case_dir}/known_hosts.txt"]
+        timeout: 30
+
+      - id: bash_history
+        name: "Bash history"
+        tool: cat
+        args: ["~/.bash_history",
+               "-o", "{case_dir}/bash_history.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/bash_history.txt"]
+
+  # Phase 10: Report
+  - id: report
+    name: "Generate privesc report"
+    type: report
+    format: markdown
+    title: "Linux Privilege Escalation — {target}"
+    output: "{case_dir}/linux-privesc-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Host: {target}\n- Case: {case_id}"
+      - heading: "Kernel Exploits"
+        body: "- See {case_dir}/kernel_exploits.txt"
+      - heading: "SUID / Capabilities"
+        body: "- SUID: {case_dir}/suid.txt\n- Capabilities: {case_dir}/capabilities.txt"
+      - heading: "Cron / Services"
+        body: "- Cron: {case_dir}/cron_system.txt\n- Services: {case_dir}/services.txt"
+      - heading: "Interesting Files"
+        body: "- Credential files: {case_dir}/interesting_files.txt\n- Bash history: {case_dir}/bash_history.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Linux privesc enumeration complete — {case_dir}"

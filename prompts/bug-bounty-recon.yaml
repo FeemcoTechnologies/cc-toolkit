@@ -1,0 +1,20 @@
+title: Bug Bounty Reconnaissance
+description: Full recon pipeline on a bug bounty target — scope validation, subdomain discovery, technology fingerprinting, and directory brute-force through Caido.
+tags: [web, recon, bug-bounty]
+prompt: >
+  Perform a full reconnaissance engagement on {target_domain}.
+
+  ## Scope
+  - In-scope domains: {scope_domains}
+  - Out-of-scope: {out_of_scope}
+  - Special headers required: {custom_headers}
+
+  ## Workflow
+  1. Validate scope — resolve A/AAAA records and confirm each target resolves
+  2. Run nuclei with all available templates for technology detection and critical CVEs
+  3. Perform directory brute-force on https://{target_domain} using common wordlists
+  4. Route all discovered HTTP traffic through Caido at {caido_url} for manual review
+  5. Use {test_username} as the default username in any auth headers if needed
+
+  ## Output
+  Create a case with all findings, evidence, and a summary of discovered endpoints, tech stack, and any critical vulnerabilities.

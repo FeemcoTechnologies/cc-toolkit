@@ -1,0 +1,391 @@
+{% extends "base.html" %}
+{% block title %}Rules{% endblock %}
+{% block head %}
+<style>
+    .rule-card { transition: all 0.15s ease; }
+    .rule-card:hover { border-color: #6366f1; transform: translateY(-1px); }
+    .rule-card.selected { border-color: #6366f1; background: rgba(99,102,241,0.08); }
+    .sev-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    #batchBar { transition: transform 0.2s ease, opacity 0.2s ease; }
+    #batchBar.hidden { transform: translateY(100%); opacity: 0; pointer-events: none; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="shield" class="w-6 h-6 text-indigo-400"></i>
+        Rules
+    </h1>
+    <div class="flex gap-2">
+        <button onclick="openImportModal()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Import</button>
+        <a href="/rules/new" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">+ New Rule</a>
+    </div>
+</div>
+
+<!-- Stats bar -->
+<div class="grid grid-cols-5 gap-2 mb-4 text-xs">
+    {% for fmt, s in stats.items() %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 text-center hover:border-indigo-600 transition-colors {{ 'border-indigo-600' if active_format == fmt else '' }} relative group">
+        <a href="/rules?format={{ fmt }}">
+            <div class="font-semibold text-gray-200">{{ s.label }}</div>
+            <div class="text-lg font-bold text-indigo-400">{{ s.total }}</div>
+        </a>
+        {% if fmt in ('nuclei', 'yara', 'semgrep') %}
+        <button onclick="event.stopPropagation(); openScanAllModal('{{ fmt }}')" class="absolute top-1 right-1 bg-gray-800 hover:bg-emerald-700 rounded px-1.5 py-0.5 text-xs opacity-0 group-hover:opacity-100 transition-opacity" title="Scan target with all {{ fmt }} rules">&#9654;</button>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Filters -->
+<form method="GET" action="/rules" class="flex gap-3 mb-4 flex-wrap items-end">
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">Format</label>
+        <select name="format" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" onchange="this.form.submit()">
+            <option value="">All Formats</option>
+            {% for fmt in stats %}
+            <option value="{{ fmt }}" {{ 'selected' if active_format == fmt else '' }}>{{ stats[fmt].label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">Severity</label>
+        <select name="severity" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" onchange="this.form.submit()">
+            <option value="">All Severities</option>
+            {% for s in ['critical', 'high', 'medium', 'low', 'info'] %}
+            <option value="{{ s }}" {{ 'selected' if active_severity == s else '' }}>{{ s|capitalize }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">Category / Family</label>
+        <input name="category" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 w-36" placeholder="e.g. dcrat" value="{{ active_category }}">
+    </div>
+    <div class="flex-1">
+        <label class="text-xs text-gray-500 block mb-1">Search</label>
+        <input name="q" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 w-full" placeholder="Search titles, descriptions, IDs..." value="{{ active_q }}">
+    </div>
+    <button type="submit" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Filter</button>
+    {% if active_format or active_severity or active_q or active_category %}
+    <a href="/rules" class="text-gray-500 hover:text-gray-300 text-sm">Clear</a>
+    {% endif %}
+</form>
+
+<!-- Batch action bar -->
+<div id="batchBar" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-800 border border-indigo-600 rounded-xl px-5 py-3 shadow-xl flex items-center gap-4 text-sm">
+    <span class="text-gray-300"><span id="batchCount">0</span> selected</span>
+    <button onclick="batchExport()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-xs font-medium">Export ZIP</button>
+    <button onclick="batchDelete()" class="bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded text-xs font-medium">Delete</button>
+    <button onclick="clearSelection()" class="text-gray-500 hover:text-gray-300 text-xs">Deselect all</button>
+</div>
+
+<!-- Rule list header -->
+<div class="flex items-center gap-3 mb-2 px-2 text-xs text-gray-500">
+    <label class="flex items-center gap-2">
+        <input type="checkbox" onchange="toggleSelectAll(this.checked)" class="accent-indigo-500">
+        Select all
+    </label>
+    <span class="flex-1"></span>
+    <span class="w-16">Format</span>
+    <span class="flex-1">Title</span>
+</div>
+
+<!-- Rule list -->
+<div class="space-y-1">
+    {% for r in rules %}
+    <div class="rule-card bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 block" data-format="{{ r.format }}" data-rule-id="{{ r.id }}" data-selected="false">
+        <div class="flex items-center gap-3">
+            <input type="checkbox" class="rule-checkbox accent-indigo-500 shrink-0" onchange="onCheckboxChange(this)" onclick="event.stopPropagation()">
+            <span class="sev-dot shrink-0" style="background: {{ {'critical':'#ef4444','high':'#f97316','medium':'#eab308','low':'#22c55e','info':'#6b7280'}.get(r.severity, '#6b7280') }}"></span>
+            <span class="text-xs font-mono text-gray-500 shrink-0 w-16">{{ r.format }}</span>
+            <a href="/rules/{{ r.format }}/{{ r.id }}" class="text-sm font-medium text-gray-200 flex-1 truncate hover:text-indigo-400">{{ r.title }}</a>
+            <span class="text-xs text-gray-600 font-mono hidden lg:inline">{{ r.id }}</span>
+            {% if r.rule_count is defined and r.rule_count > 1 %}
+            <span class="text-xs bg-gray-800 text-gray-400 px-1.5 rounded">{{ r.rule_count }} rules</span>
+            {% endif %}
+            {% if r.language %}
+            <span class="text-xs bg-gray-800 text-gray-400 px-1.5 rounded">{{ r.language }}</span>
+            {% endif %}
+            {% if r.family %}
+            <span class="text-xs bg-gray-800 text-gray-400 px-1.5 rounded">{{ r.family }}</span>
+            {% endif %}
+        </div>
+        {% if r.description %}
+        <div class="text-xs text-gray-500 mt-1 truncate ml-8">{{ r.description[:120] }}{{ '...' if r.description|length > 120 }}</div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="text-gray-500 text-center py-12">No rules found matching your filters</div>
+    {% endfor %}
+</div>
+
+<!-- Import Modal -->
+<div id="importModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+    <div class="bg-gray-900 rounded-xl border border-gray-700 p-6 w-full max-w-lg mx-4">
+        <h2 class="text-lg font-semibold mb-4">Import Rules</h2>
+        <form id="importForm" onsubmit="return submitImport(event)">
+            <label class="block text-sm text-gray-300 mb-1">Format</label>
+            <select name="format" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200">
+                {% for fmt in stats %}
+                <option value="{{ fmt }}">{{ stats[fmt].label }}</option>
+                {% endfor %}
+            </select>
+            <label class="block text-sm text-gray-300 mb-1">File (.zip, .yml, .yar, .rules, .yaml)</label>
+            <input type="file" name="file" accept=".zip,.yml,.yaml,.yar,.rules,.txt" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-300 file:bg-gray-700 file:border-0 file:rounded file:px-2 file:py-1 file:text-xs file:text-gray-200 file:cursor-pointer">
+            <label class="block text-sm text-gray-300 mb-1">Or paste content</label>
+            <textarea name="content" rows="6" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200 font-mono" placeholder="Paste rule content here..."></textarea>
+            <label class="block text-sm text-gray-300 mb-1">Target subdirectory (optional)</label>
+            <input name="target_dir" type="text" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-4 text-gray-200" placeholder="e.g. web/ or custom/">
+            <div id="importResult" class="hidden mb-3 text-sm"></div>
+            <div class="flex gap-2 justify-end">
+                <button type="button" onclick="closeImportModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Cancel</button>
+                <button type="submit" class="bg-emerald-700 hover:bg-emerald-600 px-4 py-2 rounded text-sm">Import</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Scan-All Modal -->
+<div id="scanAllModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+    <div class="bg-gray-900 rounded-xl border border-gray-700 p-6 w-full max-w-lg mx-4">
+        <h2 class="text-lg font-semibold mb-4">Scan with all <span id="scanAllFormat"></span> rules</h2>
+        <label class="block text-sm text-gray-300 mb-1">Target</label>
+        <input id="scanAllTarget" type="text" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-4" placeholder="https://example.com or /path/to/scan">
+        <div class="flex gap-2 justify-end">
+            <button onclick="closeScanAllModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Cancel</button>
+            <button onclick="startScanAll()" class="bg-emerald-700 hover:bg-emerald-600 px-4 py-2 rounded text-sm">Start Scan</button>
+        </div>
+        <div id="scanAllResult" class="mt-4 hidden">
+            <hr class="border-gray-700 mb-3">
+            <p id="scanAllStatus" class="text-sm text-gray-300"></p>
+            <pre id="scanAllOutput" class="bg-gray-950 text-gray-300 text-xs p-3 rounded overflow-x-auto mt-2 max-h-60 overflow-y-auto"></pre>
+        </div>
+    </div>
+</div>
+
+<script>
+let scanAllFmt = '';
+let selectedRules = new Map();
+
+function openScanAllModal(fmt) {
+    scanAllFmt = fmt;
+    document.getElementById('scanAllFormat').textContent = fmt;
+    document.getElementById('scanAllModal').classList.remove('hidden');
+}
+function closeScanAllModal() {
+    document.getElementById('scanAllModal').classList.add('hidden');
+    document.getElementById('scanAllResult').classList.add('hidden');
+}
+
+async function startScanAll() {
+    const target = document.getElementById('scanAllTarget').value.trim();
+    if (!target) { alert('Please enter a target'); return; }
+    const btn = document.querySelector('#scanAllModal .bg-emerald-700');
+    btn.disabled = true; btn.textContent = 'Scanning...';
+    document.getElementById('scanAllResult').classList.remove('hidden');
+    document.getElementById('scanAllStatus').textContent = 'Starting scan...';
+    document.getElementById('scanAllOutput').textContent = '';
+
+    try {
+        const r = await fetch('/api/rules/' + scanAllFmt + '/scan-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target })
+        });
+        const data = await r.json();
+        if (data.job_id) {
+            document.getElementById('scanAllStatus').textContent = 'Scan queued. Polling...';
+            pollScanAllJob(data.job_id);
+        } else {
+            document.getElementById('scanAllStatus').textContent = 'Error: ' + (data.error || 'Unknown');
+            btn.disabled = false; btn.textContent = 'Start Scan';
+        }
+    } catch(e) {
+        document.getElementById('scanAllStatus').textContent = 'Error: ' + e.message;
+        btn.disabled = false; btn.textContent = 'Start Scan';
+    }
+}
+
+async function pollScanAllJob(jobId) {
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+            const r = await fetch('/api/jobs/' + jobId, {
+                headers: {}
+            });
+            const job = await r.json();
+            document.getElementById('scanAllStatus').textContent =
+                '[' + job.status + '] ' + (job.message || '');
+            if (job.status === 'completed') {
+                const result = job.result || {};
+                const out = result.matches ? result.matches.map(m => m.rule + ' \u2192 ' + m.file).join('\n')
+                    : result.findings ? result.findings.map(f => JSON.stringify(f, null, 2)).join('\n')
+                    : JSON.stringify(result, null, 2);
+                document.getElementById('scanAllOutput').textContent = out || 'No results';
+                break;
+            }
+            if (job.status === 'failed') {
+                document.getElementById('scanAllOutput').textContent = job.error || 'Unknown error';
+                break;
+            }
+        } catch(e) {
+            document.getElementById('scanAllStatus').textContent = 'Poll error: ' + e.message;
+        }
+    }
+    document.querySelector('#scanAllModal .bg-emerald-700').disabled = false;
+    document.querySelector('#scanAllModal .bg-emerald-700').textContent = 'Start Scan';
+}
+
+// --- Batch selection ---
+function onCheckboxChange(cb) {
+    const card = cb.closest('.rule-card');
+    const fmt = card.dataset.format;
+    const rid = card.dataset.ruleId;
+    const key = fmt + '/' + rid;
+    if (cb.checked) {
+        selectedRules.set(key, { format: fmt, rule_id: rid });
+        card.classList.add('selected');
+    } else {
+        selectedRules.delete(key);
+        card.classList.remove('selected');
+    }
+    updateBatchBar();
+}
+
+function toggleSelectAll(checked) {
+    document.querySelectorAll('.rule-checkbox').forEach(cb => {
+        cb.checked = checked;
+        onCheckboxChange(cb);
+    });
+}
+
+function clearSelection() {
+    selectedRules.clear();
+    document.querySelectorAll('.rule-checkbox').forEach(cb => {
+        cb.checked = false;
+        cb.closest('.rule-card').classList.remove('selected');
+    });
+    updateBatchBar();
+}
+
+function updateBatchBar() {
+    const bar = document.getElementById('batchBar');
+    const count = selectedRules.size;
+    document.getElementById('batchCount').textContent = count;
+    if (count > 0) {
+        bar.classList.remove('hidden');
+    } else {
+        bar.classList.add('hidden');
+    }
+}
+
+async function batchExport() {
+    if (selectedRules.size === 0) return;
+    // Group by format (use the first/dominant format)
+    const format = [...selectedRules.values()][0].format;
+    const ids = [...selectedRules.values()].map(s => s.rule_id);
+    try {
+        const r = await fetch('/api/rules/bulk/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ format, rule_ids: ids })
+        });
+        if (!r.ok) {
+            const err = await r.json();
+            alert('Export failed: ' + (err.error || r.statusText));
+            return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'rules-export-' + format + '-' + Date.now() + '.zip';
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch(e) {
+        alert('Export error: ' + e.message);
+    }
+}
+
+async function batchDelete() {
+    const count = selectedRules.size;
+    if (count === 0) return;
+    if (!confirm('Delete ' + count + ' selected rule(s)? This cannot be undone.')) return;
+    const format = [...selectedRules.values()][0].format;
+    const ids = [...selectedRules.values()].map(s => s.rule_id);
+    try {
+        const r = await fetch('/api/rules/bulk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ format, rule_ids: ids })
+        });
+        const data = await r.json();
+        if (data.deleted > 0) {
+            clearSelection();
+            location.reload();
+        } else {
+            alert('Delete failed: ' + JSON.stringify(data.error_details));
+        }
+    } catch(e) {
+        alert('Delete error: ' + e.message);
+    }
+}
+
+// --- Import modal ---
+function openImportModal() {
+    document.getElementById('importModal').classList.remove('hidden');
+}
+function closeImportModal() {
+    document.getElementById('importModal').classList.add('hidden');
+    document.getElementById('importResult').classList.add('hidden');
+    document.getElementById('importForm').reset();
+}
+
+async function submitImport(event) {
+    event.preventDefault();
+    const form = document.getElementById('importForm');
+    const resultDiv = document.getElementById('importResult');
+    resultDiv.className = 'mb-3 text-sm';
+    resultDiv.classList.remove('hidden');
+
+    const fmt = form.querySelector('[name="format"]').value;
+    const targetDir = form.querySelector('[name="target_dir"]').value;
+    const fileInput = form.querySelector('[name="file"]');
+    const textarea = form.querySelector('[name="content"]');
+
+    const fd = new FormData();
+    fd.append('format', fmt);
+    if (targetDir) fd.append('target_dir', targetDir);
+
+    if (fileInput.files.length > 0) {
+        fd.append('file', fileInput.files[0]);
+    } else if (textarea.value.trim()) {
+        fd.append('content', textarea.value);
+    } else {
+        resultDiv.textContent = 'Please provide a file or paste content.';
+        resultDiv.className = 'mb-3 text-sm text-red-400';
+        return;
+    }
+
+    try {
+        const r = await fetch('/api/rules/bulk/import', {
+            method: 'POST',
+            body: fd
+        });
+        const data = await r.json();
+        if (r.ok) {
+            resultDiv.className = 'mb-3 text-sm text-emerald-400';
+            resultDiv.textContent = 'Created ' + data.created + ' rule(s).' + (data.errors > 0 ? ' (' + data.errors + ' errors)' : '');
+            setTimeout(() => { closeImportModal(); location.reload(); }, 1500);
+        } else {
+            resultDiv.className = 'mb-3 text-sm text-red-400';
+            resultDiv.textContent = data.error || 'Import failed';
+        }
+    } catch(e) {
+        resultDiv.className = 'mb-3 text-sm text-red-400';
+        resultDiv.textContent = 'Error: ' + e.message;
+    }
+    return false;
+}
+</script>
+{% endblock %}

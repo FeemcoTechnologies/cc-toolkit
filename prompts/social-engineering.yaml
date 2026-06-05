@@ -1,0 +1,46 @@
+title: Social Engineering Campaign Design
+description: Plan a multi-vector social engineering campaign — phishing, pretexting, vishing, and physical tailgating — with lures, infrastructure, and metrics.
+tags: [social-engineering, phishing, pretexting, awareness]
+prompt: >
+  Design a social engineering assessment for {organization}.
+
+  ## Engagement Parameters
+  - Organization: {organization}
+  - Duration: {duration} days
+  - Vectors authorized: {vectors} (email / phone / physical / SMS / USB drop)
+  - Targets: {target_groups} (executives, IT staff, general employees, contractors)
+  - Reporting threshold: {reporting_threshold} (what lures are OK?)
+  - Exclusions: {exclusions} (specific people, systems not to target)
+
+  ## Campaign Components
+
+  ### 1. Phishing Campaign
+  - **Lures**: {phishing_lures} (e.g., payroll update, password expiry, package delivery, IT alert)
+  - **Infrastructure**: phishing domain (typosquat / lookalike), mail relay (GoPhish / EvilGinx), landing page
+  - **Variants**: targeted spear-phish vs. broad spray, with/without attachment, with/without link
+  - **Awareness testing**: how many click? how many report to security? how many enter credentials?
+
+  ### 2. Pretexting / Vishing
+  - **Pretexts**: {pretexts} (IT support reset, vendor callback, recruiter, auditor)
+  - **Target info gathering**: LinkedIn, company website, org chart for credibility
+  - **Call flow**: scripted voicemail → callback → credential/phish page, or live call → info gathering
+  - **Metrics**: successful pretext acceptance rate, info disclosed per target tier
+
+  ### 3. Physical / Tailgating (if in scope)
+  - **Entry method**: badge follow, locked door bypass, SMiShing for badge QR
+  - **Internal access**: unlocked workstations, conference room network jacks, print zones
+  - **USB drop**: placed in parking lot, smoking areas, break rooms — payload execution rate
+
+  ### 4. SMS / SMiShing (if in scope)
+  - **Lures**: package notification, voicemail, security alert, HR update
+  - **Infrastructure**: SMS gateway, shortlink, mobile-optimized landing page
+  - **Metrics**: click rate, credential entry rate
+
+  ## Risk Mitigation
+  - Pre-campaign notification to authorized stakeholders
+  - "Stop" button and process for target distress
+  - No PII collection beyond what's needed for metrics
+  - Data handling plan for captured credentials (immediate deletion after test)
+
+  ## Output
+  Create a case with campaign infrastructure setup tasks, timeline for execution phases, and a social engineering report with click rates, detection rates, and awareness recommendations.

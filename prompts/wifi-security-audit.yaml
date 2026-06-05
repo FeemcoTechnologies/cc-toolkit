@@ -1,0 +1,27 @@
+title: WiFi Security Audit
+description: Assess wireless network security — enumerate APs, capture handshakes, test enterprise authentication, and identify rogue APs.
+tags: [wifi, wireless, pentest]
+prompt: >
+  Perform a wireless security audit of the target network {essid} (BSSID: {bssid}) on channel {channel} using interface {interface}.
+
+  ## Scope
+  - Target ESSID: {essid}
+  - Target BSSID: {bssid}
+  - Channel: {channel}
+  - Interface: {interface}
+  - Duration: {duration_minutes} minutes
+
+  ## Methodology
+  1. Scan for nearby APs and clients on the target channel
+  2. Capture WPA 4-way handshake (deauth if necessary, but minimize disruption)
+  3. Analyze handshake for weak PMKID or dictionary-attackable passwords
+  4. Test for enterprise AP misconfigurations (if WPA2-EAP)
+  5. Check for rogue APs or evil twin attacks
+
+  ## Constraints
+  - Do NOT use airmon-ng check kill (preserves SSH connectivity)
+  - Do NOT disrupt production networks outside the target
+  - Capture only — offline cracking only with explicit authorization
+
+  ## Output
+  Create a case with handshake capture file, AP/client enumeration results, signal data, and password cracking results if applicable.

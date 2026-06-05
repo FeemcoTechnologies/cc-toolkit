@@ -1,0 +1,171 @@
+name: "Web Cache Deception"
+description: "Detect web cache deception vulnerabilities: cache key poisoning, CDN caching of sensitive responses, and cache-based data leaks"
+version: "1.0"
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+  callback: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "Web Cache Deception assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Cache discovery ----
+  - id: cache_discovery
+    name: "Cache infrastructure fingerprinting"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: curl_headers
+        name: "Cache-related response headers"
+        tool: curl
+        args: ["-sI", "{target}", "-o", "{case_dir}/cache-headers.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/cache-headers.txt"]
+
+      - id: xcache_check
+        name: "X-Cache / CF-Cache-Status check"
+        tool: curl
+        args: ["-sI", "-H", "X-Forwarded-Proto: https", "{target}",
+               "-w", "X-Cache: %{header}x-cache\\nCF-Cache: %{header}cf-cache-status\\nAge: %{header}age\\n"]
+        timeout: 30
+
+      - id: cache_detect
+        name: "CDN/Cache detection (whatweb)"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-cache.txt"]
+        timeout: 60
+
+  # ---- Phase 2: Cache key poisoning ----
+  - id: key_poisoning
+    name: "Cache key poisoning tests"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: poison_header
+        name: "Header-based cache poisoning"
+        tool: curl
+        args: ["-s", "-X", "GET", "-H", "X-Forwarded-Host: evil.com",
+               "{target}", "-D", "{case_dir}/poison-header.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/poison-header.txt"]
+
+      - id: poison_query
+        name: "Query-based cache poisoning"
+        tool: curl
+        args: ["-s", "-X", "GET", "{target}?cachebuster=123&evil=param",
+               "-D", "{case_dir}/poison-query.txt"]
+        timeout: 30
+
+      - id: poison_host
+        name: "Host header cache poisoning"
+        tool: curl
+        args: ["-s", "-X", "GET", "-H", "Host: evil.com",
+               "{target}", "-D", "{case_dir}/poison-host.txt"]
+        timeout: 30
+
+      - id: poison_method
+        name: "HTTP method cache poisoning"
+        tool: curl
+        args: ["-s", "-X", "OPTIONS", "{target}", "-D", "{case_dir}/poison-method.txt"]
+        timeout: 30
+
+      - id: poison_cookie
+        name: "Cookie-based cache key separation"
+        tool: curl
+        args: ["-s", "-X", "GET", "-H", "Cookie: session=test",
+               "{target}", "-D", "{case_dir}/poison-cookie.txt"]
+        timeout: 30
+
+  # ---- Phase 3: Cache deception (sensitive content cached) ----
+  - id: cache_deception
+    name: "Cache deception — sensitive resource caching"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: wcd_account
+        name: "Account page with cache buster"
+        tool: curl
+        args: ["-s", "-X", "GET", "{target}/account/nonexistent.css",
+               "-D", "{case_dir}/wcd-account.txt"]
+        timeout: 30
+
+      - id: wcd_profile
+        name: "Profile page with .css extension"
+        tool: curl
+        args: ["-s", "-X", "GET", "{target}/profile/test.css",
+               "-D", "{case_dir}/wcd-profile.txt"]
+        timeout: 30
+
+      - id: wcd_dashboard
+        name: "Dashboard with .js extension"
+        tool: curl
+        args: ["-s", "-X", "GET", "{target}/dashboard/cachetest.js",
+               "-D", "{case_dir}/wcd-dashboard.txt"]
+        timeout: 30
+
+      - id: wcd_api
+        name: "API endpoint with .jpg extension"
+        tool: curl
+        args: ["-s", "-X", "GET", "{target}/api/v1/users/12345.jpg",
+               "-D", "{case_dir}/wcd-api.txt"]
+        timeout: 30
+
+      - id: wcd_static
+        name: "Static path appended to dynamic page"
+        tool: curl
+        args: ["-s", "-X", "GET", "{target}/settings/static/style.css",
+               "-D", "{case_dir}/wcd-static.txt"]
+        timeout: 30
+
+  # ---- Phase 4: Time-based cache validation ----
+  - id: cache_timing
+    name: "Cache timing analysis"
+    type: sequential
+    steps:
+      - id: timing_first
+        name: "First request (baseline)"
+        tool: curl
+        args: ["-s", "-w", "\\n--- Time: %{time_total}s Size: %{size_download} ---\\n",
+               "-o", "{case_dir}/timing-baseline.txt", "{target}"]
+        timeout: 30
+
+      - id: timing_second
+        name: "Second request (cached?)"
+        tool: curl
+        args: ["-s", "-w", "\\n--- Time: %{time_total}s Size: %{size_download} ---\\n",
+               "-o", "{case_dir}/timing-cached.txt", "{target}"]
+        timeout: 30
+
+      - id: timing_diff
+        name: "Compare timing responses"
+        tool: grep
+        args: ["-E", "Time:|Age:|X-Cache:|CF-Cache", "{case_dir}/timing-*.txt"]
+        timeout: 10
+
+  # ---- Phase 5: Results ----
+  - id: summarize
+    name: "Cache deception summary"
+    type: sequential
+    steps:
+      - id: check_poison
+        name: "Check for reflected content in poisoned responses"
+        tool: grep
+        args: ["-l", "evil.com|X-Forwarded-Host", "{case_dir}/poison-*.txt"]
+        timeout: 10
+
+      - id: check_wcd
+        name: "Check for sensitive content in cached deception responses"
+        tool: grep
+        args: ["-l", "email|name|ssn|token|api_key|session|csrf",
+               "{case_dir}/wcd-*.txt"]
+        timeout: 10
+
+      - id: report
+        name: "Cache assessment note"
+        type: log
+        message: |
+          Web Cache Deception scan complete for {target}.
+          Check {case_dir}/ for poison headers, WCD tests, and timing analysis.

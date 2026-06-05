@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}CC / Terminal{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<style>
+    #terminal-container { height: calc(100vh - 180px); min-height: 400px; }
+    .term-conn-status { transition: all 0.3s ease; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto">
+    <!-- Connection bar -->
+    <div class="bg-gray-900 border border-gray-800 rounded-t-lg px-3 py-2 flex items-center justify-between">
+        <div class="flex items-center gap-3 flex-1">
+            <span id="conn-status" class="term-conn-status text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-400">disconnected</span>
+            <input id="term-target" type="text" placeholder="user@host (default: local shell)" value=""
+                   class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono flex-1 max-w-xs"
+                   placeholder="user@host or leave empty for local">
+            <button id="btn-connect" onclick="toggleTerm()"
+                    class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-sm font-medium transition-colors">Connect</button>
+            <button onclick="sendLine('cc --help')" class="text-xs text-indigo-400 hover:text-indigo-300">help</button>
+            <button onclick="sendLine('cc case list')" class="text-xs text-indigo-400 hover:text-indigo-300">cases</button>
+            <button onclick="sendLine('cc tools list')" class="text-xs text-indigo-400 hover:text-indigo-300">tools</button>
+        </div>
+        <button onclick="clearTerm()" class="text-xs text-gray-500 hover:text-gray-300">clear</button>
+    </div>
+
+    <!-- Terminal -->
+    <div class="bg-gray-950 border-x border-b border-gray-800 rounded-b-lg overflow-hidden">
+        <div id="terminal-container"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
+<script>
+(function() {
+    'use strict';
+
+    const term = new Terminal({
+        theme: { background: '#030712', foreground: '#e5e7eb', cursor: '#6366f1',
+                 black: '#000000', red: '#ef4444', green: '#22c55e', yellow: '#eab308',
+                 blue: '#6366f1', magenta: '#a855f7', cyan: '#22d3ee', white: '#ffffff' },
+        fontSize: 13, fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        cursorBlink: true, allowTransparency: true, convertEol: true,
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+
+    let ws = null;
+    let connected = false;
+    let lineBuffer = '';
+
+    function updateStatus(state, text, color) {
+        const el = document.getElementById('conn-status');
+        el.textContent = text;
+        el.className = 'term-conn-status text-xs px-2 py-0.5 rounded ' + color;
+        document.getElementById('btn-connect').textContent = state === 'connected' ? 'Disconnect' : 'Connect';
+    }
+
+    function getWsUrl() {
+        const loc = window.location;
+        const port = loc.port || (loc.protocol === 'https:' ? 443 : 80);
+        const host = loc.hostname;
+        // WS terminal server runs on port = HTTP port + 1 (or 5001 default)
+        const wsPort = {{ config.get('ws_port', 5001) }};
+        return 'ws://' + host + ':' + wsPort;
+    }
+
+    function connect() {
+        const target = document.getElementById('term-target').value.trim();
+        const url = getWsUrl();
+
+        updateStatus('connecting', 'connecting...', 'bg-yellow-800 text-yellow-300');
+        document.getElementById('btn-connect').disabled = true;
+
+        ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = function() {
+            // Send config
+            var cfg = target ? { target: target } : { local: true };
+            ws.send(JSON.stringify(cfg));
+        };
+
+        ws.onmessage = function(e) {
+            var data;
+            if (typeof e.data === 'string') {
+                try {
+                    var msg = JSON.parse(e.data);
+                    if (msg.type === 'connected') {
+                        connected = true;
+                        updateStatus('connected', msg.target || 'connected', 'bg-green-800 text-green-300');
+                        document.getElementById('btn-connect').disabled = false;
+                        return;
+                    }
+                } catch (_) { /* not JSON — raw terminal output */ }
+                term.write(e.data);
+            } else {
+                // binary data
+                term.write(new Uint8Array(e.data));
+            }
+        };
+
+        ws.onclose = function() {
+            connected = false;
+            updateStatus('disconnected', 'disconnected', 'bg-gray-700 text-gray-400');
+            document.getElementById('btn-connect').disabled = false;
+            ws = null;
+        };
+
+        ws.onerror = function() {
+            term.write('\r\n\x1b[31mWebSocket error — is the terminal server running?\x1b[0m\r\n');
+            ws.close();
+        };
+    }
+
+    function disconnect() {
+        if (ws) {
+            ws.close();
+            ws = null;
+        }
+        connected = false;
+        updateStatus('disconnected', 'disconnected', 'bg-gray-700 text-gray-400');
+    }
+
+    window.toggleTerm = function() {
+        if (connected || (ws && ws.readyState === WebSocket.OPEN)) {
+            disconnect();
+        } else {
+            connect();
+        }
+    };
+
+    window.sendLine = function(cmd) {
+        if (!connected || !ws) {
+            term.write('\r\n\x1b[33mNot connected. Click Connect first.\x1b[0m\r\n');
+            return;
+        }
+        ws.send(cmd + '\n');
+    };
+
+    window.clearTerm = function() {
+        term.clear();
+    };
+
+    // Terminal keyboard input
+    term.onData(function(data) {
+        if (!connected || !ws) return;
+        ws.send(data);
+    });
+
+    // Resize handling
+    function sendResize() {
+        if (!connected || !ws) return;
+        const dims = fitAddon.proposeDimensions();
+        if (dims) {
+            ws.send(JSON.stringify({ type: 'resize', rows: dims.rows, cols: dims.cols }));
+        }
+    }
+
+    window.addEventListener('resize', function() {
+        fitAddon.fit();
+        sendResize();
+    });
+
+    // Debounced resize on fit
+    var resizeTimer;
+    term.onResize(function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(sendResize, 200);
+    });
+
+    // Write welcome
+    term.write('\x1b[1;36mCC WebSocket Terminal\x1b[0m\r\n');
+    term.write('Enter a target (user@host) or leave blank for local shell.\r\n');
+    term.write('Click \x1b[33mConnect\x1b[0m to start.\r\n');
+})();
+</script>
+{% endblock %}

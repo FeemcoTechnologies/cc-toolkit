@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Board — {{ case.case_id }}{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<style>
+    .board-col { min-height: 200px; }
+    .board-card { transition: all 0.15s ease; cursor: pointer; }
+    .board-card:active { cursor: grabbing; }
+    .board-card:hover { border-color: #6366f1; transform: translateY(-1px); }
+    .board-card.dragging { opacity: 0.5; }
+    .sortable-ghost { opacity: 0.3; background: #6366f1 !important; }
+    .col-header { position: sticky; top: 0; z-index: 10; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-4">
+        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
+        <h1 class="text-lg font-semibold flex items-center gap-2">
+            <i data-lucide="columns" class="w-5 h-5 text-indigo-400"></i>
+            Kanban Board — {{ case.case_id }}
+        </h1>
+    </div>
+    <div class="text-xs text-gray-500">
+        Drag findings between columns to update status
+    </div>
+</div>
+<div id="board-container" class="grid grid-cols-4 gap-3" style="min-height: calc(100vh - 160px);">
+    <div class="text-gray-500 col-span-4 text-center py-12">Loading...</div>
+</div>
+{% endblock %}
+{% block scripts %}
+ <script>
+function openFinding(id) {
+    window.location.href = '/case/{{ case.case_id }}/finding/' + id;
+}
+
+(function() {
+    'use strict';
+
+    const SEV_COLORS = {
+        critical: { bg: '#7f1d1d', border: '#ef4444', text: '#fca5a5' },
+        high: { bg: '#7c2d12', border: '#f97316', text: '#fdba74' },
+        medium: { bg: '#713f12', border: '#eab308', text: '#fde047' },
+        low: { bg: '#14532d', border: '#22c55e', text: '#86efac' },
+        info: { bg: '#1f2937', border: '#6b7280', text: '#9ca3af' },
+    };
+
+    function loadBoard() {
+        fetch('/api/case/{{ case.case_id }}/board/data')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var container = document.getElementById('board-container');
+                var html = '';
+                Object.keys(data.columns).forEach(function(key) {
+                    var col = data.columns[key];
+                    html += '<div class="bg-gray-900 border border-gray-800 rounded-lg flex flex-col" data-col="' + key + '">' +
+                        '<div class="col-header bg-gray-800/80 rounded-t-lg px-3 py-2 flex items-center justify-between border-b border-gray-700">' +
+                        '<span class="text-xs font-semibold" style="color:' + col.color + '">' + col.title + '</span>' +
+                        '<span class="text-xs text-gray-500">' + col.items.length + '</span>' +
+                        '</div>' +
+                        '<div class="board-col flex-1 p-2 space-y-2 sortable-col" data-status="' + key + '">';
+                    col.items.forEach(function(f) {
+                        html += renderCard(f);
+                    });
+                    html += '</div></div>';
+                });
+                container.innerHTML = html;
+
+                // Init sortable on each column
+                document.querySelectorAll('.sortable-col').forEach(function(el) {
+                    new Sortable(el, {
+                        group: 'board',
+                        animation: 150,
+                        ghostClass: 'sortable-ghost',
+                        dragClass: 'dragging',
+                        onEnd: function(evt) {
+                            var findingId = evt.item.dataset.findingId;
+                            var newStatus = evt.to.dataset.status;
+                            if (!findingId || !newStatus) return;
+                            fetch('/api/case/{{ case.case_id }}/board/update', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({finding_id: findingId, status: newStatus}),
+                            });
+                        },
+                    });
+                });
+                lucide.createIcons();
+            });
+    }
+
+    function renderCard(f) {
+        var sev = f.severity || 'info';
+        var c = SEV_COLORS[sev] || SEV_COLORS.info;
+        var cve = f.cve || '';
+        var age = '';
+        if (f.created) {
+            var days = Math.floor((Date.now() - new Date(f.created).getTime()) / 86400000);
+            age = days + 'd ago';
+        }
+        return '<div class="board-card bg-gray-800/50 border border-gray-700/50 rounded-lg p-2.5 text-xs" data-finding-id="' + f.id + '" onclick="openFinding(\'' + f.id + '\')">' +
+            '<div class="flex items-center justify-between mb-1">' +
+            '<span class="truncate font-medium text-gray-200 flex-1">' + escapeHtml(f.title || 'Untitled') + '</span>' +
+            '<span class="px-1.5 py-0.5 rounded text-xs font-medium shrink-0 ml-1" style="background:' + c.bg + ';color:' + c.text + ';border:1px solid ' + c.border + '">' + sev + '</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-2 text-gray-500">' +
+            (cve ? '<span class="font-mono text-indigo-400">' + cve + '</span>' : '') +
+            (age ? '<span>' + age + '</span>' : '') +
+            '</div>' +
+            (f.description ? '<div class="mt-1 text-gray-500 truncate">' + escapeHtml(f.description) + '</div>' : '') +
+            '</div>';
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    loadBoard();
+})();
+</script>
+{% endblock %}

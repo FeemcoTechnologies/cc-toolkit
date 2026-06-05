@@ -1,0 +1,30 @@
+# Sample playbooks for Kali Command Center
+
+name: "Quick Recon"
+description: "Nmap top-ports scan + whatweb fingerprinting + nuclei"
+target_required: true
+
+steps:
+  - name: "Nmap quick scan (top 1000 ports)"
+    tool: "nmap"
+    args: ["-sS", "-sV", "-Pn", "--top-ports", "1000", "--open", "--min-rate", "500",
+           "-oA", "{case_dir}/{target_safe}", "{target}"]
+    timeout: 1200
+    pause: 2
+
+  - name: "WhatWeb on discovered web ports"
+    tool: "whatweb"
+    args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb.txt"]
+    when: "on_port:80"
+    timeout: 120
+
+  - name: "WhatWeb on HTTPS"
+    tool: "whatweb"
+    args: ["-a3", "https://{target}", "--log-verbose", "{case_dir}/whatweb-ssl.txt"]
+    when: "on_port:443"
+    timeout: 120
+
+  - name: "Nuclei scan"
+    tool: "nuclei"
+    args: ["-u", "{target}", "-jsonl", "-o", "{case_dir}/nuclei.json", "-c", "10"]
+    timeout: 600

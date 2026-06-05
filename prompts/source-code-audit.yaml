@@ -1,0 +1,45 @@
+title: Source Code Audit (Compliance-Grade)
+description: Targeted source code audit against compliance standards (PCI DSS, SOC 2, HIPAA, ISO 27001) covering cryptographic controls, data handling, and access control.
+tags: [code-audit, compliance, pci, hipaa, soc2]
+prompt: >
+  Perform a compliance-oriented source code audit for {repo_path}.
+
+  ## Scope
+  - Repository: {repo_path}
+  - Standard: {compliance_standard} (PCI DSS / SOC 2 / HIPAA / ISO 27001 / custom)
+  - Language(s): {languages}
+  - Critical components: {critical_components}
+  - Previous audit findings: {previous_findings}
+
+  ## Standard-Specific Focus
+
+  ### PCI DSS (if selected)
+  - Requirement 3 — stored CHD: truncation, masking, hashing, encryption
+  - Requirement 4 — encrypt transmission of cardholder data over open networks
+  - Requirement 6 — secure coding, code review, and vulnerability management
+  - Requirement 7 — need-to-know access control, RBAC enforcement
+  - Requirement 10 — audit logging coverage and log integrity
+  - Requirement 12 — security awareness, policy documentation
+
+  ### HIPAA (if selected)
+  - ePHI encryption at rest and in transit
+  - Access controls (unique user IDs, emergency access, automatic logoff)
+  - Audit controls for ePHI access
+  - Integrity controls
+  - Transmission security
+
+  ### SOC 2 (if selected)
+  - Security — logical access controls, encryption, monitoring
+  - Availability — redundancy, disaster recovery, uptime
+  - Processing integrity — data validation, error handling
+  - Confidentiality — data classification, access restrictions
+  - Privacy — PII handling, consent, data lifecycle
+
+  ### ISO 27001 Annex A (if selected)
+  - A.9 — access control policy, user access management
+  - A.10 — cryptographic controls, key management
+  - A.12 — operational security, protection from malware, logging
+  - A.18 — compliance with legal and contractual requirements
+
+  ## Output
+  Create findings mapped to specific compliance requirements with severity, code references, impact on compliance posture, and remediation aligned with the selected standard.

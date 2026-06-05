@@ -1,0 +1,25 @@
+title: Source Code Security Review
+description: Automated and manual code review for security vulnerabilities across the codebase — SAST, logic flaws, hardcoded secrets, and compliance with secure coding standards.
+tags: [code-review, sast, development, secure-coding]
+prompt: >
+  Perform a security code review on the codebase at {repo_path}.
+
+  ## Scope
+  - Repository: {repo_path}
+  - Language(s): {languages}
+  - Framework(s): {frameworks}
+  - Branch/commit: {branch}
+  - Focus areas: {focus_areas} (e.g., authentication, API endpoints, data handling, crypto)
+
+  ## Methodology
+  1. **Static Analysis** — run semgrep/gosec/bandit/brakeman with OWASP Top 10 rules; flag findings
+  2. **Hardcoded Secrets** — scan for API keys, passwords, tokens, private keys, connection strings
+  3. **Authentication & Authorization** — review login flows, session management, JWT handling, role checks
+  4. **Input Validation** — check for injection flaws (SQLi, XSS, command injection, SSTI, LDAP injection) in user-facing inputs
+  5. **Data Protection** — review encryption, TLS configuration, secrets storage, logging of sensitive data
+  6. **Business Logic** — identify logic flaws (IDOR, race conditions, mass assignment, pricing manipulation)
+  7. **Dependency Audit** — check for known vulnerable dependencies (OWASP Dependency-Check, npm audit, pip audit)
+  8. **Configuration Review** — review config files, environment variables, debug endpoints, CORS, security headers
+
+  ## Output
+  Create findings with severity, vulnerable code snippets (file:line), impact, and remediation. Group by OWASP category where applicable.

@@ -1,0 +1,42 @@
+# v2 runbook — YARA scan using custom rules from rules section
+name: "YARA Custom Rule Scan"
+description: "Scan a file or directory with our custom YARA rules"
+version: "1.0"
+
+vars:
+  yara_rules_dir: "/share/git-repo/Scripts/aislop/rules/yara"
+
+steps:
+  - id: setup
+    type: log
+    message: "YARA custom scan against {target}"
+
+  - id: yara_scan_step
+    name: "YARA scan with custom rules"
+    tool: yara
+    args: ["-r", "-s", "{yara_rules_dir}", "{target}"]
+    timeout: 300
+    save: "{case_dir}/yara-custom-results.txt"
+
+  - id: summary
+    name: "Summarize matches"
+    type: conditional
+    condition:
+      ref: yara_scan_step
+      field: rc
+      expected: 0
+    then:
+      - id: matches_found
+        type: notify
+        level: warning
+        message: "YARA matches found — see {case_dir}/yara-custom-results.txt"
+    else:
+      - id: no_matches
+        type: notify
+        level: info
+        message: "No YARA matches found"
+
+postflight:
+  - id: done
+    type: notify
+    message: "YARA custom scan complete — {case_dir}"

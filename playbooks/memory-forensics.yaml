@@ -1,0 +1,299 @@
+# v2 runbook — Memory forensics analysis with Volatility
+name: "Memory Forensics Analysis"
+description: "Analyze memory dumps with Volatility 3: processes, network, registry, crypto, injected code, command line, hooks"
+version: "2.0"
+
+vars:
+  profile: ""
+  volatility_binary: "vol"
+  mem_dump: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Memory forensics analysis — dump: {mem_dump} (case: {case_id})"
+
+steps:
+  # Phase 1: Framework info
+  - id: info
+    name: "Memory dump info"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: banner
+        name: "Volatility banner & layer info"
+        tool: vol
+        args: ["-f", "{mem_dump}", "banner",
+               "-o", "{case_dir}/volatility_banner.txt"]
+        timeout: 120
+
+      - id: isf_info
+        name: "ISF info / recommended profile"
+        tool: vol
+        args: ["-f", "{mem_dump}", "isfinfo",
+               "-o", "{case_dir}/isf_info.txt"]
+        timeout: 120
+
+  # Phase 2: OS identification
+  - id: os_id
+    name: "OS identification"
+    type: parallel
+    steps:
+      - id: windows_info
+        name: "Windows info"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.info",
+               "-o", "{case_dir}/windows_info.txt"]
+        timeout: 180
+
+  # Phase 3: Process analysis
+  - id: processes
+    name: "Process analysis"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: pslist
+        name: "Process list"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.pslist",
+               "-o", "{case_dir}/pslist.txt"]
+        timeout: 180
+        artifacts: ["{case_dir}/pslist.txt"]
+
+      - id: pstree
+        name: "Process tree"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.pstree",
+               "-o", "{case_dir}/pstree.txt"]
+        timeout: 180
+
+      - id: psscan
+        name: "Process scan (hidden processes)"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.psscan",
+               "-o", "{case_dir}/psscan.txt"]
+        timeout: 180
+
+      - id: cmdline
+        name: "Command lines"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.cmdline.CmdLine",
+               "-o", "{case_dir}/cmdline.txt"]
+        timeout: 180
+
+      - id: cmdscan
+        name: "Command history (cmd.exe)"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.cmdscan",
+               "-o", "{case_dir}/cmdscan.txt"]
+        timeout: 180
+
+      - id: consoles
+        name: "Console history"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.consoles",
+               "-o", "{case_dir}/consoles.txt"]
+        timeout: 180
+
+  # Phase 4: Network artifacts
+  - id: network
+    name: "Network artifacts"
+    type: parallel
+    steps:
+      - id: netscan
+        name: "Network connections"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.netscan",
+               "-o", "{case_dir}/netscan.txt"]
+        timeout: 300
+        artifacts: ["{case_dir}/netscan.txt"]
+
+      - id: sockets
+        name: "Listening sockets"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.sockets",
+               "-o", "{case_dir}/sockets.txt"]
+        timeout: 180
+
+  # Phase 5: Registry & artifacts
+  - id: registry
+    name: "Registry analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: hivelist
+        name: "Registry hive list"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.registry.hivelist.HiveList",
+               "-o", "{case_dir}/hivelist.txt"]
+        timeout: 120
+
+      - id: printkey_bootkey
+        name: "Boot key / install time"
+        tool: vol
+        args: ["-f", "{mem_dump}",
+               "windows.registry.printkey",
+               "--key", "\\ControlSet001\\Control\\Session Manager\\BootExecute",
+               "-o", "{case_dir}/bootkey.txt"]
+        timeout: 120
+
+      - id: userassist
+        name: "UserAssist"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.registry.userassist.UserAssist",
+               "-o", "{case_dir}/userassist.txt"]
+        timeout: 120
+
+      - id: amcache
+        name: "AmCache / ShimCache"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.amcache",
+               "-o", "{case_dir}/amcache.txt"]
+        timeout: 120
+
+      - id: shellbags
+        name: "Shellbags"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.shellbags",
+               "-o", "{case_dir}/shellbags.txt"]
+        timeout: 180
+
+  # Phase 6: Malware indicators
+  - id: malware
+    name: "Malware indicator scanning"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: malfind
+        name: "Suspicious memory regions"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.malfind.Malfind",
+               "-o", "{case_dir}/malfind.txt"]
+        timeout: 300
+        artifacts: ["{case_dir}/malfind.txt"]
+
+      - id: ldrmodules
+        name: "Hidden / injected DLLs"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.ldrmodules",
+               "-o", "{case_dir}/ldrmodules.txt"]
+        timeout: 180
+
+      - id: apihooks
+        name: "API hooks"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.apihooks",
+               "-o", "{case_dir}/apihooks.txt"]
+        timeout: 300
+
+      - id: devicetree
+        name: "Device tree (rootkits)"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.devicetree",
+               "-o", "{case_dir}/devicetree.txt"]
+        timeout: 180
+
+      - id: driverirp
+        name: "Driver IRP hooks"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.driverirp",
+               "-o", "{case_dir}/driverirp.txt"]
+        timeout: 180
+
+      - id: ssdt
+        name: "SSDT hooks"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.ssdt",
+               "-o", "{case_dir}/ssdt.txt"]
+        timeout: 180
+
+      - id: callbacks
+        name: "Kernel callbacks"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.callbacks",
+               "-o", "{case_dir}/callbacks.txt"]
+        timeout: 180
+
+  # Phase 7: Credential extraction
+  - id: credentials
+    name: "Credential extraction"
+    type: parallel
+    steps:
+      - id: hashdump
+        name: "Windows hash dump (SAM)"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.hashdump.Hashdump",
+               "-o", "{case_dir}/hashdump.txt"]
+        timeout: 180
+        artifacts: ["{case_dir}/hashdump.txt"]
+
+      - id: cachedump
+        name: "Domain cached credentials"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.cachedump",
+               "-o", "{case_dir}/cachedump.txt"]
+        timeout: 180
+
+      - id: lsadump
+        name: "LSA secrets"
+        tool: vol
+        args: ["-f", "{mem_dump}", "windows.lsadump",
+               "-o", "{case_dir}/lsadump.txt"]
+        timeout: 180
+
+  # Phase 8: Timeline
+  - id: timeliner
+    name: "Timeline generation"
+    type: parallel
+    steps:
+      - id: timeliner_vol
+        name: "Volatility timeliner"
+        tool: vol
+        args: ["-f", "{mem_dump}", "timeliner",
+               "-o", "{case_dir}/timeliner.txt"]
+        timeout: 600
+        artifacts: ["{case_dir}/timeliner.txt"]
+
+      - id: strings_timeline
+        name: "Strings extraction (recent)"
+        tool: strings
+        args: ["{mem_dump}", "--encoding=l", "-n10",
+               "|", "grep", "-E", "\"202[0-9]\"",
+               ">", "{case_dir}/strings_recent.txt"]
+        timeout: 600
+        artifacts: ["{case_dir}/strings_recent.txt"]
+
+  # Phase 9: YARA scan over memory
+  - id: ask_yara
+    type: prompt
+    message: "Scan memory dump with YARA rules? (may take a long time)"
+    then:
+      - id: yara_memory
+        name: "YARA scan memory"
+        tool: yara
+        args: ["-s", "-w", "{yara_rules_dir}",
+               "{mem_dump}",
+               "-o", "{case_dir}/yara_memory.txt"]
+        timeout: 1800
+        artifacts: ["{case_dir}/yara_memory.txt"]
+
+  # Phase 10: Report
+  - id: report
+    name: "Generate memory forensics report"
+    type: report
+    format: markdown
+    title: "Memory Forensics Analysis — {mem_dump}"
+    output: "{case_dir}/memory-forensics-report.md"
+    sections:
+      - heading: "Summary"
+        body: "- Memory dump: {mem_dump}\n- Case: {case_id}"
+      - heading: "Key Findings"
+        body: "- Process list: {case_dir}/pslist.txt\n- Network connections: {case_dir}/netscan.txt\n- Suspicious memory: {case_dir}/malfind.txt\n- Hashes: {case_dir}/hashdump.txt\n- Timeline: {case_dir}/timeliner.txt"
+      - heading: "Indicators of Compromise"
+        body: "Review malfind, apihooks, ssdt, driverirp, and callbacks for rootkit/malware IOCs."
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Memory forensics analysis complete — {case_dir}"

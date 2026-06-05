@@ -1,0 +1,564 @@
+{% extends "base.html" %}
+{% block title %}Assets{% endblock %}
+{% block head %}
+<style>
+    .tab-btn { transition: all 0.15s ease; }
+    .cred-eye { cursor: pointer; user-select: none; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="hard-drive" class="w-6 h-6 text-indigo-400"></i>
+        Asset Inventory
+    </h1>
+    <span id="stats-badge" class="text-xs text-gray-500"></span>
+</div>
+
+<!-- Tabs -->
+<div class="flex gap-1 mb-4 border-b border-gray-800">
+    <button onclick="switchTab('customers')" id="tab-customers" class="tab-btn px-4 py-2 text-sm border-b-2 border-indigo-400 text-indigo-300 font-medium">Customers</button>
+    <button onclick="switchTab('assets')" id="tab-assets" class="tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Assets</button>
+    <button onclick="switchTab('creds')" id="tab-creds" class="tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Credentials</button>
+    <button onclick="switchTab('import')" id="tab-import" class="tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Import</button>
+</div>
+
+<!-- ==================== CUSTOMERS TAB ==================== -->
+<div id="panel-customers">
+    <div class="flex gap-2 mb-4">
+        <input id="new-customer-name" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 w-64" placeholder="Customer name">
+        <button onclick="createCustomer()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Add Customer</button>
+    </div>
+    <div id="customer-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+    </div>
+</div>
+
+<!-- ==================== ASSETS TAB ==================== -->
+<div id="panel-assets" class="hidden">
+    <div class="flex gap-2 mb-4 flex-wrap">
+        <select id="asset-filter-customer" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200">
+            <option value="">All Customers</option>
+        </select>
+        <select id="asset-filter-kind" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200">
+            <option value="">All Kinds</option>
+            <option value="host">Host</option>
+            <option value="domain">Domain</option>
+            <option value="url">URL</option>
+            <option value="service">Service</option>
+        </select>
+        <input id="asset-search" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 w-48" placeholder="Search assets..." oninput="debounceSearch()">
+        <button onclick="showNewAssetModal()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">+ New Asset</button>
+    </div>
+    <div id="asset-list" class="space-y-1">
+        <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+    </div>
+</div>
+
+<!-- ==================== CREDENTIALS TAB ==================== -->
+<div id="panel-creds" class="hidden">
+    <div class="flex gap-2 mb-4">
+        <select id="cred-filter-asset" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 w-64">
+            <option value="">All Assets</option>
+        </select>
+    </div>
+    <div id="cred-list" class="space-y-1">
+        <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+    </div>
+</div>
+
+<!-- ==================== IMPORT TAB ==================== -->
+<div id="panel-import" class="hidden">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-gray-200 mb-3">Import Nmap XML</h3>
+            <select id="import-customer" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 mb-3">
+                <option value="">Select customer...</option>
+            </select>
+            <textarea id="import-xml" rows="10" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono" placeholder="Paste nmap XML output here..."></textarea>
+            <div class="flex gap-2 mt-3">
+                <button onclick="importNmapXml()" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 rounded text-sm">Import XML</button>
+                <label class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm cursor-pointer">
+                    Upload File
+                    <input type="file" accept=".xml,.nmap" class="hidden" onchange="uploadNmapFile(event)">
+                </label>
+            </div>
+            <div id="import-result" class="mt-3 text-sm hidden"></div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-gray-200 mb-3">Extract from Findings</h3>
+            <select id="extract-case" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 mb-3">
+                <option value="">Select case...</option>
+            </select>
+            <select id="extract-customer" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 mb-3">
+                <option value="">Select customer...</option>
+            </select>
+            <button onclick="extractFindings()" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 rounded text-sm">Extract IPs & Domains</button>
+            <div id="extract-result" class="mt-3 text-sm hidden"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== MODALS ==================== -->
+<div id="new-asset-modal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+    <div class="bg-gray-900 rounded-xl border border-gray-700 p-6 w-full max-w-lg mx-4">
+        <h2 class="text-lg font-semibold mb-4">New Asset</h2>
+        <form id="new-asset-form" onsubmit="return submitNewAsset(event)">
+            <select name="customer_id" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200">
+                <option value="">No customer</option>
+            </select>
+            <select name="kind" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200">
+                <option value="host">Host (IP)</option>
+                <option value="domain">Domain (FQDN)</option>
+                <option value="url">URL</option>
+                <option value="service">Service</option>
+            </select>
+            <input name="address" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="IP / domain / URL" required>
+            <input name="label" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="Label (e.g. DC01)">
+            <input name="fqdn" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="FQDN (optional)">
+            <input name="os" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="OS (optional)">
+            <input name="tags" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="Tags (comma-separated)">
+            <textarea name="notes" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-4 text-gray-200" placeholder="Notes"></textarea>
+            <div class="flex gap-2 justify-end">
+                <button type="button" onclick="closeNewAssetModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Cancel</button>
+                <button type="submit" class="bg-emerald-700 hover:bg-emerald-600 px-4 py-2 rounded text-sm">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="cred-modal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+    <div class="bg-gray-900 rounded-xl border border-gray-700 p-6 w-full max-w-lg mx-4">
+        <h2 class="text-lg font-semibold mb-4">Add Credential</h2>
+        <form id="cred-form" onsubmit="return submitCred(event)">
+            <input type="hidden" name="asset_id">
+            <select name="kind" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200">
+                <option value="password">Password</option>
+                <option value="ssh_key">SSH Key</option>
+                <option value="api_token">API Token</option>
+                <option value="secret">Secret</option>
+            </select>
+            <input name="service" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="Service (e.g. ssh, mysql, admin-panel)">
+            <input name="url" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="URL (optional)">
+            <input name="username" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="Username" required>
+            <input name="secret" type="password" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3 text-gray-200" placeholder="Password / key / token" required>
+            <textarea name="notes" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-4 text-gray-200" placeholder="Notes"></textarea>
+            <div class="flex gap-2 justify-end">
+                <button type="button" onclick="closeCredModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Cancel</button>
+                <button type="submit" class="bg-emerald-700 hover:bg-emerald-600 px-4 py-2 rounded text-sm">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentTab = 'customers';
+let searchTimer = null;
+
+// ── Tab switching ──
+function switchTab(tab) {
+    currentTab = tab;
+    ['customers', 'assets', 'creds', 'import'].forEach(t => {
+        document.getElementById('panel-' + t).classList.toggle('hidden', t !== tab);
+        const btn = document.getElementById('tab-' + t);
+        if (t === tab) {
+            btn.className = 'tab-btn px-4 py-2 text-sm border-b-2 border-indigo-400 text-indigo-300 font-medium';
+        } else {
+            btn.className = 'tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300';
+        }
+    });
+    if (tab === 'customers') loadCustomers();
+    if (tab === 'assets') { loadAssetFilters(); loadAssets(); }
+    if (tab === 'creds') { loadCredFilters(); loadCreds(); }
+}
+
+// ── Stats ──
+async function loadStats() {
+    try {
+        const r = await fetch('/api/assets/stats');
+        const s = await r.json();
+        document.getElementById('stats-badge').textContent =
+            s.customers + ' customers, ' + s.assets + ' assets, ' + s.credentials + ' creds';
+    } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CUSTOMERS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadCustomers() {
+    const el = document.getElementById('customer-list');
+    try {
+        const r = await fetch('/api/customers');
+        const customers = await r.json();
+        if (customers.length === 0) {
+            el.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center col-span-full">No customers yet. Add one above.</div>';
+            return;
+        }
+        el.innerHTML = customers.map(c =>
+            '<div class="bg-gray-900 border border-gray-800 rounded-lg p-4">' +
+            '<div class="flex items-start justify-between">' +
+            '<div>' +
+            '<h3 class="font-medium text-gray-200">' + escapeHtml(c.name) + '</h3>' +
+            '<p class="text-xs text-gray-500 mt-1">ID: ' + escapeHtml(c.id) + '</p>' +
+            (c.notes ? '<p class="text-xs text-gray-500 mt-1">' + escapeHtml(c.notes) + '</p>' : '') +
+            '<p class="text-xs text-gray-600 mt-1">Created: ' + (c.created || '').slice(0, 10) + '</p>' +
+            '</div>' +
+            '<button onclick="deleteCustomer(\'' + c.id + '\')" class="text-red-500 hover:text-red-400 text-xs">Delete</button>' +
+            '</div></div>'
+        ).join('');
+    } catch(e) {
+        el.innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Error loading customers</div>';
+    }
+}
+
+async function createCustomer() {
+    const name = document.getElementById('new-customer-name').value.trim();
+    if (!name) return;
+    try {
+        const r = await fetch('/api/customers', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name})
+        });
+        if (r.ok) {
+            document.getElementById('new-customer-name').value = '';
+            loadCustomers();
+            loadStats();
+        } else {
+            const err = await r.json();
+            alert(err.error || 'Create failed');
+        }
+    } catch(e) { alert(e.message); }
+}
+
+async function deleteCustomer(cid) {
+    if (!confirm('Delete customer "' + cid + '" and all their assets?')) return;
+    try {
+        await fetch('/api/customers/' + cid, {method: 'DELETE'});
+        loadCustomers();
+        loadStats();
+    } catch(e) { alert(e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ASSETS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadAssetFilters() {
+    // Populate customer filter dropdowns
+    try {
+        const r = await fetch('/api/customers');
+        const customers = await r.json();
+        const html = '<option value="">All Customers</option>' +
+            customers.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('');
+        document.getElementById('asset-filter-customer').innerHTML = html;
+    } catch(e) {}
+}
+
+async function loadAssets() {
+    const el = document.getElementById('asset-list');
+    const cust = document.getElementById('asset-filter-customer').value;
+    const kind = document.getElementById('asset-filter-kind').value;
+    const search = document.getElementById('asset-search').value.trim();
+    const params = new URLSearchParams();
+    if (cust) params.set('customer_id', cust);
+    if (kind) params.set('kind', kind);
+    if (search) params.set('search', search);
+    try {
+        const r = await fetch('/api/assets?' + params.toString());
+        const assets = await r.json();
+        if (assets.length === 0) {
+            el.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No assets found</div>';
+            return;
+        }
+        el.innerHTML = assets.map(a => {
+            const sevColor = a.tags && a.tags.includes('critical') ? '#ef4444' : a.tags && a.tags.includes('high') ? '#f97316' : '#6b7280';
+            return '<div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">' +
+                '<div class="flex items-start justify-between">' +
+                '<div class="flex items-center gap-3 flex-1 min-w-0">' +
+                '<span class="w-2 h-2 rounded-full shrink-0" style="background:' + sevColor + '"></span>' +
+                '<span class="text-xs font-mono text-gray-500 shrink-0 w-12">' + escapeHtml(a.kind) + '</span>' +
+                '<span class="text-sm font-medium text-gray-200 truncate">' + escapeHtml(a.label || a.address) + '</span>' +
+                '<span class="text-xs text-gray-500 font-mono hidden md:inline truncate">' + escapeHtml(a.address) + '</span>' +
+                (a.fqdn ? '<span class="text-xs text-gray-600 truncate hidden lg:inline">' + escapeHtml(a.fqdn) + '</span>' : '') +
+                '</div>' +
+                '<div class="flex gap-1 shrink-0 ml-2">' +
+                (a.ports && a.ports.length > 0 ? '<span class="text-xs bg-gray-800 text-gray-400 px-1.5 rounded">' + a.ports.length + ' ports</span>' : '') +
+                (a.tags && a.tags.length > 0 ? '<span class="text-xs bg-indigo-900/40 text-indigo-300 px-1.5 rounded">' + a.tags.slice(0, 2).join(',') + '</span>' : '') +
+                '</div>' +
+                '</div>' +
+                (a.os ? '<div class="text-xs text-gray-500 mt-1 ml-14">' + escapeHtml(a.os) + '</div>' : '') +
+                (a.ports && a.ports.length > 0 ? '<div class="flex flex-wrap gap-1 mt-2 ml-14">' +
+                    a.ports.slice(0, 10).map(p =>
+                        '<span class="text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">' + p.port + '/' + p.protocol + ' ' + p.service + '</span>'
+                    ).join('') +
+                    (a.ports.length > 10 ? '<span class="text-xs text-gray-600">+' + (a.ports.length - 10) + ' more</span>' : '') +
+                '</div>' : '') +
+                '<div class="flex gap-2 mt-2 ml-14">' +
+                '<button onclick="showAddCredModal(\'' + a.id + '\', \'' + escapeHtml(a.label || a.address) + '\')" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-0.5 rounded">+ Cred</button>' +
+                '<button onclick="deleteAsset(\'' + a.id + '\')" class="text-xs text-red-500 hover:text-red-400">Delete</button>' +
+                '</div></div>';
+        }).join('');
+    } catch(e) {
+        el.innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Error loading assets</div>';
+    }
+}
+
+function debounceSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadAssets, 300);
+}
+
+function showNewAssetModal() {
+    const form = document.getElementById('new-asset-form');
+    form.reset();
+    // Populate customer dropdown
+    fetch('/api/customers').then(r => r.json()).then(customers => {
+        const sel = form.querySelector('[name="customer_id"]');
+        sel.innerHTML = '<option value="">No customer</option>' +
+            customers.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('');
+    });
+    document.getElementById('new-asset-modal').classList.remove('hidden');
+}
+function closeNewAssetModal() {
+    document.getElementById('new-asset-modal').classList.add('hidden');
+}
+
+async function submitNewAsset(event) {
+    event.preventDefault();
+    const form = document.getElementById('new-asset-form');
+    const fd = new FormData(form);
+    const data = {
+        customer_id: fd.get('customer_id'),
+        kind: fd.get('kind'),
+        address: fd.get('address').trim(),
+        label: fd.get('label').trim(),
+        fqdn: fd.get('fqdn').trim(),
+        os: fd.get('os').trim(),
+        tags: fd.get('tags').split(',').map(s => s.trim()).filter(Boolean),
+        notes: fd.get('notes').trim(),
+    };
+    try {
+        const r = await fetch('/api/assets', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        if (r.ok) {
+            closeNewAssetModal();
+            loadAssets();
+            loadStats();
+        } else {
+            const err = await r.json();
+            alert(err.error || 'Create failed');
+        }
+    } catch(e) { alert(e.message); }
+    return false;
+}
+
+async function deleteAsset(aid) {
+    if (!confirm('Delete this asset and all its credentials?')) return;
+    try {
+        await fetch('/api/assets/' + aid, {method: 'DELETE'});
+        loadAssets();
+        loadStats();
+    } catch(e) { alert(e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CREDENTIALS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadCredFilters() {
+    try {
+        const r = await fetch('/api/assets');
+        const assets = await r.json();
+        const html = '<option value="">All Assets</option>' +
+            assets.map(a => '<option value="' + a.id + '">' + escapeHtml(a.label || a.address) + '</option>').join('');
+        document.getElementById('cred-filter-asset').innerHTML = html;
+    } catch(e) {}
+}
+
+async function loadCreds() {
+    const el = document.getElementById('cred-list');
+    const assetId = document.getElementById('cred-filter-asset').value;
+    const params = new URLSearchParams();
+    if (assetId) params.set('asset_id', assetId);
+    try {
+        const r = await fetch('/api/credentials?' + params.toString());
+        const creds = await r.json();
+        if (creds.length === 0) {
+            el.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No credentials stored</div>';
+            return;
+        }
+        el.innerHTML = creds.map(c =>
+            '<div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">' +
+            '<div class="flex items-center gap-3">' +
+            '<span class="text-xs bg-gray-800 text-gray-400 px-1.5 rounded shrink-0">' + escapeHtml(c.kind) + '</span>' +
+            '<span class="text-xs text-gray-500 font-mono">' + escapeHtml(c.service || '') + '</span>' +
+            '<span class="text-sm text-gray-200">' + escapeHtml(c.username) + '</span>' +
+            '<span class="cred-eye text-gray-500 hover:text-gray-300" onclick="toggleCred(\'' + c.id + '\', this)">🔒 Show</span>' +
+            (c.url ? '<span class="text-xs text-gray-500 truncate">' + escapeHtml(c.url) + '</span>' : '') +
+            '<button onclick="deleteCred(\'' + c.id + '\')" class="text-xs text-red-500 hover:text-red-400 ml-auto">Delete</button>' +
+            '</div>' +
+            (c.notes ? '<div class="text-xs text-gray-500 mt-1 ml-2">' + escapeHtml(c.notes) + '</div>' : '') +
+            '</div>'
+        ).join('');
+    } catch(e) {
+        el.innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Error loading credentials</div>';
+    }
+}
+
+async function toggleCred(credId, el) {
+    const hidden = el.textContent === '🔒 Show';
+    if (hidden) {
+        try {
+            const r = await fetch('/api/credentials/' + credId + '?decrypt=1');
+            const c = await r.json();
+            el.textContent = '🔓 ' + (c.secret || '[empty]');
+            setTimeout(() => { el.textContent = '🔒 Show'; }, 10000);
+        } catch(e) { el.textContent = 'Error'; }
+    } else {
+        el.textContent = '🔒 Show';
+    }
+}
+
+function showAddCredModal(assetId, assetLabel) {
+    const form = document.getElementById('cred-form');
+    form.reset();
+    form.querySelector('[name="asset_id"]').value = assetId;
+    // Find the asset in the list for context
+    document.getElementById('cred-modal').classList.remove('hidden');
+}
+function closeCredModal() {
+    document.getElementById('cred-modal').classList.add('hidden');
+}
+
+async function submitCred(event) {
+    event.preventDefault();
+    const form = document.getElementById('cred-form');
+    const fd = new FormData(form);
+    const data = {
+        asset_id: fd.get('asset_id'),
+        kind: fd.get('kind'),
+        service: fd.get('service').trim(),
+        url: fd.get('url').trim(),
+        username: fd.get('username').trim(),
+        secret: fd.get('secret'),
+        notes: fd.get('notes').trim(),
+    };
+    try {
+        const r = await fetch('/api/credentials', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        if (r.ok) {
+            closeCredModal();
+            loadCreds();
+            loadStats();
+        } else {
+            const err = await r.json();
+            alert(err.error || 'Create failed');
+        }
+    } catch(e) { alert(e.message); }
+    return false;
+}
+
+async function deleteCred(cid) {
+    if (!confirm('Delete this credential?')) return;
+    try {
+        await fetch('/api/credentials/' + cid, {method: 'DELETE'});
+        loadCreds();
+    } catch(e) { alert(e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IMPORT
+// ═══════════════════════════════════════════════════════════════════════════
+async function importNmapXml() {
+    const customer = document.getElementById('import-customer').value;
+    const xml = document.getElementById('import-xml').value.trim();
+    if (!xml) return;
+    const el = document.getElementById('import-result');
+    el.className = 'mt-3 text-sm text-yellow-400';
+    el.textContent = 'Importing...';
+    el.classList.remove('hidden');
+    try {
+        const r = await fetch('/api/assets/import/nmap', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({xml, customer_id: customer})
+        });
+        const data = await r.json();
+        el.className = 'mt-3 text-sm text-emerald-400';
+        el.textContent = 'Created ' + data.created + ', updated ' + data.updated;
+        loadStats();
+    } catch(e) {
+        el.className = 'mt-3 text-sm text-red-400';
+        el.textContent = 'Error: ' + e.message;
+    }
+}
+
+async function uploadNmapFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    document.getElementById('import-xml').value = text;
+}
+
+async function extractFindings() {
+    const caseId = document.getElementById('extract-case').value;
+    const customerId = document.getElementById('extract-customer').value;
+    if (!caseId) { alert('Select a case'); return; }
+    const el = document.getElementById('extract-result');
+    el.className = 'mt-3 text-sm text-yellow-400';
+    el.textContent = 'Extracting...';
+    el.classList.remove('hidden');
+    try {
+        const r = await fetch('/api/case/' + caseId + '/assets/extract', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({customer_id: customerId})
+        });
+        const data = await r.json();
+        el.className = 'mt-3 text-sm text-emerald-400';
+        el.textContent = 'Found ' + data.ips_found + ' IPs, ' + data.domains_found + ' domains → Created ' + data.created + ', updated ' + data.updated;
+        loadStats();
+    } catch(e) {
+        el.className = 'mt-3 text-sm text-red-400';
+        el.textContent = 'Error: ' + e.message;
+    }
+}
+
+// ── Init ──
+async function initImportDropdowns() {
+    try {
+        const rc = await fetch('/api/customers');
+        const customers = await rc.json();
+        const html = '<option value="">No customer</option>' +
+            customers.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('');
+        document.getElementById('import-customer').innerHTML = html;
+        document.getElementById('extract-customer').innerHTML = html;
+    } catch(e) {}
+    try {
+        const rc = await fetch('/api/cases');
+        const cases = await rc.json();
+        const html = '<option value="">Select case...</option>' +
+            cases.map(c => '<option value="' + c.case_id + '">' + escapeHtml(c.case_id) + '</option>').join('');
+        document.getElementById('extract-case').innerHTML = html;
+    } catch(e) {}
+}
+
+function escapeHtml(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+loadStats();
+initImportDropdowns();
+loadCustomers();
+</script>
+{% endblock %}

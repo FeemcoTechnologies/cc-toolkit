@@ -1,0 +1,403 @@
+title: Threat Hunting & Detection Engineering
+description: Threat hunting methodology, detection engineering frameworks, data analytics, Sigma, ATT&CK-based hunting, purple teaming
+cards:
+- question: What is threat hunting?
+  answer: Proactive search for threats that evaded existing security controls
+- question: What are the three types of threat hunting?
+  answer: Hypothesis-driven, IoC-driven, and intelligence-driven (TTP-based)
+- question: What is hypothesis-driven hunting?
+  answer: Start with a hypothesis based on threat intelligence or risk analysis
+- question: What is IoC-driven hunting?
+  answer: Search for known indicators of compromise from threat intel feeds
+- question: What is TTP-based hunting?
+  answer: Search for adversary behaviors rather than specific IoCs
+- question: What is the Pyramid of Pain?
+  answer: 'Hierarchy of IoC value: Hash → IP → Domain → Host Artifacts → Network Artifacts → Tools → TTPs'
+- question: What is the Hunting Maturity Model (HMIM)?
+  answer: Level 0 → Level 1 → Level 2 → Level 3 → Level 4
+- question: What is HMIM Level 0?
+  answer: Reactive — relies solely on alerts; no proactive hunting
+- question: What is HMIM Level 1?
+  answer: Minimal — basic searches in response to incidents; no systematic process
+- question: What is HMIM Level 2?
+  answer: Standardized — repeatable hunting process with documented procedures
+- question: What is HMIM Level 3?
+  answer: Data-driven — automated data collection and analysis; hunting integrated into operations
+- question: What is HMIM Level 4?
+  answer: Predictive — machine learning and behavior analytics; anticipates threats
+- question: What is the hunting loop?
+  answer: Hypothesis → Trigger → Collection → Analysis → Response → Feedback → Refine
+- question: What is the DETTECT methodology?
+  answer: 'Detection engineering framework: Data source analysis → attack technique mapping →...'
+- question: What is CAR (Cyber Analytics Repository)?
+  answer: MITRE's repository of analytics derived from ATT&CK for detection engineering
+- question: What is Sigma?
+  answer: Generic, platform-agnostic SIEM rule format (YAML-based)
+- question: What is the Sigma rule structure?
+  answer: title, id, status, description, references, author, date, tags, logsource, detection,...
+- question: What does the Sigma logsource section define?
+  answer: category (process_creation, file_event), product (windows, linux), service (sysmon, security)
+- question: What does the Sigma detection section contain?
+  answer: Named selections with search identifiers and a condition combining them
+- question: 'What does Sigma field condition: all of them mean?'
+  answer: All named selections must match
+- question: 'What does Sigma condition: selection mean?'
+  answer: Only the 'selection' named expression is used
+- question: 'What does Sigma condition: 1 of them mean?'
+  answer: Any one of the named selections must match
+- question: 'What does Sigma condition: selection and not filter mean?'
+  answer: Selection matches AND filter does not match
+- question: What are Sigma rule levels?
+  answer: informational, low, medium, high, critical
+- question: What Sigma tag prefix indicates MITRE ATT&CK?
+  answer: attack.tXXXX (e.g., attack.t1059.001)
+- question: What tool converts Sigma to Splunk SPL?
+  answer: sigmac with -t splunk
+- question: What tool converts Sigma to Elastic/KQL?
+  answer: sigmac with -t es-query or elasticsearch
+- question: What is the Atomic Red Team project?
+  answer: Library of simple test procedures mapped to ATT&CK techniques
+- question: What is the Invoke-AtomicRedTeam framework?
+  answer: PowerShell-based execution engine for Atomic Red Team tests
+- question: What Sysmon Event ID 1 detects?
+  answer: Process creation (command line, parent process, process GUID)
+- question: What Sysmon Event ID 3 detects?
+  answer: Network connection (source IP, destination IP, port, process)
+- question: What Sysmon Event ID 8 detects?
+  answer: CreateRemoteThread (potential code injection)
+- question: What Sysmon Event ID 10 detects?
+  answer: Process access (potential credential dumping via lsass access)
+- question: What Sysmon Event ID 11 detects?
+  answer: File creation (dropped executables, writing to unusual paths)
+- question: What Sysmon Event ID 15 detects?
+  answer: FileCreateStreamHash (alternate data stream)
+- question: What Sysmon Event ID 22 detects?
+  answer: DNS query (detecting DGA, beaconing, DNS tunneling)
+- question: What Windows Event ID 4688 detects?
+  answer: Process creation with command-line arguments
+- question: What Windows Event ID 4698 detects?
+  answer: Scheduled task creation
+- question: What Windows Event ID 4625 detects?
+  answer: Failed logon attempt (brute force detection)
+- question: What Windows Event ID 4768 detects?
+  answer: Kerberos TGT request (Kerberoasting detection via volume)
+- question: What Windows Event ID 4769 detects?
+  answer: Kerberos service ticket request (Kerberoasting detection)
+- question: What Windows Event ID 4776 detects?
+  answer: Credential validation (NTLM authentication)
+- question: What is beaconing detection?
+  answer: Identifying periodic C2 callbacks via network traffic analysis
+- question: What beacon detection features are used?
+  answer: Time-based, data-based, network-based
+- question: How do you calculate beacon period?
+  answer: 'FFT or time-series analysis of network flows: find frequent time intervals'
+- question: What is jitter in beacon analysis?
+  answer: Random variation in beacon timing to evade detection
+- question: What are typical C2 user-agent strings?
+  answer: Mozilla/5.0 variants; but C2 may use custom or non-standard agents
+- question: What is a parent-child process anomaly?
+  answer: Unusual process spawning relationship (e.g., cmd.exe from Microsoft Word)
+- question: What is Office spawning shell indicators?
+  answer: winword.exe spawning cmd.exe, powershell.exe, or wscript.exe
+- question: What is WMI process creation detection?
+  answer: WmiPrvSE.exe spawning cmd.exe or powershell.exe (lateral movement)
+- question: What is LSASS access detection?
+  answer: Process (other than lsass.exe) opening lsass.exe with PROCESS_ALL_ACCESS
+- question: What is the typical LSASS dumping detection?
+  answer: Event ID 10 (Sysmon) — non-system process accessing lsass with high privileges
+- question: What is anomaly detection using z-score?
+  answer: Measure standard deviations from mean; z > 3 is anomaly
+- question: What is IQR (Interquartile Range) for outlier detection?
+  answer: Values outside Q1-1.5*IQR or Q3+1.5*IQR are outliers
+- question: What is DBSCAN for security analytics?
+  answer: Density-based clustering — finds high-density clusters and points outside them (anomalies)
+- question: What is Isolation Forest?
+  answer: Tree-based unsupervised anomaly detector that isolates anomalies with fewer splits
+- question: What is baseline establishment?
+  answer: Building a model of normal behavior across users, endpoints, and network
+- question: What is UEBA (User and Entity Behavior Analytics)?
+  answer: Anomaly detection based on profiles of user and entity behavior
+- question: What is Elastic EQL?
+  answer: Event Query Language — sequence-based event correlation for detection
+- question: What does EQL 'sequence' keyword do?
+  answer: Matches ordered sequences of events with conditions
+- question: What does EQL 'any' keyword do?
+  answer: Matches any of the listed conditions
+- question: What is Splunk SPL 'transaction' command?
+  answer: Groups related events by fields into single transaction
+- question: What is Splunk SPL 'pattern' detection?
+  answer: Finds common sequences of events across many transactions
+- question: What is KQL 'let' statement?
+  answer: Create variable/reusable query part (like CTE)
+- question: What is the ElastAlert framework?
+  answer: Elasticsearch alerting framework for anomaly/pattern/spike detection
+- question: What is SOAR (Security Orchestration, Automation, and Response)?
+  answer: Automated incident response playbook execution
+- question: What is Splunk Phantom?
+  answer: SOAR platform for automating response actions
+- question: What is Shuffle SOAR?
+  answer: Open-source SOAR platform with webhook-based workflow
+- question: What is detection as code (DaC)?
+  answer: Managing detection rules in Git with CI/CD pipelines
+- question: What is a detection CI/CD pipeline?
+  answer: Lint → validate → test (with Atomic Red Team) → staging → deploy → rollback capability
+- question: What is coverage heat map?
+  answer: ATT&CK matrix colored by detection capabilities per technique
+- question: What is a detection gap?
+  answer: ATT&CK technique with no detection coverage
+- question: What is purple teaming?
+  answer: Collaborative exercise where red and blue teams work together on detection improvement
+- question: What is CALDERA?
+  answer: MITRE automated adversary emulation platform
+- question: What are CALDERA abilities?
+  answer: Atomic actions mapped to ATT&CK techniques
+- question: What is SCYTHE?
+  answer: Commercial adversary emulation platform
+- question: What is a false positive?
+  answer: Alert triggering on benign activity (FP)
+- question: What is a false negative?
+  answer: Attack not triggering an alert (FN)
+- question: What is precision in detection?
+  answer: TP / (TP + FP) — how many alerts are real
+- question: What is recall in detection?
+  answer: TP / (TP + FN) — how many attacks are detected
+- question: What is F1 score?
+  answer: 'Harmonic mean of precision and recall: 2 × (Precision × Recall) / (Precision + Recall)'
+- question: What is MTTD (Mean Time to Detect)?
+  answer: Average time between compromise and detection
+- question: What is MTTR (Mean Time to Respond)?
+  answer: Average time between detection and containment
+- question: What is detection engineering lifecycle?
+  answer: Requirements → Data Source Analysis → Detection Development → Testing → Tuning → Deploy →...
+- question: What is a detection requirement?
+  answer: Statement of what threat behavior needs to be detected (from intel, gap analysis, risk)
+- question: What is data source analysis?
+  answer: Evaluating available logs to determine if sufficient data exists for detection
+- question: What is a detection trigger?
+  answer: Specific event or condition that initiates an alert
+- question: What is alert enrichment?
+  answer: Adding context (geo-IP, user role, threat intel, related events) to alerts
+- question: What is risk-based alerting?
+  answer: Scoring alerts by risk (asset criticality × threat level) to prioritize
+- question: What is alert volume reduction?
+  answer: Tuning rules to reduce noise while maintaining detection coverage
+- question: What is whitelisting in detection?
+  answer: Excluding known good behaviors to reduce FPs
+- question: What is anomaly-based detection?
+  answer: Flagging deviations from learned baseline (vs signature-based)
+- question: What is signature-based detection?
+  answer: Matching against predefined patterns (e.g., YARA, SNORT rules)
+- question: What is behavioral detection?
+  answer: Rules modeling adversary behavior chains (process injection → network connection)
+- question: What is specification-based detection?
+  answer: Detection based on expected behavior specifications (e.g., DNS should not have high entropy)
+- question: What is Velociraptor?
+  answer: Open-source endpoint monitoring and DFIR platform with VQL
+- question: What is osquery?
+  answer: SQL-based endpoint instrumentation agent (query OS state like database)
+- question: What is VQL (Velociraptor Query Language)?
+  answer: Velociraptor's query language for collection and detection
+- question: What is Wazuh?
+  answer: Open-source SIEM/XDR platform based on OSSEC
+- question: What is HAProxy in detection context?
+  answer: Load balancer and proxy for redirecting/logging traffic
+- question: What is the DETTECT framework for detection?
+  answer: Define → Evaluate → Test → Tune → Enforce → Cycle → Track
+- question: What is the MITRE CAPEC?
+  answer: Common Attack Pattern Enumeration and Classification — attack pattern catalog
+- question: What is the MITRE ENGENUITY?
+  answer: MITRE's commercial arm for cybersecurity evaluations (ATT&CK evaluations)
+- question: What is CAR (Cyber Analytics Repository) language?
+  answer: Standardized analytics defined per ATT&CK technique with coverage rating
+- question: What is CVE (Common Vulnerabilities and Exposures)?
+  answer: Standard identifier for publicly known vulnerabilities
+- question: What is a CNA (CVE Numbering Authority)?
+  answer: Organization authorized to assign CVE IDs
+- question: What is a CWE (Common Weakness Enumeration)?
+  answer: Category system for software weaknesses
+- question: What is a CVSS score range?
+  answer: 0.0 (None) → 0.1-3.9 (Low) → 4.0-6.9 (Medium) → 7.0-8.9 (High) → 9.0-10.0 (Critical)
+- question: What is CVSS 4.0?
+  answer: Latest CVSS version with improved scope, environmental metrics, and threat intelligence...
+- question: What is the ATT&CK technique T1059?
+  answer: Command and Scripting Interpreter — includes PowerShell, Shell, VBScript, Python
+- question: What is the ATT&CK technique T1055?
+  answer: Process Injection — includes PE injection, DLL injection, hollowing, APC injection
+- question: What is the ATT&CK technique T1003?
+  answer: OS Credential Dumping — LSASS, SAM, DCSync
+- question: What is the ATT&CK technique T1566?
+  answer: Phishing — spearphishing (attachment, link, via service)
+- question: What is the ATT&CK technique T1053?
+  answer: Scheduled Task/Job — At, Cron, Launchd, Scheduled Task
+- question: What is the ATT&CK technique T1547?
+  answer: Boot or Logon Autostart Execution — Registry Run, Startup Folder, service
+- question: What is the ATT&CK technique T1048?
+  answer: Exfiltration Over Alternative Protocol
+- question: What is the ATT&CK technique T1071?
+  answer: Application Layer Protocol — Web (HTTP/S), DNS, Mail, etc.
+- question: What is the ATT&CK technique T1573?
+  answer: Encrypted Channel — symmetric/asymmetric crypto C2
+- question: What is the ATT&CK technique T1027?
+  answer: Obfuscated Files or Information — indicator blocking, software packing, steganography
+- question: What is the ATT&CK technique T1548?
+  answer: Abuse Elevation Control Mechanism — UAC bypass, token manipulation, setuid
+- question: What is the ATT&CK technique T1036?
+  answer: Masquerading — renaming binaries, DLL side-loading, trusted process impersonation
+- question: What is the ATT&CK technique T1550?
+  answer: Use Alternate Authentication Material — pass-the-hash, pass-the-ticket
+- question: What is the ATT&CK technique T1046?
+  answer: Network Service Discovery — port scanning
+- question: What is the ATT&CK technique T1190?
+  answer: Exploit Public-Facing Application
+- question: What is the ATT&CK technique T1562?
+  answer: Impair Defenses — disable AV, clear event logs, remove indicators
+- question: What is Elastic detection rule pipeline?
+  answer: Index → Fleet → Elasticsearch → Kibana alerting rules → actions (email, Slack, webhook)
+- question: What is a detection rule testing framework?
+  answer: 'Test harness: execute atomic test → verify alert → validate FP rate'
+- question: What is the LEFT philosophy?
+  answer: Least Effective First Testing — test simplest rules first, then complex
+- question: What is detection engineering maturity?
+  answer: 1. Ad-hoc, 2. Defined, 3. Managed, 4. Optimized
+- question: What is an EDR (Endpoint Detection and Response)?
+  answer: System that monitors endpoints for threats and enables response actions
+- question: What is an NDR (Network Detection and Response)?
+  answer: System that analyzes network traffic for threat behaviors
+- question: What is an XDR (eXtended Detection and Response)?
+  answer: Unified detection across endpoint, network, cloud, and email
+- question: What is a TIP (Threat Intelligence Platform)?
+  answer: Platform for aggregating, analyzing, and operationalizing threat intelligence
+- question: What is a detection rule template?
+  answer: Reusable rule skeleton with parameterized fields for environment-specific deployment
+- question: What is a detection playbook?
+  answer: Step-by-step response procedure linked to a detection rule
+- question: What is a detection report?
+  answer: 'Weekly/monthly summary: new rules, false positive trends, detection gaps, improvements'
+- question: What is detection gap remediation?
+  answer: Priority queue of ATT&CK techniques needing coverage with assigned owners
+- question: What is a detection feedback loop?
+  answer: Incident findings → update rule → test → deploy — continuous improvement
+- question: What is a detection knowledge base?
+  answer: 'Shared documentation: rule intent, data sources, testing approach, tuning notes'
+- question: What is a detection rule migration?
+  answer: Porting rules from one SIEM to another — requires equivalent capabilities check
+- question: What is a detection benchmarking?
+  answer: Measuring detection capabilities against industry standards or peer organizations
+- question: What is the ATT&CK Matrices for detection?
+  answer: 'Platform-specific matrices: Windows, macOS, Linux, Azure AD, Office 365, GCP, AWS, Azure,...'
+- question: What is the ATT&CK for Mobile?
+  answer: 'Matrix covering Android and iOS: Initial Access, Execution, Persistence, Privilege...'
+- question: What is the ATT&CK for ICS?
+  answer: 'Industrial Control Systems matrix: 12 tactics including Inhibit Response Function and...'
+- question: What is a detection data source priority?
+  answer: 1. EDR telemetry, 2. Sysmon, 3. Windows event logs, 4. Firewall/proxy logs, 5. Cloud logs
+- question: What is the UC (User Coverage) in detection?
+  answer: Percentage of users whose activity is visible through available logs
+- question: What is the EC (Endpoint Coverage)?
+  answer: Percentage of endpoints sending sufficient telemetry for detection
+- question: What is the NC (Network Coverage)?
+  answer: Percentage of network traffic flowing through inspected points
+- question: What is a detection control catalog?
+  answer: Inventory of all detection controls, their ATT&CK mappings, and coverage status
+- question: What is a detection audit?
+  answer: Independent review of detection rules for accuracy, completeness, and performance
+- question: What is a detection compliance check?
+  answer: Verifying detection rules exist for all required compliance framework requirements
+- question: What is a detection test plan?
+  answer: 'Documented test cases per detection rule: input → expected output → pass/fail criteria'
+- question: What is a detection test environment?
+  answer: Isolated environment with representative log sources for testing without production impact
+- question: What is a detection data simulator?
+  answer: Tool that generates realistic security events for testing rules (Log-synth, Eventgen)
+- question: What is a detection attack library?
+  answer: Collection of known attack patterns mapped to specific detection rules
+- question: What is the MITRE CALDERA plugin for detection?
+  answer: Response plugin that checks if CALDERA operations triggered detection rules
+- question: What is the MITRE CALDERA response role?
+  answer: Automatically evaluates detection coverage during emulation operations
+- question: What is the Purple Team detection maturity?
+  answer: 1. Manual validation, 2. Automated testing schedule, 3. Continuous validation, 4....
+- question: What is a detection signal vs noise analysis?
+  answer: Signal = true malicious behavior; Noise = benign events that trigger FP
+- question: What is a detection rule triage SLA?
+  answer: 'Time to review new rule before deployment: high (24h), medium (48h), low (1 week)'
+- question: What is a detection incident feedback process?
+  answer: After each incident, evaluate if detection missed it → create/improve rule
+- question: What is detection postmortem?
+  answer: After-mission analysis of why a detection missed or caught a threat
+- question: What is the detection engineering backlog?
+  answer: Prioritized list of new rules, rule improvements, and data source onboarding
+- question: What is a detection sprint?
+  answer: Time-boxed work period (1-2 weeks) focused on specific detection coverage goals
+- question: What is a detection coverage SLA?
+  answer: Minimum percentage of critical ATT&CK techniques with full detection coverage
+- question: What is detection trend analysis?
+  answer: Tracking detection coverage improvement over time (monthly/quarterly)
+- question: What is the detection risk score model?
+  answer: Risk per technique = threat likelihood × asset criticality × current coverage (inverse)
+- question: What is detection quality score (DQS)?
+  answer: 'Composite metric: precision + recall + coverage + latency'
+- question: What is alert latency?
+  answer: Time from event occurring to alert firing — target < 5 minutes for critical
+- question: What is detection confidence level?
+  answer: 'Analyst-assigned label: high (confirmed), medium (likely), low (possible)'
+- question: What is a detection escalation policy?
+  answer: Criteria for promoting high-confidence alerts to automatic incident response
+- question: What is automated containment?
+  answer: Auto-block IP, isolate endpoint, disable user account on high-confidence alert
+- question: What is detection-driven tabletop?
+  answer: Walkthrough exercise using a detection alert as the scenario starting point
+- question: What is a detection rule lifecycle state?
+  answer: Draft → Testing → Staging → Production → Deprecated → Retired
+- question: What is a detection rule staging?
+  answer: Run rule in read-only mode (log only, no alerts) to gather baseline data
+- question: What is a detection metric dashboard?
+  answer: 'Visual KPIs: rules count, coverage %, FP rate, alerts per day, MTTD'
+- question: What is the SOC maturity model for detection?
+  answer: 'Level 1: Initial. Level 2: Defined. Level 3: Managed. Level 4: Quantitatively managed....'
+- question: What is a detection RFC process?
+  answer: 'Request for Change: rule addition/modification/retirement with approval workflow'
+- question: What is a change advisory board (CAB) for detection?
+  answer: Review board approving detection changes with high production impact
+- question: What is a emergency detection change?
+  answer: Rapid rule deployment for active threat without standard review — requires post-deployment...
+- question: What is detection disaster recovery?
+  answer: Backup and restore process for detection rules and configurations
+- question: What is detection high availability?
+  answer: Redundant SIEM/EDR instances to ensure detection works during outages
+- question: What is detection scale testing?
+  answer: Testing rule performance at full production log volume before deployment
+- question: What is a detection rule optimizer?
+  answer: Tool that analyzes rule performance and suggests index/tuning improvements
+- question: What is the Kusto Detective Agency model?
+  answer: Teaching detection engineering through KQL labs — interactive learning
+- question: What is a detection engineering handbook?
+  answer: 'Team reference: standards, conventions, processes, and best practices'
+- question: What is the detection engineer role?
+  answer: Builds and maintains detection rules — different from SOC analyst (alert triage)
+- question: What is the SOC analyst role?
+  answer: Triages alerts, investigates incidents, escalates as needed
+- question: What is a detection engineer vs threat hunter?
+  answer: 'Engineer: writes/optimizes rules. Hunter: proactively searches for unknown threats'
+- question: What is a detection engineer vs detection architect?
+  answer: 'Engineer: implements rules. Architect: designs detection strategy and platform'
+- question: What is the Detection Engineering Maturity Model?
+  answer: 'Level 1: Reactive, Level 2: Defined, Level 3: Managed, Level 4: Optimized'
+- question: What is a detection backlog grooming?
+  answer: Regular review of detection backlog to prioritize work items
+- question: What is detection sprint planning?
+  answer: 'Agile sprint: select detection rules to develop/test/deploy in the sprint'
+- question: What is a detection retrospective?
+  answer: 'After-sprint review: what went well, what to improve'
+- question: What is a detection engineer on-call?
+  answer: Rotation for handling critical detection failures or emergencies
+- question: What is detection documentation standards?
+  answer: Each rule must have title, description, rationale, test results, false positives
+- question: What is a detection rule of thumb?
+  answer: If a rule has over 10% FP rate, tune or retire it before broader deployment
+- question: What is the detection golden rule?
+  answer: Never deploy untested rules. Every alert must have a documented response
+- question: What is the detection engineering community?
+  answer: 'Online: Detection Engineering Slack, Sigma HQ, SOC Prime'
+- question: What is a detection cross-validation?
+  answer: Validating a detection rule across multiple log sources or SIEM platforms

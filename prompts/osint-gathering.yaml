@@ -1,0 +1,22 @@
+title: OSINT / Threat Intelligence Gathering
+description: Open-source intelligence gathering on a target organization or individual — DNS, certificate logs, social media, and breach data.
+tags: [osint, recon, threat-intel]
+prompt: >
+  Perform open-source intelligence gathering on {target_organization} ({target_domain}).
+
+  ## Scope
+  - Organization: {target_organization}
+  - Primary domain: {target_domain}
+  - Related domains: {related_domains}
+  - Focus areas: {focus_areas}
+
+  ## Methodology
+  1. DNS enumeration — resolve A/AAAA/MX/NS/TXT/SRV/CAA records, attempt zone transfer
+  2. Certificate transparency — find subdomains via crt.sh or similar
+  3. Technology profiling — identify web frameworks, CDN, email providers, cloud services
+  4. Breach data — check for known credential leaks associated with the domain
+  5. Social media — identify official accounts and potential impersonation
+  6. Employee/contact discovery if in scope
+
+  ## Output
+  Create a case with DNS data, subdomain list, technology stack, leaked credentials (without exposing plaintext), and observed attack surface.

@@ -1,0 +1,27 @@
+title: Active Directory Security Assessment
+description: Internal AD pentest — enumerate domain, identify misconfigurations, attempt privilege escalation paths.
+tags: [ad, internal, pentest]
+prompt: >
+  Perform an Active Directory security assessment against the domain {domain} at DC {dc_ip}.
+
+  ## Credentials
+  - Username: {username}
+  - Password/ hash: {credential}
+  - Domain: {domain}
+
+  ## Scope
+  - Enumerate all users, groups, computers, and domain trusts
+  - Identify misconfigurations: Kerberoastable accounts, AS-REP roastable users, unconstrained delegation, ACE abuse paths
+  - Attempt privilege escalation from current foothold to Domain Admin
+  - Do NOT modify ACLs, disable accounts, or perform destructive actions
+
+  ## Methodology
+  1. Run BloodHound ingestion to map the domain
+  2. Identify Kerberoastable accounts and attempt cracking
+  3. Check for AS-REP roasting candidates
+  4. Analyze delegation and ACL abuse paths
+  5. Attempt lateral movement and privilege escalation
+  6. Document the full attack path from initial access to Domain Admin
+
+  ## Output
+  Create a case with BloodHound data, cracked credentials, attack path analysis, and remediation recommendations.

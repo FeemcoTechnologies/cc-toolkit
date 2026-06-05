@@ -1,0 +1,24 @@
+title: Container & Kubernetes Security Review
+description: Evaluate Docker and Kubernetes security posture — CIS benchmarks, RBAC escalation, network policy gaps, admission controller configs, and provider-specific hardening (k3s, EKS, AKS, GKE, OpenShift).
+tags: [container, kubernetes, docker, k8s, cloud]
+prompt: >
+  Perform a container and Kubernetes security review on {cluster_name}.
+
+  ## Scope
+  - Cluster type: {cluster_type} (k8s / k3s / microk8s / kind / minikube / EKS / AKS / GKE / OpenShift / Rancher)
+  - Environment: {environment}
+  - Kubeconfig: {kubeconfig_path}
+  - Namespaces in scope: {namespaces} (all if empty)
+
+  ## Assessment Areas
+  1. **Cluster Discovery** — version, nodes, provider ID, API versions, component health
+  2. **Network Security** — CNI plugin (Calico/Cilium/Flannel/Weave/Antrea), NetworkPolicy coverage (which namespaces lack default-deny), ingress controllers (NGINX/Traefik/HAProxy/Contour/Kong), service mesh (Istio/Linkerd), DNS configuration
+  3. **RBAC** — wildcard ClusterRoleBindings, ServiceAccount token automount, bind/escalate/impersonate permissions, service accounts bound to cluster-admin
+  4. **Pod Security** — privileged containers, root containers, host network/PID/IPC, hostPath volumes, dangerous Linux capabilities (SYS_ADMIN, NET_ADMIN, SYS_PTRACE), seccomp/AppArmor profiles, PSS/PSA labels
+  5. **Admission Controllers** — MutatingWebhookConfigurations, ValidatingWebhookConfigurations, OPA/Gatekeeper constraint templates, Kyverno cluster policies
+  6. **Secrets** — exposed dockerconfigjson (registry creds), TLS certificate expiry, SealedSecrets/External Secrets/Vault integration, etcd access controls
+  7. **Resource Abuse** — ResourceQuotas, LimitRanges, pod density, HPA configuration
+  8. **Provider-Specific** — EKS IRSA, AKS Azure AD integration, GKE Workload Identity, k3s Traefik/embedded etcd, OpenShift SCC/routes
+
+  ## Output
+  Create findings per category with severity, evidence from cluster state, and CIS-aligned remediation steps. Highlight any RBAC paths that could lead to cluster-admin escalation.

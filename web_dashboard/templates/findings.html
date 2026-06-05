@@ -1,0 +1,697 @@
+{% extends "base.html" %}
+{% block title %}Findings — CC Dashboard{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+    .stat-card { transition: all 0.2s ease; cursor: pointer; }
+    .stat-card:hover { border-color: #6366f1; transform: translateY(-1px); }
+    .stat-card.active { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f1; }
+    .chart-container canvas { max-height: 240px; }
+    .finding-card { transition: all 0.15s ease; }
+    .finding-card:hover { border-color: #6366f1; background: rgba(99, 102, 241, 0.05); }
+    .finding-row:hover { background: rgba(99, 102, 241, 0.05); }
+    .pill-btn { transition: all 0.15s ease; }
+    .pill-btn:hover { opacity: 0.8; }
+    .bulk-bar { transition: all 0.2s ease; }
+    .case-cell { cursor: pointer; }
+    .case-cell:hover { color: #818cf8; }
+    .inline-export-btn { background: transparent; border: 1px solid #374151; color: #9ca3af; padding: 0.375rem 0.75rem; border-radius: 0.5rem; font-size: 0.75rem; cursor: pointer; }
+    .inline-export-btn:hover { border-color: #6366f1; color: #e5e7eb; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-2">
+            <i data-lucide="search" class="w-6 h-6 text-indigo-400"></i>
+            <h1 class="text-2xl font-bold">Findings</h1>
+        </div>
+        <div class="flex items-center gap-3">
+            <div class="flex bg-gray-900 border border-gray-800 rounded-lg overflow-hidden text-xs">
+                <button id="view-cards-btn" onclick="setView('cards')" class="px-2.5 py-1.5 bg-indigo-600 text-white">Cards</button>
+                <button id="view-table-btn" onclick="setView('table')" class="px-2.5 py-1.5 text-gray-400 hover:text-gray-200">Table</button>
+            </div>
+            <div class="relative inline-block">
+                <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="inline-export-btn flex items-center gap-1">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i> Export
+                </button>
+                <div class="hidden absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[130px]">
+                    <button onclick="exportFindings('csv')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">Download CSV</button>
+                    <button onclick="exportFindings('json')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">Download JSON</button>
+                </div>
+            </div>
+            <span class="text-sm text-gray-400">
+                <span id="total-findings" class="text-xl font-bold text-white">0</span> total
+            </span>
+        </div>
+    </div>
+
+    <!-- Breadcrumb -->
+    <div id="breadcrumb" class="text-xs text-gray-500 mb-3 hidden">
+        <span class="cursor-pointer hover:text-indigo-400" onclick="resetFilter()">All Findings</span>
+        <span id="bc-sev" class="hidden"> &rsaquo; <span class="text-gray-300"></span></span>
+        <span id="bc-status" class="hidden"> &rsaquo; <span class="text-gray-300"></span></span>
+        <span id="bc-incomplete" class="hidden"> &rsaquo; <span class="text-gray-300"></span></span>
+        <span id="bc-search" class="hidden"> &rsaquo; <span class="text-gray-300">search: &quot;<span id="bc-search-term"></span>&quot;</span></span>
+    </div>
+
+    <!-- Severity cards -->
+    <div id="severity-cards" class="grid grid-cols-5 gap-3 mb-6"></div>
+
+    <!-- Charts row -->
+    <div class="mb-6">
+        <button onclick="document.getElementById('charts-row').classList.toggle('hidden')" class="text-xs text-gray-500 hover:text-gray-300 mb-2 flex items-center gap-1">
+            <i data-lucide="bar-chart-3" class="w-3.5 h-3.5"></i> Toggle Charts
+        </button>
+        <div id="charts-row" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 chart-container">
+                <h2 class="text-xs font-semibold text-gray-300 mb-2">By Severity</h2>
+                <canvas id="severity-chart" height="180"></canvas>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 chart-container">
+                <h2 class="text-xs font-semibold text-gray-300 mb-2">By Status</h2>
+                <canvas id="status-chart" height="180"></canvas>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 chart-container">
+                <h2 class="text-xs font-semibold text-gray-300 mb-2">Top CVEs</h2>
+                <div id="cve-list" class="space-y-0.5 max-h-40 overflow-y-auto text-xs"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Per-case breakdown -->
+    <div class="mb-6">
+        <button onclick="document.getElementById('case-table-body').parentElement.classList.toggle('hidden')" class="text-xs text-gray-500 hover:text-gray-300 mb-2 flex items-center gap-1">
+            <i data-lucide="folder" class="w-3.5 h-3.5"></i> Toggle Per-Case Breakdown
+        </button>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="text-gray-400 border-b border-gray-800">
+                        <th class="text-left px-3 py-2 font-medium">Case</th>
+                        <th class="text-center px-2 py-2 font-medium">Critical</th>
+                        <th class="text-center px-2 py-2 font-medium">High</th>
+                        <th class="text-center px-2 py-2 font-medium">Medium</th>
+                        <th class="text-center px-2 py-2 font-medium">Low</th>
+                        <th class="text-center px-2 py-2 font-medium">Info</th>
+                        <th class="text-center px-2 py-2 font-medium">Total</th>
+                    </tr>
+                </thead>
+                <tbody id="case-table-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Status filter pills -->
+    <div id="status-pills" class="flex flex-wrap gap-2 mb-2"></div>
+
+    <!-- Incomplete filter pills -->
+    <div id="incomplete-pills" class="flex flex-wrap gap-2 mb-3"></div>
+
+    <!-- Bulk action toolbar -->
+    <div id="bulk-bar" class="hidden bulk-bar bg-indigo-900/30 border border-indigo-700/50 rounded-lg p-2.5 mb-3 flex items-center gap-3">
+        <span class="text-xs text-indigo-300"><span id="selected-count">0</span> selected</span>
+        <span class="text-gray-600">|</span>
+        <select id="bulk-status-select" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200">
+            <option value="unvalidated">Unvalidated</option>
+            <option value="validated">Validated</option>
+            <option value="remediated">Remediated</option>
+            <option value="closed_other">Closed (Other)</option>
+        </select>
+        <button onclick="bulkUpdateStatus()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs text-white">Update Status</button>
+        <span class="text-gray-600">|</span>
+        <button onclick="bulkDelete()" class="bg-red-800 hover:bg-red-700 px-3 py-1 rounded text-xs text-white">Delete Selected</button>
+        <button onclick="clearSelection()" class="text-gray-500 hover:text-gray-300 text-xs ml-auto">Deselect all</button>
+    </div>
+
+    <!-- Search + sort bar -->
+    <div class="flex items-center gap-3 mb-4">
+        <div class="relative flex-1">
+            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500"></i>
+            <input id="search-input" type="text" class="w-full bg-gray-900 border border-gray-800 rounded-lg pl-10 pr-4 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" placeholder="Search findings by title, CVE, ID, description..." oninput="onSearchInput()">
+        </div>
+        <select id="sort-select" onchange="onSortChange()" class="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-indigo-500">
+            <option value="severity-desc">Severity &#8595;</option>
+            <option value="severity-asc">Severity &#8593;</option>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="status">Status</option>
+            <option value="case">Case</option>
+        </select>
+        <button id="clear-btn" onclick="resetFilter()" class="hidden bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-xs">Clear</button>
+    </div>
+
+    <!-- Findings list -->
+    <div id="findings-list" class="space-y-2">
+        <div class="text-center text-gray-500 py-8">Loading...</div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    const SEV_COLORS = {
+        critical: '#ef4444', high: '#f97316', medium: '#eab308',
+        low: '#22c55e', info: '#6b7280',
+    };
+    const SEV_ORDER = ['critical', 'high', 'medium', 'low', 'info'];
+    const STATUS_COLORS = {
+        unvalidated: '#6b7280', validated: '#6366f1', remediated: '#22c55e', closed_other: '#374151',
+    };
+    const SEV_RANK = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
+
+    let allFindings = [];
+    let activeSeverity = '';
+    let activeStatus = '';
+    let activeIncomplete = '';
+    let activeSearch = '';
+    let sortBy = 'severity-desc';
+    let viewMode = 'cards';
+    let selected = {};
+
+    // --- Load ---
+    function loadFindings() {
+        fetch('/api/findings/list')
+            .then(function(r) {
+                if (!r.ok) throw new Error(r.status + ' loading findings');
+                return r.json();
+            })
+            .then(function(data) {
+                allFindings = data || [];
+                renderAll();
+            })
+            .catch(function(e) {
+                console.warn('loadFindings failed:', e);
+                var el = document.getElementById('findings-list');
+                if (el) el.innerHTML = '<div class="text-center text-red-400 py-8">Failed to load findings: ' + e.message + ' <button onclick="loadFindings()" class="underline text-indigo-400">Retry</button></div>';
+            });
+    }
+
+    // --- Render everything ---
+    function renderAll() {
+        renderStats();
+        renderCaseTable();
+        renderStatusPills();
+        renderIncompletePills();
+        renderList();
+    }
+
+    // --- Stats & Charts ---
+    function renderStats() {
+        document.getElementById('total-findings').textContent = allFindings.length;
+
+        var severityCounts = {};
+        var statusCounts = {};
+        var cveCounts = {};
+        SEV_ORDER.forEach(function(s) { severityCounts[s] = 0; });
+        allFindings.forEach(function(f) {
+            var sev = f.severity || 'info';
+            if (severityCounts[sev] !== undefined) severityCounts[sev]++;
+            var st = f.status || 'unvalidated';
+            statusCounts[st] = (statusCounts[st] || 0) + 1;
+            if (f.cve) cveCounts[f.cve] = (cveCounts[f.cve] || 0) + 1;
+        });
+
+        var cardsHtml = '';
+        SEV_ORDER.forEach(function(sev) {
+            var count = severityCounts[sev] || 0;
+            var color = SEV_COLORS[sev];
+            var active = activeSeverity === sev ? ' active' : '';
+            cardsHtml += '<div class="stat-card bg-gray-900 border border-gray-800 rounded-lg p-3 text-center' + active + '" onclick="filterBySeverity(\'' + sev + '\')">' +
+                '<div class="text-xs text-gray-500 uppercase tracking-wider">' + sev + '</div>' +
+                '<div class="text-2xl font-bold mt-1" style="color:' + color + '">' + count + '</div></div>';
+        });
+        document.getElementById('severity-cards').innerHTML = cardsHtml;
+
+        var sevCtx = document.getElementById('severity-chart');
+        if (sevCtx) {
+            new Chart(sevCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: SEV_ORDER.map(function(s) { return s.charAt(0).toUpperCase() + s.slice(1); }),
+                    datasets: [{ data: SEV_ORDER.map(function(s) { return severityCounts[s] || 0; }), backgroundColor: SEV_ORDER.map(function(s) { return SEV_COLORS[s]; }), borderWidth: 0 }]
+                },
+                options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { position: 'right', labels: { color: '#9ca3af', padding: 8, boxWidth: 10, font: { size: 10 } } } } }
+            });
+        }
+
+        var stLabels = Object.keys(statusCounts);
+        new Chart(document.getElementById('status-chart'), {
+            type: 'bar',
+            data: {
+                labels: stLabels,
+                datasets: [{
+                    data: stLabels.map(function(s) { return statusCounts[s]; }),
+                    backgroundColor: stLabels.map(function(s) { return s === 'unvalidated' ? '#6b7280' : s === 'validated' ? '#6366f1' : s === 'remediated' ? '#22c55e' : '#374151'; }),
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: true, indexAxis: 'y',
+                plugins: { legend: { display: false } },
+                scales: { x: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }, y: { grid: { display: false }, ticks: { color: '#9ca3af' } } }
+            }
+        });
+
+        var cveHtml = '';
+        var cveEntries = Object.entries(cveCounts).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 20);
+        if (!cveEntries.length) {
+            cveHtml = '<div class="text-gray-500 py-4 text-center">No CVEs</div>';
+        } else {
+            cveEntries.forEach(function(entry) {
+                cveHtml += '<div class="flex items-center justify-between py-0.5"><span class="font-mono text-indigo-300">' + escapeHtml(entry[0]) + '</span><span class="text-gray-400">' + entry[1] + 'x</span></div>';
+            });
+        }
+        document.getElementById('cve-list').innerHTML = cveHtml;
+    }
+
+    // --- Per-case breakdown table ---
+    function renderCaseTable() {
+        var byCase = {};
+        allFindings.forEach(function(f) {
+            var cid = f._case_id || '?';
+            if (!byCase[cid]) byCase[cid] = { case_id: cid, case_title: f._case_title || cid, counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, total: 0 };
+            var sev = f.severity || 'info';
+            if (byCase[cid].counts[sev] !== undefined) byCase[cid].counts[sev]++;
+            byCase[cid].total++;
+        });
+        var sorted = Object.values(byCase).sort(function(a, b) { return b.total - a.total; });
+        var html = '';
+        sorted.forEach(function(c) {
+            html += '<tr class="border-b border-gray-800/50 last:border-0 case-row">' +
+                '<td class="px-3 py-1.5"><a href="/case/' + encodeURIComponent(c.case_id) + '" class="text-indigo-400 font-mono hover:text-indigo-300">' + escapeHtml(c.case_id) + '</a></td>' +
+                '<td class="text-center px-2 py-1.5 text-red-400">' + (c.counts.critical || 0) + '</td>' +
+                '<td class="text-center px-2 py-1.5 text-orange-400">' + (c.counts.high || 0) + '</td>' +
+                '<td class="text-center px-2 py-1.5 text-yellow-400">' + (c.counts.medium || 0) + '</td>' +
+                '<td class="text-center px-2 py-1.5 text-green-400">' + (c.counts.low || 0) + '</td>' +
+                '<td class="text-center px-2 py-1.5 text-gray-400">' + (c.counts.info || 0) + '</td>' +
+                '<td class="text-center px-2 py-1.5 text-indigo-300 font-medium">' + c.total + '</td></tr>';
+        });
+        if (!html) html = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No cases</td></tr>';
+        document.getElementById('case-table-body').innerHTML = html;
+    }
+
+    // --- Status pills ---
+    function renderStatusPills() {
+        var counts = {};
+        allFindings.forEach(function(f) {
+            var st = f.status || 'open';
+            counts[st] = (counts[st] || 0) + 1;
+        });
+        var html = '';
+        var stOrder = ['unvalidated', 'validated', 'remediated', 'closed_other'];
+        stOrder.forEach(function(st) {
+            if (!counts[st]) return;
+            var color = STATUS_COLORS[st] || '#6b7280';
+            var active = activeStatus === st ? ' ring-2 ring-offset-1 ring-offset-gray-950' : '';
+            html += '<button onclick="filterByStatus(\'' + st + '\')" class="pill-btn text-xs px-2.5 py-1 rounded-full border transition-all' + active + '" style="border-color:' + color + ';color:' + color + ';background:' + color + '15">' +
+                st.replace('_', ' ') + ' (' + counts[st] + ')</button>';
+        });
+        if (html) {
+            html = '<button onclick="filterByStatus(\'\')" class="pill-btn text-xs px-2.5 py-1 rounded-full border border-gray-700 text-gray-400 hover:text-gray-300' + (activeStatus ? '' : ' ring-2 ring-indigo-500/50') + '">All</button>' + html;
+        }
+        document.getElementById('status-pills').innerHTML = html;
+    }
+
+    // --- Incomplete pills ---
+    function renderIncompletePills() {
+        var total = allFindings.length;
+        var missingCve = allFindings.filter(function(f) { return !f.cve; }).length;
+        var noRemediation = allFindings.filter(function(f) { return !f.remediation; }).length;
+        var noDescription = allFindings.filter(function(f) { return !f.description; }).length;
+        var noImpact = allFindings.filter(function(f) { return !f.impact; }).length;
+
+        var pills = [
+            { key: 'missing_cve', label: 'Missing CVE', count: missingCve, color: '#f97316' },
+            { key: 'no_remediation', label: 'No Remediation', count: noRemediation, color: '#eab308' },
+            { key: 'no_description', label: 'No Description', count: noDescription, color: '#6366f1' },
+            { key: 'no_impact', label: 'Missing Impact', count: noImpact, color: '#6b7280' },
+        ];
+        var html = '<span class="text-xs text-gray-600 mr-1 self-center">Incomplete:</span>';
+        pills.forEach(function(p) {
+            if (!p.count) return;
+            var active = activeIncomplete === p.key ? ' ring-2 ring-offset-1 ring-offset-gray-950' : '';
+            html += '<button onclick="filterByIncomplete(\'' + p.key + '\')" class="pill-btn text-xs px-2.5 py-1 rounded-full border transition-all' + active + '" style="border-color:' + p.color + ';color:' + p.color + ';background:' + p.color + '15">' +
+                p.label + ' (' + p.count + ')</button>';
+        });
+        document.getElementById('incomplete-pills').innerHTML = html;
+    }
+
+    // --- Sorting ---
+    function getSortValue(f) {
+        switch (sortBy) {
+            case 'severity-desc': return -(SEV_RANK[f.severity] || 0);
+            case 'severity-asc': return SEV_RANK[f.severity] || 0;
+            case 'newest': return -(new Date(f.created || 0).getTime());
+            case 'oldest': return new Date(f.created || 0).getTime();
+            case 'status': return { open: 1, in_progress: 2, resolved: 3, closed: 4 }[f.status] || 0;
+            case 'case': return (f._case_id || '').toLowerCase();
+            default: return 0;
+        }
+    }
+
+    // --- Get filtered + sorted list ---
+    function getFiltered() {
+        var filtered = allFindings;
+        if (activeSeverity) filtered = filtered.filter(function(f) { return f.severity === activeSeverity; });
+        if (activeStatus) filtered = filtered.filter(function(f) { return (f.status || 'unvalidated') === activeStatus; });
+        if (activeIncomplete) {
+            filtered = filtered.filter(function(f) {
+                if (activeIncomplete === 'missing_cve') return !f.cve;
+                if (activeIncomplete === 'no_remediation') return !f.remediation;
+                if (activeIncomplete === 'no_description') return !f.description;
+                if (activeIncomplete === 'no_impact') return !f.impact;
+                return true;
+            });
+        }
+        if (activeSearch) {
+            var q = activeSearch.toLowerCase();
+            filtered = filtered.filter(function(f) {
+                return (f.title || '').toLowerCase().indexOf(q) !== -1
+                    || (f.cve || '').toLowerCase().indexOf(q) !== -1
+                    || (f.description || '').toLowerCase().indexOf(q) !== -1
+                    || (f.id || '').toLowerCase().indexOf(q) !== -1;
+            });
+        }
+        filtered.sort(function(a, b) {
+            var va = getSortValue(a), vb = getSortValue(b);
+            if (typeof va === 'string') return va.localeCompare(vb);
+            return va - vb;
+        });
+        return filtered;
+    }
+
+    // --- Render list (cards or table) ---
+    function renderList() {
+        var filtered = getFiltered();
+        var el = document.getElementById('findings-list');
+
+        if (filtered.length === 0) {
+            el.innerHTML = '<div class="text-center text-gray-500 py-12">No findings match your filter.</div>';
+            updateBreadcrumb();
+            return;
+        }
+
+        if (viewMode === 'table') {
+            el.innerHTML = renderTableView(filtered);
+        } else {
+            el.innerHTML = renderCardsView(filtered);
+        }
+        updateBreadcrumb();
+        updateBulkBar();
+    }
+
+    function renderCardsView(list) {
+        var html = '';
+        list.forEach(function(f) {
+            var checked = selected[f._case_id + '/' + f.id] ? ' checked' : '';
+            var color = SEV_COLORS[f.severity] || '#6b7280';
+            var stColor = STATUS_COLORS[f.status] || '#6b7280';
+            var statusBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded" style="background:' + stColor + '20;color:' + stColor + '">' + (f.status || 'unvalidated').replace('_', ' ') + '</span>';
+            var cveTag = f.cve ? '<span class="font-mono text-[10px] text-red-400">' + escapeHtml(f.cve) + '</span>' : '';
+            var desc = (f.description || '').slice(0, 160);
+
+            html += '<div class="finding-card bg-gray-900 border border-gray-800 rounded-lg p-3">' +
+                '<div class="flex items-start gap-3">' +
+                    '<label class="shrink-0 mt-1" onclick="event.stopPropagation()"><input type="checkbox" class="finding-checkbox w-4 h-4 accent-indigo-500" data-key="' + f._case_id + '/' + f.id + '"' + checked + ' onchange="toggleSelect(\'' + f._case_id + '\',\'' + f.id + '\')"></label>' +
+                    '<span class="w-3 h-3 rounded-full shrink-0 mt-1.5" style="background:' + color + '" title="' + f.severity + '"></span>' +
+                    '<div class="flex-1 min-w-0">' +
+                        '<div class="flex items-center gap-2 mb-0.5">' +
+                            '<a href="/case/' + encodeURIComponent(f._case_id) + '/finding/' + encodeURIComponent(f.id) + '" class="text-sm font-medium text-gray-200 truncate hover:text-indigo-400">' + escapeHtml(f.title) + '</a>' +
+                            statusBadge +
+                        '</div>' +
+                        '<div class="flex items-center gap-2 text-xs text-gray-500">' +
+                            '<a href="/case/' + encodeURIComponent(f._case_id) + '" class="font-mono text-indigo-400 hover:text-indigo-300">' + escapeHtml(f._case_id) + '</a>' +
+                            '<span class="text-gray-600">/</span>' +
+                            '<span class="text-gray-400">' + escapeHtml(f.id) + '</span>' +
+                            (cveTag ? '<span class="text-gray-600">/</span>' + cveTag : '') +
+                        '</div>' +
+                        (desc ? '<div class="text-xs text-gray-500 mt-1 line-clamp-2">' + escapeHtml(desc) + '</div>' : '') +
+                    '</div>' +
+                '</div></div>';
+        });
+        return html;
+    }
+
+    function renderTableView(list) {
+        var html = '<div class="bg-gray-900 border border-gray-800 rounded-lg overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-gray-400 border-b border-gray-800">' +
+            '<th class="px-2 py-2 w-8"><input type="checkbox" class="w-4 h-4 accent-indigo-500" onchange="toggleSelectAll(this.checked)"></th>' +
+            '<th class="text-left px-2 py-2 font-medium">ID</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Severity</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Title</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Status</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Case</th>' +
+            '<th class="text-left px-2 py-2 font-medium">CVE</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Created</th>' +
+            '</tr></thead><tbody>';
+        list.forEach(function(f) {
+            var checked = selected[f._case_id + '/' + f.id] ? ' checked' : '';
+            var color = SEV_COLORS[f.severity] || '#6b7280';
+            var stColor = STATUS_COLORS[f.status] || '#6b7280';
+            var created = (f.created || '').slice(0, 10);
+            html += '<tr class="finding-row border-b border-gray-800/50 last:border-0">' +
+                '<td class="px-2 py-1.5"><input type="checkbox" class="finding-checkbox w-4 h-4 accent-indigo-500" data-key="' + f._case_id + '/' + f.id + '"' + checked + ' onchange="toggleSelect(\'' + f._case_id + '\',\'' + f.id + '\')"></td>' +
+                '<td class="px-2 py-1.5 text-gray-400 font-mono">' + escapeHtml(f.id) + '</td>' +
+                '<td class="px-2 py-1.5"><span class="w-2.5 h-2.5 rounded-full inline-block shrink-0" style="background:' + color + '" title="' + f.severity + '"></span></td>' +
+                '<td class="px-2 py-1.5"><a href="/case/' + encodeURIComponent(f._case_id) + '/finding/' + encodeURIComponent(f.id) + '" class="text-gray-200 hover:text-indigo-400">' + escapeHtml(f.title) + '</a></td>' +
+                '<td class="px-2 py-1.5"><span class="px-1.5 py-0.5 rounded text-[10px]" style="background:' + stColor + '20;color:' + stColor + '">' + (f.status || 'unvalidated').replace('_', ' ') + '</span></td>' +
+                '<td class="px-2 py-1.5"><a href="/case/' + encodeURIComponent(f._case_id) + '" class="font-mono text-indigo-400 hover:text-indigo-300">' + escapeHtml(f._case_id) + '</a></td>' +
+                '<td class="px-2 py-1.5 font-mono text-red-400">' + escapeHtml(f.cve || '') + '</td>' +
+                '<td class="px-2 py-1.5 text-gray-500">' + created + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    // --- Breadcrumb ---
+    function updateBreadcrumb() {
+        var bc = document.getElementById('breadcrumb');
+        var bcSev = document.getElementById('bc-sev');
+        var bcStatus = document.getElementById('bc-status');
+        var bcIncomplete = document.getElementById('bc-incomplete');
+        var bcSearch = document.getElementById('bc-search');
+        if (!activeSeverity && !activeStatus && !activeIncomplete && !activeSearch) {
+            bc.classList.add('hidden'); return;
+        }
+        bc.classList.remove('hidden');
+        bcSev.classList.toggle('hidden', !activeSeverity);
+        if (activeSeverity) bcSev.querySelector('span').textContent = activeSeverity.charAt(0).toUpperCase() + activeSeverity.slice(1) + ' severity';
+        bcStatus.classList.toggle('hidden', !activeStatus);
+        if (activeStatus) bcStatus.querySelector('span').textContent = activeStatus.replace('_', ' ') + ' status';
+        bcIncomplete.classList.toggle('hidden', !activeIncomplete);
+        if (activeIncomplete) bcIncomplete.querySelector('span').textContent = (activeIncomplete === 'missing_cve' ? 'Missing CVE' : activeIncomplete === 'no_remediation' ? 'No Remediation' : activeIncomplete === 'no_description' ? 'No Description' : 'Missing Impact');
+        bcSearch.classList.toggle('hidden', !activeSearch);
+        if (activeSearch) document.getElementById('bc-search-term').textContent = activeSearch;
+    }
+
+    // === Filter controls ===
+    window.filterBySeverity = function(sev) {
+        if (activeSeverity === sev) activeSeverity = '';
+        else { activeSeverity = sev; activeStatus = ''; activeIncomplete = ''; }
+        document.getElementById('search-input').value = '';
+        activeSearch = '';
+        updateClearBtn(); renderAll();
+    };
+
+    window.filterByStatus = function(st) {
+        activeStatus = st;
+        updateClearBtn(); renderAll();
+    };
+
+    window.filterByIncomplete = function(key) {
+        if (activeIncomplete === key) activeIncomplete = '';
+        else { activeIncomplete = key; activeSeverity = ''; activeStatus = ''; }
+        document.getElementById('search-input').value = '';
+        activeSearch = '';
+        updateClearBtn(); renderAll();
+    };
+
+    window.filterByCase = function(cid) {
+        document.getElementById('search-input').value = cid;
+        activeSearch = cid;
+        activeSeverity = ''; activeStatus = ''; activeIncomplete = '';
+        updateClearBtn(); renderAll();
+    };
+
+    window.onSearchInput = function() {
+        var val = document.getElementById('search-input').value.trim();
+        if (val !== activeSearch) {
+            activeSearch = val;
+            if (activeSearch) { activeSeverity = ''; activeStatus = ''; activeIncomplete = ''; }
+            updateClearBtn(); renderAll();
+        }
+    };
+
+    window.onSortChange = function() {
+        sortBy = document.getElementById('sort-select').value;
+        renderList();
+    };
+
+    window.resetFilter = function() {
+        activeSeverity = ''; activeStatus = ''; activeIncomplete = ''; activeSearch = '';
+        document.getElementById('search-input').value = '';
+        document.getElementById('sort-select').value = 'severity-desc';
+        sortBy = 'severity-desc';
+        updateClearBtn(); renderAll();
+    };
+
+    // === View toggle ===
+    window.setView = function(mode) {
+        viewMode = mode;
+        var cardsBtn = document.getElementById('view-cards-btn');
+        var tableBtn = document.getElementById('view-table-btn');
+        if (mode === 'cards') {
+            cardsBtn.className = 'px-2.5 py-1.5 bg-indigo-600 text-white';
+            tableBtn.className = 'px-2.5 py-1.5 text-gray-400 hover:text-gray-200';
+        } else {
+            cardsBtn.className = 'px-2.5 py-1.5 text-gray-400 hover:text-gray-200';
+            tableBtn.className = 'px-2.5 py-1.5 bg-indigo-600 text-white';
+        }
+        renderList();
+    };
+
+    // === Selection / Bulk ===
+    window.toggleSelect = function(caseId, findingId) {
+        var key = caseId + '/' + findingId;
+        if (selected[key]) delete selected[key];
+        else selected[key] = true;
+        // Sync checkboxes
+        document.querySelectorAll('.finding-checkbox').forEach(function(cb) {
+            if (cb.dataset.key === key) cb.checked = selected[key];
+        });
+        updateBulkBar();
+    };
+
+    window.toggleSelectAll = function(checked) {
+        var filtered = getFiltered();
+        filtered.forEach(function(f) {
+            var key = f._case_id + '/' + f.id;
+            if (checked) selected[key] = true;
+            else delete selected[key];
+        });
+        document.querySelectorAll('.finding-checkbox').forEach(function(cb) {
+            cb.checked = checked;
+        });
+        updateBulkBar();
+    };
+
+    window.clearSelection = function() {
+        selected = {};
+        document.querySelectorAll('.finding-checkbox').forEach(function(cb) { cb.checked = false; });
+        updateBulkBar();
+    };
+
+    function updateBulkBar() {
+        var count = Object.keys(selected).length;
+        var bar = document.getElementById('bulk-bar');
+        if (count > 0) {
+            bar.classList.remove('hidden');
+            document.getElementById('selected-count').textContent = count;
+        } else {
+            bar.classList.add('hidden');
+        }
+    }
+
+    window.bulkUpdateStatus = function() {
+        var keys = Object.keys(selected);
+        if (!keys.length) return;
+        var status = document.getElementById('bulk-status-select').value;
+        if (!confirm('Update ' + keys.length + ' finding(s) to "' + status + '"?')) return;
+        var findings = keys.map(function(k) {
+            var parts = k.split('/');
+            return { case_id: parts[0], finding_id: parts[1] };
+        });
+        fetch('/api/findings/bulk-update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ findings: findings, changes: { status: status } })
+        })
+        .then(function(r) {
+            if (!r.ok) return r.text().then(function(t) { throw new Error(r.status + ': ' + t.slice(0, 200)); });
+            return r.json();
+        })
+        .then(function(data) {
+            var errs = data.errors || [];
+            if (errs.length) alert(errs.length + ' error(s). ' + data.updated + ' updated.');
+            else alert(data.updated + ' finding(s) updated.');
+            if (errs.length) console.warn('Bulk update errors:', errs);
+            selected = {};
+            loadFindings();
+        })
+        .catch(function(e) { alert('Bulk update failed: ' + e.message); });
+    };
+
+    window.bulkDelete = function() {
+        var keys = Object.keys(selected);
+        if (!keys.length) return;
+        if (!confirm('PERMANENTLY delete ' + keys.length + ' selected finding(s)? This cannot be undone.')) return;
+        if (!confirm('Are you sure? Type "yes" to confirm.')) return;
+        var findings = keys.map(function(k) {
+            var parts = k.split('/');
+            return { case_id: parts[0], finding_id: parts[1] };
+        });
+        fetch('/api/findings/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ findings: findings })
+        })
+        .then(function(r) {
+            if (!r.ok) return r.text().then(function(t) { throw new Error(r.status + ': ' + t.slice(0, 200)); });
+            return r.json();
+        })
+        .then(function(data) {
+            var errs = data.errors || [];
+            if (errs.length) alert(errs.length + ' error(s). ' + data.deleted + ' deleted.');
+            else alert(data.deleted + ' finding(s) deleted.');
+            if (errs.length) console.warn('Bulk delete errors:', errs);
+            selected = {};
+            loadFindings();
+        })
+        .catch(function(e) { alert('Bulk delete failed: ' + e.message); });
+    };
+
+    // === Export ===
+    window.exportFindings = function(format) {
+        var filtered = getFiltered();
+        if (!filtered.length) { alert('No findings to export.'); return; }
+        if (format === 'csv') {
+            var headers = ['ID', 'Title', 'Severity', 'Status', 'Case', 'CVE', 'CWE', 'Source', 'Created', 'Description', 'Remediation', 'Impact'];
+            var rows = filtered.map(function(f) {
+                return [f.id, f.title, f.severity, f.status, f._case_id, f.cve || '', f.cwe || '', f.source || '', (f.created || '').slice(0, 10), (f.description || '').replace(/"/g, '""'), (f.remediation || '').replace(/"/g, '""'), (f.impact || '').replace(/"/g, '""')];
+            });
+            var csv = '\uFEFF' + headers.join(',') + '\n' + rows.map(function(r) { return r.map(function(v) { return '"' + v + '"'; }).join(','); }).join('\n');
+            downloadBlob(csv, 'findings-export.csv', 'text/csv;charset=utf-8');
+        } else {
+            var json = JSON.stringify(filtered, null, 2);
+            downloadBlob(json, 'findings-export.json', 'application/json');
+        }
+    };
+
+    function downloadBlob(content, filename, mime) {
+        var blob = new Blob([content], { type: mime });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        setTimeout(function() { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    }
+
+    function updateClearBtn() {
+        var btn = document.getElementById('clear-btn');
+        btn.classList.toggle('hidden', !(activeSeverity || activeStatus || activeIncomplete || activeSearch));
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    loadFindings();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,237 @@
+# v2 runbook — AWS cloud assessment
+name: "AWS Cloud Assessment"
+description: "Enumerate AWS resources: S3 buckets, IAM users/roles/policies, Lambda functions, EC2, EBS snapshots"
+version: "2.0"
+
+vars:
+  aws_profile: "default"
+  aws_region: "us-east-1"
+  aws_account_id: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "AWS assessment — profile:{aws_profile} region:{aws_region} (case: {case_id})"
+
+  # Phase 1: IAM enumeration
+  - id: iam_enum
+    name: "IAM enumeration"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: iam_users
+        name: "List IAM users"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "iam", "list-users",
+               "--output", "json",
+               "-o", "{case_dir}/iam_users.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/iam_users.json"]
+
+      - id: iam_roles
+        name: "List IAM roles"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "iam", "list-roles",
+               "--output", "json",
+               "-o", "{case_dir}/iam_roles.json"]
+        timeout: 30
+
+      - id: iam_policies
+        name: "List managed policies"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "iam", "list-policies",
+               "--scope", "All",
+               "--only-attached",
+               "--output", "json",
+               "-o", "{case_dir}/iam_policies.json"]
+        timeout: 30
+
+      - id: iam_creds_report
+        name: "Generate credential report"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "iam", "generate-credential-report",
+               "--output", "json",
+               "-o", "{case_dir}/iam_cred_report_gen.json"]
+        timeout: 15
+
+      - id: iam_creds_get
+        name: "Get credential report"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "iam", "get-credential-report",
+               "--output", "text",
+               "--query", "Content",
+               "-o", "{case_dir}/iam_cred_report.csv"]
+        timeout: 15
+
+  # Phase 2: S3 audit
+  - id: s3_audit
+    name: "S3 bucket audit"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: s3_list
+        name: "List all S3 buckets"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "s3", "ls",
+               "-o", "{case_dir}/s3_buckets.txt"]
+        timeout: 30
+
+      - id: s3_anon_check
+        name: "Check public S3 buckets"
+        tool: aws
+        args: ["--profile", "{aws_profile}",
+               "s3api", "list-buckets",
+               "--query", "Buckets[*].Name",
+               "-o", "{case_dir}/s3_bucket_names.json"]
+        timeout: 30
+
+      - id: s3_public_blocks
+        name: "Check S3 public access blocks"
+        tool: python3
+        args: ["-c",
+               "\"import json,subprocess; profile='{aws_profile}'; buckets=json.load(open('{case_dir}/s3_bucket_names.json')); [subprocess.run(['aws','--profile',profile,'s3api','get-public-access-block','--bucket',b,'--output','json'],capture_output=True) for b in buckets]\"",
+               "-o", "{case_dir}/s3_public_access.json"]
+        timeout: 120
+
+      - id: s3_greyhat
+        name: "Greyhat Warfare S3 check"
+        tool: curl
+        args: ["-s",
+               "'https://buckets.grayhatwarfare.com/api/v1/search/{aws_account_id}'",
+               "-o", "{case_dir}/s3_greyhat.json"]
+        timeout: 30
+
+  # Phase 3: EC2 enumeration
+  - id: ec2_enum
+    name: "EC2 enumeration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: ec2_instances
+        name: "List EC2 instances"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "ec2", "describe-instances",
+               "--output", "json",
+               "-o", "{case_dir}/ec2_instances.json"]
+        timeout: 60
+
+      - id: ec2_sgs
+        name: "List security groups"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "ec2", "describe-security-groups",
+               "--output", "json",
+               "-o", "{case_dir}/ec2_security_groups.json"]
+        timeout: 30
+
+      - id: ec2_volumes
+        name: "List EBS volumes"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "ec2", "describe-volumes",
+               "--output", "json",
+               "-o", "{case_dir}/ec2_volumes.json"]
+        timeout: 30
+
+      - id: ec2_snapshots
+        name: "List public snapshots"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "ec2", "describe-snapshots",
+               "--restorable-by-user-ids", "all",
+               "--output", "json",
+               "-o", "{case_dir}/ec2_public_snapshots.json"]
+        timeout: 60
+
+  # Phase 4: Lambda enumeration
+  - id: lambda_enum
+    name: "Lambda enumeration"
+    type: parallel
+    steps:
+      - id: lambda_functions
+        name: "List Lambda functions"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "lambda", "list-functions",
+               "--output", "json",
+               "-o", "{case_dir}/lambda_functions.json"]
+        timeout: 30
+
+      - id: lambda_policies
+        name: "Lambda resource policies"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "lambda", "list-policies",
+               "--output", "json",
+               "-o", "{case_dir}/lambda_policies.json"]
+        timeout: 30
+
+  # Phase 5: CloudTrail & logging
+  - id: logging_audit
+    name: "Logging audit"
+    type: parallel
+    steps:
+      - id: trail_check
+        name: "Check CloudTrail status"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "cloudtrail", "describe-trails",
+               "--output", "json",
+               "-o", "{case_dir}/cloudtrail.json"]
+        timeout: 30
+
+      - id: config_check
+        name: "Check AWS Config"
+        tool: aws
+        args: ["--profile", "{aws_profile}", "--region", "{aws_region}",
+               "configservice", "describe-configuration-recorder-status",
+               "--output", "json",
+               "-o", "{case_dir}/config_status.json"]
+        timeout: 30
+
+  # Phase 6: IAM privilege escalation analysis
+  - id: privesc_check
+    name: "IAM privesc analysis"
+    type: parallel
+    steps:
+      - id: iam_privesc
+        name: "Check IAM for privesc risks"
+        tool: python3
+        args: ["-c",
+               "\"import json; p=json.load(open('{case_dir}/iam_policies.json')); risks=[d for d in p if any(s in str(d) for s in ['iam:PassRole','iam:CreateAccessKey','iam:UpdateAssumeRolePolicy','iam:CreatePolicyVersion','lambda:CreateFunction','ec2:RunInstances'])]; print(f'Potential privesc policies: {len(risks)}'); [print(f\"{r['PolicyName']} - {r['Arn']}\") for r in risks]\"",
+               "-o", "{case_dir}/iam_privesc.txt"]
+        timeout: 30
+
+  # Phase 7: Report
+  - id: report
+    name: "Generate AWS assessment report"
+    type: report
+    format: markdown
+    title: "AWS Cloud Assessment"
+    output: "{case_dir}/aws-assessment-report.md"
+    sections:
+      - heading: "Account"
+        body: "- Profile: {aws_profile}\n- Region: {aws_region}\n- Account: {aws_account_id}"
+      - heading: "IAM"
+        body: "- Users: {case_dir}/iam_users.json\n- Roles: {case_dir}/iam_roles.json\n- Credential report: {case_dir}/iam_cred_report.csv\n- Privesc risks: {case_dir}/iam_privesc.txt"
+      - heading: "S3"
+        body: "- Buckets: {case_dir}/s3_buckets.txt\n- Public access blocks: {case_dir}/s3_public_access.json"
+      - heading: "EC2"
+        body: "- Instances: {case_dir}/ec2_instances.json\n- Security groups: {case_dir}/ec2_security_groups.json\n- Public snapshots: {case_dir}/ec2_public_snapshots.json"
+      - heading: "Lambda"
+        body: "- Functions: {case_dir}/lambda_functions.json\n- Policies: {case_dir}/lambda_policies.json"
+      - heading: "Logging"
+        body: "- CloudTrail: {case_dir}/cloudtrail.json\n- Config: {case_dir}/config_status.json"
+
+postflight:
+  - id: done
+    type: notify
+    level: info
+    message: "AWS assessment complete — {case_dir}"

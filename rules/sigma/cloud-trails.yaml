@@ -1,0 +1,337 @@
+title: AWS CloudTrail - S3 Bucket Policy Modification
+id: aws_s3_bucket_policy_change
+status: experimental
+description: Detects S3 bucket policy modifications that could grant public access
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventSource: 's3.amazonaws.com'
+    eventName|contains:
+      - 'PutBucketPolicy'
+      - 'PutBucketAcl'
+      - 'DeleteBucketPolicy'
+  condition: selection
+falsepositives:
+  - Legitimate S3 policy changes by administrators
+level: high
+tags:
+  - attack.exfiltration
+  - attack.t1530
+---
+title: AWS CloudTrail - Console Login Without MFA
+id: aws_console_login_no_mfa
+status: experimental
+description: Detects AWS console logins that did not use MFA
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventName: 'ConsoleLogin'
+    additionalEventData.MFAUsed: 'No'
+    userIdentity.type: 'IAMUser'
+  condition: selection
+falsepositives:
+  - Service accounts
+  - Break-glass access procedures
+level: medium
+tags:
+  - attack.initial_access
+  - attack.t1078
+---
+title: AWS CloudTrail - IAM Policy Attachment to Privileged Role
+id: aws_iam_policy_attach
+status: experimental
+description: Detects attachment of IAM policies to privileged roles or users
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventName|contains:
+      - 'AttachRolePolicy'
+      - 'AttachUserPolicy'
+      - 'PutRolePolicy'
+      - 'PutUserPolicy'
+    requestParameters.policyArn|contains: 'AdministratorAccess'
+  condition: selection
+falsepositives:
+  - Legitimate admin activities
+  - CI/CD pipeline role setup
+level: high
+tags:
+  - attack.persistence
+  - attack.t1098
+---
+title: AWS CloudTrail - Security Group Ingress Change
+id: aws_security_group_ingress
+status: experimental
+description: Detects modification to security group inbound rules that allow wide access
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventName|contains:
+      - 'AuthorizeSecurityGroupIngress'
+      - 'RevokeSecurityGroupIngress'
+  condition: selection
+falsepositives:
+  - Planned network changes
+level: medium
+tags:
+  - attack.lateral_movement
+  - attack.t1021
+---
+title: AWS CloudTrail - KMS Key Disable/Schedule Deletion
+id: aws_kms_key_deletion
+status: experimental
+description: Detects scheduled deletion or disabling of KMS keys
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventName|contains:
+      - 'ScheduleKeyDeletion'
+      - 'DisableKey'
+      - 'DeleteAlias'
+  condition: selection
+falsepositives:
+  - Planned key rotation
+level: high
+tags:
+  - attack.impact
+  - attack.t1485
+---
+title: AWS CloudTrail - VPC Flow Log Disable
+id: aws_vpc_flow_log_disable
+status: experimental
+description: Detects disabling or deletion of VPC Flow Logs (defense evasion)
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventName|contains:
+      - 'DeleteFlowLogs'
+      - 'DeleteFlowLog'
+  condition: selection
+falsepositives:
+  - Planned network maintenance
+level: medium
+tags:
+  - attack.defense_evasion
+  - attack.t1562
+---
+title: AWS CloudTrail - GuardDuty Disable
+id: aws_guardduty_disable
+status: experimental
+description: Detects disabling or disassociating GuardDuty (defense evasion)
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventSource: 'guardduty.amazonaws.com'
+    eventName|contains:
+      - 'Disassociate'
+      - 'DeleteDetector'
+      - 'StopMonitoring'
+      - 'UpdateDetector'
+  condition: selection
+falsepositives:
+  - Planned GuardDuty migration
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1562
+---
+title: AWS CloudTrail - Route53 Domain Transfer
+id: aws_route53_domain_transfer
+status: experimental
+description: Detects domain transfer requests (domain hijacking)
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  selection:
+    eventSource: 'route53domains.amazonaws.com'
+    eventName|contains:
+      - 'TransferDomain'
+      - 'TransferDomainToAnotherAwsAccount'
+      - 'UpdateDomainNameservers'
+  condition: selection
+falsepositives:
+  - Legitimate domain management
+level: high
+tags:
+  - attack.impact
+  - attack.t1496
+---
+title: AWS CloudTrail - Unusual API Call Volume
+id: aws_unusual_api_volume
+status: experimental
+description: Detects anomalous volume of API calls from a single source IP or user
+logsource:
+  service: cloudtrail
+  product: aws
+detection:
+  timeframe: 5m
+  selection:
+    sourceIPAddress|re: '\d+\.\d+\.\d+\.\d+'
+  condition: selection | count() by sourceIPAddress > 100
+falsepositives:
+  - Automated deployments
+  - CI/CD pipelines
+level: low
+tags:
+  - attack.reconnaissance
+  - attack.t1580
+---
+title: Azure Activity Log - Key Vault Secret Access
+id: azure_keyvault_secret_access
+status: experimental
+description: Detects access to Key Vault secrets from unusual locations or applications
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName: 'Microsoft.KeyVault/vaults/secrets/read'
+    callerIpAddress|re: '^(\d{1,3}\.)'
+  condition: selection
+falsepositives:
+  - Application secret rotation
+  - DevOps pipeline access
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1552
+---
+title: Azure Activity Log - RBAC Role Assignment Elevated
+id: azure_rbac_elevation
+status: experimental
+description: Detects high-privilege Azure RBAC role assignments
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName: 'Microsoft.Authorization/roleAssignments/write'
+    properties.RoleDefinitionName|contains:
+      - 'Owner'
+      - 'Contributor'
+      - 'User Access Administrator'
+      - 'Global Administrator'
+  condition: selection
+falsepositives:
+  - Onboarding new administrators
+  - MSP tooling
+level: high
+tags:
+  - attack.persistence
+  - attack.t1098
+---
+title: Azure Activity Log - Network Security Group Modification
+id: azure_nsg_modification
+status: experimental
+description: Detects NSG rule modifications allowing broad inbound access
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName: 'Microsoft.Network/networkSecurityGroups/securityRules/write'
+    properties.requestBody|contains:
+      - '0.0.0.0/0'
+      - '*'
+  condition: selection
+falsepositives:
+  - Legitimate network changes
+level: medium
+tags:
+  - attack.lateral_movement
+  - attack.t1021
+---
+title: Azure Activity Log - Diagnostic Setting Disable
+id: azure_diagnostic_disable
+status: experimental
+description: Detects disabling of diagnostic logging for Azure resources
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName|contains:
+      - 'Microsoft.Insights/diagnosticSettings/delete'
+      - 'Microsoft.Insights/diagnosticSettings/write'
+  condition: selection
+falsepositives:
+  - Planned logging reconfiguration
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1562
+---
+title: Azure Activity Log - User Account Creation
+id: azure_user_creation
+status: experimental
+description: Detects creation of new Azure AD users from non-standard sources
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName: 'Microsoft.aadiam/tenant/workbooks/write'
+    category: UserManagement
+    properties.UserType|contains:
+      - 'Member'
+      - 'Guest'
+  condition: selection
+falsepositives:
+  - HR onboarding processes
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1136
+---
+title: Azure Activity Log - Storage Account Access Key Regeneration
+id: azure_storage_key_regeneration
+status: experimental
+description: Detects regeneration of Azure Storage account access keys
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName: 'Microsoft.Storage/storageAccounts/regenerateKey/action'
+  condition: selection
+falsepositives:
+  - Planned key rotation
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1552
+---
+title: Azure Activity Log - Role Management Permission Grant (PIM)
+id: azure_pim_activation
+status: experimental
+description: Detects Azure AD Privileged Identity Management role activations
+logsource:
+  service: activitylog
+  product: azure
+detection:
+  selection:
+    operationName|contains:
+      - 'PIM/roleDefinitions'
+      - 'Microsoft.Authorization/roleEligibilityScheduleRequests'
+  condition: selection
+falsepositives:
+  - Planned elevated access
+level: medium
+tags:
+  - attack.privilege_escalation
+  - attack.t1078

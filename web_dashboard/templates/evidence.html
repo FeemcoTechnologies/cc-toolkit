@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ case.case_id }} / Evidence{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div>
+        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back to {{ case.case_id }}</a>
+        <h1 class="text-xl font-semibold mt-1">Evidence</h1>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2">
+        <div id="evidence-list" class="space-y-2">
+            <p class="text-gray-500">Loading...</p>
+        </div>
+    </div>
+    <div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold mb-3">Upload Evidence</h2>
+            <form id="upload-form" enctype="multipart/form-data" onsubmit="uploadEvidence(event)">
+                <input type="file" name="file" class="w-full text-sm mb-2 text-gray-300 file:bg-gray-800 file:border file:border-gray-700 file:rounded file:px-2 file:py-1 file:text-gray-300">
+                <select name="category" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm mb-2">
+                    <option value="evidence">Evidence</option>
+                    <option value="screenshots">Screenshot</option>
+                    <option value="scans">Scan Outputs</option>
+                    <option value="loot">Loot</option>
+                </select>
+                <input name="description" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm mb-2" placeholder="Description (optional)">
+                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded text-sm">Upload</button>
+            </form>
+            <div id="upload-progress" class="mt-2 text-xs text-gray-500 hidden">Uploading...</div>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mt-4">
+            <h2 class="text-sm font-semibold mb-2">Chain of Custody</h2>
+            <button onclick="verifyEvidence()" class="text-xs text-indigo-400 hover:text-indigo-300">Verify integrity</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadEvidence() {
+    const el = document.getElementById('evidence-list');
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/evidence');
+        if (!r.ok) { el.innerHTML = '<p class="text-red-400">Failed to load evidence (HTTP ' + r.status + ')</p>'; return; }
+        const ev = await r.json();
+        if (!Array.isArray(ev)) { el.innerHTML = '<p class="text-red-400">Unexpected response</p>'; return; }
+        if (ev.length === 0) { el.innerHTML = '<p class="text-gray-500">No evidence uploaded</p>'; return; }
+        el.innerHTML = ev.map(e =>
+        `<div class="bg-gray-900 rounded-lg border border-gray-800 p-3 flex justify-between items-center">
+            <div>
+                <p class="text-sm font-medium">${escapeHtml(e.filename)}</p>
+                <p class="text-xs text-gray-500">${escapeHtml(e.category)} \u00b7 ${escapeHtml(e.description || '')} \u00b7 ${(e.size/1024).toFixed(1)}KB</p>
+                <p class="text-xs text-gray-600">SHA256: ${escapeHtml((e.sha256||'').slice(0,16))}...</p>
+            </div>
+            <span class="text-xs ${escapeHtml(e.sha256) ? 'text-green-400' : 'text-gray-500'}">${escapeHtml(e.sha256) ? 'Hashed' : 'Pending'}</span>
+        </div>`
+    ).join('');
+    } catch (e) {
+        el.innerHTML = '<p class="text-red-400">Error loading evidence: ' + e.message + '</p>';
+    }
+}
+async function uploadEvidence(e) {
+    e.preventDefault();
+    const form = document.getElementById('upload-form');
+    const progress = document.getElementById('upload-progress');
+    progress.classList.remove('hidden');
+    const fd = new FormData(form);
+    const r = await fetch('/api/case/{{ case.case_id }}/evidence/upload', {method:'POST', body: fd});
+    const result = await r.json();
+    progress.classList.add('hidden');
+    if (result.sha256) {
+        loadEvidence();
+    } else {
+        alert('Upload failed: ' + (result.error || 'unknown'));
+    }
+}
+async function verifyEvidence() {
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/evidence/verify', {method:'POST'});
+        if (!r.ok) { alert('Verify failed (HTTP ' + r.status + ')'); return; }
+        const result = await r.json();
+        if (result.error) { alert('Error: ' + result.error); return; }
+        if (!Array.isArray(result)) { alert('Unexpected response'); return; }
+        const summary = result.map(e => `${e.filename}: ${e.status}`).join('\n');
+        alert(summary || 'No evidence to verify');
+    } catch (e) {
+        alert('Error verifying evidence: ' + e.message);
+    }
+}
+loadEvidence();
+</script>
+{% endblock %}

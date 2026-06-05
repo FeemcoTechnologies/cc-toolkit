@@ -1,0 +1,50 @@
+title: Incident Response Playbook
+description: Structured IR walkthrough — containment, eradication, recovery, and lessons learned for a security incident.
+tags: [incident-response, ir, forensics, containment]
+prompt: >
+  Develop an incident response plan for case {case_id}.
+
+  ## Incident Context
+  - Case ID: {case_id}
+  - Incident type: {incident_type} (ransomware / data breach / unauthorized access / malware / DDoS / insider threat)
+  - Affected systems: {affected_systems}
+  - Initial detection method: {detection_method}
+  - Current containment status: {containment_status}
+  - Data sensitivity: {data_sensitivity}
+
+  ## Response Phases
+
+  ### 1. Preparation
+  - Stakeholder contact list: {contacts}
+  - IR toolkit checklist (imaging tools, analysis VMs, forensic software)
+  - Legal / compliance notifications required
+
+  ### 2. Identification & Triage
+  - Verify the incident — is it confirmed or suspected?
+  - Gather initial evidence (alerts, logs, screenshots, user reports)
+  - Determine scope — which systems, users, data are affected?
+  - Escalation criteria and threshold
+
+  ### 3. Containment
+  - Short-term: isolate affected systems (network segmentation, disable accounts)
+  - Long-term: apply patches, rotate credentials, rebuild systems
+  - Chain of custody for forensic evidence
+
+  ### 4. Eradication
+  - Remove malware / persistence mechanisms
+  - Patch vulnerabilities that enabled the incident
+  - Verify removal via scanning and monitoring
+
+  ### 5. Recovery
+  - Restore systems from clean backups
+  - Monitor for signs of re-infection (30-day watch period)
+  - Gradual return to normal operations
+
+  ### 6. Lessons Learned
+  - Root cause analysis
+  - Timeline of events
+  - Gaps in detection / response
+  - Recommendations to prevent recurrence
+
+  ## Output
+  Create a case note with the full IR plan, timeline entries for each phase, containment actions, and a lessons-learned summary.

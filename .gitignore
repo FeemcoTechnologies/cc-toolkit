@@ -1,0 +1,52 @@
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# ── Environment / Secrets ──────────────────────────────────────────────────
+.env
+.vault_key
+*.key
+*.pem
+*.cert
+
+# ── CASE DATA — NEVER COMMIT ───────────────────────────────────────────────
+# These directories contain client-specific assessment data, credentials,
+# findings, evidence, and scope information. They MUST never appear in
+# the public repository or in git history.
+cases/
+data/
+nmap_scans/
+screenshots/
+logs/
+sessions/
+wifi_sessions/
+dns_monitors/
+wordlists/
+
+# ── Runtime databases ──────────────────────────────────────────────────────
+asset_db.json
+arsenal-rules.json
+dashboard_layout.json
+env-profiles.json
+
+# ── IDE / Editor ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Docker ──────────────────────────────────────────────────────────────────
+/workspace/
+/workspace/*
+!/workspace/.gitkeep

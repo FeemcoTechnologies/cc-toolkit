@@ -1,0 +1,94 @@
+alert tls-malicious-ja3 $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"Potential C2 — JA3 fingerprint for known malware";
+  ja3_hash; content:"|51|"; within:2;
+  classtype:trojan-activity;
+  sid:1000001; rev:1;
+)
+
+alert dns $HOME_NET any -> $EXTERNAL_NET 53 (
+  msg:"Potential DNS tunneling — high entropy subdomain";
+  dns_query; content:"|01|"; within:1;
+  pcre:"/[a-z0-9]{50,}\.[a-z0-9\-]+\.[a-z]{2,}/";
+  classtype:policy-violation;
+  sid:1000002; rev:1;
+)
+
+alert http $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"Suspicious User-Agent — powershell request";
+  flow:to_server,established;
+  http.user_agent; content:"WindowsPowerShell"; nocase;
+  classtype:policy-violation;
+  sid:1000003; rev:1;
+)
+
+alert http $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"Suspicious User-Agent — curl download";
+  flow:to_server,established;
+  http.user_agent; content:"curl/"; nocase;
+  classtype:policy-violation;
+  sid:1000004; rev:1;
+)
+
+alert tcp $HOME_NET any -> $EXTERNAL_NET 4444 (
+  msg:"Potential reverse shell — port 4444 outbound";
+  flow:to_server,established;
+  classtype:trojan-activity;
+  sid:1000005; rev:1;
+)
+
+alert tcp $HOME_NET any -> $EXTERNAL_NET 6666 (
+  msg:"Potential reverse shell — port 6666 outbound";
+  flow:to_server,established;
+  classtype:trojan-activity;
+  sid:1000006; rev:1;
+)
+
+alert tcp $HOME_NET any -> $EXTERNAL_NET 6667 (
+  msg:"Potential IRC C2 — port 6667 outbound";
+  flow:to_server,established;
+  classtype:trojan-activity;
+  sid:1000007; rev:1;
+)
+
+alert http $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"Base64-encoded data in URI path (potential C2)";
+  flow:to_server,established;
+  pcre:"/[A-Za-z0-9+/]{50,}={0,2}/";
+  classtype:policy-violation;
+  sid:1000008; rev:1;
+)
+
+alert http $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"Suspicious .exe download from non-standard site";
+  flow:to_server,established;
+  http.header; content:".exe"; nocase;
+  http.header; content:"Content-Type"; nocase;
+  http.content_type; content:"application/x-msdownload";
+  classtype:unknown;
+  sid:1000009; rev:1;
+)
+
+alert tcp $HOME_NET any -> $EXTERNAL_NET 8443 (
+  msg:"Non-standard HTTPS port 8443 — C2 beacon potential";
+  flow:to_server,established;
+  classtype:trojan-activity;
+  sid:1000010; rev:1;
+)
+
+alert http $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"Periodic beaconing — same URL every N seconds";
+  flow:to_server,established;
+  http.uri; content:"/beacon"; nocase;
+  classtype:trojan-activity;
+  sid:1000011; rev:1;
+)
+
+alert http $HOME_NET any -> $EXTERNAL_NET any (
+  msg:"POST with JSON to unknown endpoint (potential exfil)";
+  flow:to_server,established;
+  http.method; content:"POST";
+  http.content_type; content:"application/json";
+  http.content_len; >:10000;
+  classtype:policy-violation;
+  sid:1000012; rev:1;
+)

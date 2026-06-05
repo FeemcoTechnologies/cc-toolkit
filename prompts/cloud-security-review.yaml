@@ -1,0 +1,38 @@
+title: Cloud Security Posture Review
+description: Multi-provider cloud security assessment covering AWS, Azure, GCP, IBM Cloud, Akamai, Oracle Cloud (OCI), Alibaba Cloud (Aliyun), DigitalOcean, Vultr, Linode, and Hetzner — IAM, storage, network, compute, and logging audit.
+tags: [cloud, aws, azure, gcp, ibm, akamai, oci, alibaba, digitalocean, security]
+prompt: >
+  Perform a cloud security posture review for {cloud_provider} environment {environment_name}.
+
+  ## Provider
+  - Provider: {cloud_provider} (AWS / Azure / GCP / IBM Cloud / Akamai / OCI / Alibaba Cloud / DigitalOcean / Vultr / Linode / Hetzner)
+  - Account/Project ID: {account_id}
+  - Environment: {environment} (production/staging/development)
+  - Authentication method: {auth_method} (CLI profile / service principal / API key / OAuth)
+  - Regions in scope: {regions}
+
+  ## Assessment Areas by Provider
+
+  ### All Providers — Common Baseline
+  1. IAM / Access Control — list users, roles, service accounts, API keys; flag over-permissive policies
+  2. Storage — enumerate buckets/containers/volumes; check public access, encryption, versioning
+  3. Compute — review instance configurations, security groups/firewall rules, SSH key management
+  4. Logging & Monitoring — verify audit logs enabled, log retention, alerting configuration
+  5. Network — review VPCs, subnets, peering, firewalls, CDN configurations, DNS zones
+
+  ### Provider-Specific Checks
+
+  - AWS: S3 bucket policies, CloudTrail, GuardDuty, Security Hub, IAM Access Analyzer, VPC Flow Logs, EBS encryption, RDS public access
+  - Azure: Azure RBAC, Key Vault, NSG/ASG, Azure Policy, Defender for Cloud, Storage Account firewall, Private Link, Managed Identity
+  - GCP: IAM conditions, Cloud Audit Logs, VPC Service Controls, Cloud Armor, IAP, Binary Authorization, CMEK
+  - IBM Cloud: IAM access groups, COS bucket ACLs, KMS key rotation, VPC security groups, Flow Logs, Activity Tracker, Secrets Manager
+  - Akamai: Property Manager rules, EdgeWorkers, API Gateway security, WAF/App & API Protector, Bot Manager, CDN cache policies, TLS settings, Token Auth
+  - Oracle Cloud (OCI): IAM compartments, Object Storage pre-authenticated requests, VCN security lists, Cloud Guard, WAF, Data Safe
+  - Alibaba Cloud (Aliyun): RAM policies, OSS bucket policies, Security Center, WAF, Anti-DDoS, KMS, Cloud Firewall
+  - DigitalOcean: Teams & projects, Spaces ACLs, Firewall rules, Monitoring, VPC, Managed Databases
+  - Vultr: Firewall groups, Object Storage, VPC 2.0, Load Balancers, DDOS protection
+  - Linode: Firewall rules, NodeBalancers, Object Storage access, LKE RBAC, VLANs
+  - Hetzner: Firewall rules, Floating IPs, Volume encryption, Load Balancer security, Robot API access
+
+  ## Output
+  Create findings grouped by category (IAM, Storage, Compute, Network, Logging) with severity ratings, provider-specific evidence, and remediation steps per provider.

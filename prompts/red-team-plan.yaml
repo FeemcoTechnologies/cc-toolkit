@@ -1,0 +1,56 @@
+title: Red Team Engagement Plan
+description: Design a multi-phase red team operation — objectives, TTPs, tooling, rules of engagement, and communication plan.
+tags: [red-team, adversarial, purple-team, engagement]
+prompt: >
+  Design a red team engagement plan for {client_name}.
+
+  ## Engagement Parameters
+  - Client: {client_name}
+  - Duration: {duration} days (phases: reconnaissance / initial access / persistence / lateral movement / data exfiltration)
+  - Adversary profile: {adversary_profile} (APT / ransomware group / insider / hacktivist)
+  - Objectives: {objectives}
+  - Exclusions: {exclusions} (critical production systems, people, specific IPs)
+  - Purple team elements: {purple_team} (yes/no — share TTPs with blue team in real-time)
+
+  ## Rules of Engagement
+  - Authorized targets: {authorized_targets}
+  - Prohibited techniques: {prohibited_techniques} (e.g., no ransomware, no destructive payloads, no social engineering against non-consenting staff)
+  - Communication channels: {comm_channels} (encrypted chat, phone bridge)
+  - Escalation contacts: {escalation_contacts}
+  - Shutdown criteria: {shutdown_criteria} (production outage, PII exposure, legal involvement)
+  - Reporting cadence: daily standup / weekly written / final report
+
+  ## Attack Plan
+
+  ### Phase 1: Reconnaissance (Days 1-3)
+  - External recon: passive DNS, certificate transparency, Shodan, OSINT
+  - Technology stack fingerprinting
+  - User enumeration (LinkedIn, breach data, email patterns)
+  - Supply chain mapping (third-party services, SaaS, VPN providers)
+
+  ### Phase 2: Initial Access (Days 3-7)
+  - Phishing campaign (targeted spear-phish vs. broad credential harvest)
+  - Password spraying / credential stuffing
+  - Vulnerability exploitation (externally-facing CVEs)
+  - Valid account acquisition (initial foothold)
+
+  ### Phase 3: Persistence & Evasion (Days 7-10)
+  - C2 deployment (redirectors, domain fronting, C2 profiles)
+  - Defense evasion (AV/EDR bypass, process injection, log tampering)
+  - Persistence mechanism (scheduled task, service, WMI, startup key)
+  - Credential access (Mimikatz, LSASS dump, DPAPI, SAM)
+
+  ### Phase 4: Lateral Movement (Days 10-14)
+  - Internal recon (BloodHound, AD enumeration, network scanning)
+  - Credential relay (SMB relay, Kerberos delegation)
+  - Privilege escalation (local admin, domain admin, tier-0 compromise)
+  - Cross-platform (Windows → Linux pivot, SSH key theft)
+
+  ### Phase 5: Exfiltration & Impact (Days 14-18)
+  - Data targeting (identify high-value data stores)
+  - Exfiltration via C2, DNS tunneling, cloud storage APIs
+  - Simulated impact (if authorized: encryption simulation, data destruction test)
+  - Cleanup & removal of persistence
+
+  ## Output
+  Create a case with tasks for each phase, timelines, and a final report covering TTPs used, detections triggered (purple team metrics), and recommendations.

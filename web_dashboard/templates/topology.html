@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% block title %}Topology — {{ case.case_id }}{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+    #topology-graph { height: calc(100vh - 160px); min-height: 500px; border-radius: 0.5rem; }
+    .topo-sidebar { max-height: calc(100vh - 160px); overflow-y: auto; }
+    .topo-stat { transition: all 0.2s ease; }
+    .topo-stat:hover { border-color: #6366f1; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div>
+        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back to {{ case.case_id }}</a>
+        <h1 class="text-xl font-semibold mt-1">Topology</h1>
+    </div>
+    <div class="flex gap-2">
+        <input id="scan-target" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm w-40 font-mono" placeholder="target.com">
+        <select id="scan-type" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
+            <option value="init-tcp">Initial TCP</option>
+            <option value="init-udp">Initial UDP</option>
+            <option value="full-tcp">Full TCP</option>
+            <option value="service-version">Service Version</option>
+            <option value="vuln">Vulnerability</option>
+        </select>
+        <button onclick="runTopoScan()" id="scan-btn" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm whitespace-nowrap">Scan</button>
+    </div>
+</div>
+<div id="scan-output-bar" class="hidden mb-2 text-xs font-mono text-green-300 bg-gray-950 rounded p-2 max-h-32 overflow-y-auto"></div>
+<div class="flex gap-4 h-full">
+    <!-- Graph -->
+    <div class="flex-1 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+        <div id="topology-graph" class="w-full"></div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="w-72 topo-sidebar shrink-0 space-y-3">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+            <h2 class="text-sm font-semibold text-indigo-400 mb-2 flex items-center gap-1">
+                <i data-lucide="activity" class="w-4 h-4"></i> Network Stats
+            </h2>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+                <div class="topo-stat bg-gray-800/50 rounded p-2 text-center">
+                    <span id="stat-hosts" class="text-lg font-bold text-blue-400">0</span>
+                    <p class="text-gray-500">Hosts</p>
+                </div>
+                <div class="topo-stat bg-gray-800/50 rounded p-2 text-center">
+                    <span id="stat-ports" class="text-lg font-bold text-green-400">0</span>
+                    <p class="text-gray-500">Open Ports</p>
+                </div>
+                <div class="topo-stat bg-gray-800/50 rounded p-2 text-center col-span-2">
+                    <span id="stat-services" class="text-lg font-bold text-yellow-400">0</span>
+                    <p class="text-gray-500">Unique Services</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Service filter -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+            <h3 class="text-xs font-semibold text-gray-400 mb-2">Filter by Service</h3>
+            <div id="service-filters" class="flex flex-wrap gap-1"></div>
+        </div>
+
+        <!-- Selected node details -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-3">
+            <h3 class="text-xs font-semibold text-gray-400 mb-2">Details</h3>
+            <div id="node-details" class="text-xs text-gray-500">
+                <p>Click a host or service node for details.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    const SERVICE_COLORS = {
+        ssh: '#22c55e', http: '#3b82f6', https: '#2563eb', mysql: '#f59e0b',
+        postgresql: '#6366f1', redis: '#ef4444', mongodb: '#10b981',
+        smtp: '#f97316', dns: '#8b5cf6', rdp: '#ef4444', smb: '#dc2626',
+        telnet: '#6b7280', ftp: '#eab308', ldap: '#a855f7', kerberos: '#6366f1',
+        winrm: '#ef4444', 'ms-sql': '#f59e0b',
+    };
+    const DEFAULT_COLOR = '#6b7280';
+
+    var nodes = new vis.DataSet([]);
+    var edges = new vis.DataSet([]);
+    var network = null;
+    var allHosts = [];
+
+    fetch('/api/case/{{ case.case_id }}/topology')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                document.getElementById('node-details').innerHTML = '<p class="text-red-400">' + data.error + '</p>';
+                return;
+            }
+            if (!data.hosts || !data.hosts.length) {
+                document.getElementById('topology-graph').innerHTML =
+                    '<div class="flex items-center justify-center h-full text-gray-500">' +
+                    '<div class="text-center"><i data-lucide="search-x" class="w-8 h-8 mx-auto mb-2"></i>' +
+                    '<p class="text-sm">' + (data.message || 'No scan data found') + '</p>' +
+                    '</div></div>';
+                document.getElementById('stat-hosts').textContent = '0';
+                lucide.createIcons();
+                return;
+            }
+
+            allHosts = data.hosts;
+            document.getElementById('stat-hosts').textContent = data.total_hosts;
+            document.getElementById('stat-ports').textContent = data.total_ports;
+            document.getElementById('stat-services').textContent = data.services.length;
+
+            // Build nodes
+            var nodeItems = [];
+            var edgeItems = [];
+            var serviceNodes = {};
+
+            data.hosts.forEach(function(host) {
+                var size = Math.max(20, Math.min(60, 10 + host.port_count * 3));
+                var hasCritical = host.ports.some(function(p) { return [22,3306,5432,6379,27017,3389,445,139,1433].includes(p.port); });
+                var color = hasCritical ? '#ef4444' : host.port_count > 5 ? '#f97316' : '#6366f1';
+
+                nodeItems.push({
+                    id: host.id,
+                    label: host.id,
+                    title: '<b>' + host.id + '</b><br/>OS: ' + host.os + '<br/>Ports: ' + host.port_count,
+                    value: host.port_count,
+                    size: size,
+                    color: { background: color, border: '#1f2937' },
+                    font: { color: '#e5e7eb', size: 11 },
+                    borderWidth: 2,
+                    shape: 'dot',
+                    hostData: host,
+                });
+
+                host.ports.forEach(function(p) {
+                    var svc = p.service || 'unknown';
+                    if (!serviceNodes[svc]) {
+                        serviceNodes[svc] = svc;
+                        nodeItems.push({
+                            id: 'svc:' + svc,
+                            label: svc,
+                            title: '<b>' + svc + '</b>',
+                            color: { background: SERVICE_COLORS[svc] || DEFAULT_COLOR, border: '#1f2937' },
+                            font: { color: '#9ca3af', size: 9 },
+                            size: 15,
+                            shape: 'square',
+                            borderWidth: 1,
+                        });
+                    }
+                    edgeItems.push({
+                        from: host.id,
+                        to: 'svc:' + svc,
+                        title: svc + ' (' + p.port + '/' + p.protocol + ')',
+                        label: String(p.port),
+                        font: { size: 8, color: '#6b7280', strokeWidth: 0 },
+                        color: { color: '#374151', hover: '#6366f1' },
+                        width: 1,
+                        dashes: p.protocol === 'udp',
+                    });
+                });
+            });
+
+            nodes = new vis.DataSet(nodeItems);
+            edges = new vis.DataSet(edgeItems);
+
+            var container = document.getElementById('topology-graph');
+            var data_vis = { nodes: nodes, edges: edges };
+            var options = {
+                physics: {
+                    solver: 'barnesHut',
+                    barnesHut: { gravitationalConstant: -3000, springConstant: 0.04, springLength: 120 },
+                    stabilization: { iterations: 200 },
+                },
+                interaction: {
+                    hover: true,
+                    tooltipDelay: 200,
+                    navigationButtons: true,
+                    keyboard: true,
+                },
+                edges: {
+                    smooth: { type: 'continuous' },
+                },
+                nodes: {
+                    borderWidth: 2,
+                },
+                layout: {
+                    improvedLayout: true,
+                },
+            };
+
+            network = new vis.Network(container, data_vis, options);
+
+            network.on('click', function(params) {
+                if (params.nodes.length) {
+                    var nodeId = params.nodes[0];
+                    var nodeData = nodes.get(nodeId);
+                    showNodeDetails(nodeData);
+                } else {
+                    showNodeDetails(null);
+                }
+            });
+
+            // Build service filter buttons
+            var filterContainer = document.getElementById('service-filters');
+            data.services.forEach(function(svc) {
+                var btn = document.createElement('button');
+                btn.className = 'text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400 hover:bg-gray-700 transition-colors';
+                btn.textContent = svc;
+                btn.dataset.service = svc;
+                btn.onclick = function() { toggleServiceFilter(svc, btn); };
+                filterContainer.appendChild(btn);
+            });
+
+            lucide.createIcons();
+        });
+
+    function showNodeDetails(nodeData) {
+        var el = document.getElementById('node-details');
+        if (!nodeData) {
+            el.innerHTML = '<p class="text-gray-500">Click a host or service node for details.</p>';
+            return;
+        }
+
+        var hostData = nodeData.hostData;
+        if (hostData) {
+            var html = '<div class="space-y-1">' +
+                '<p class="text-indigo-300 font-semibold">' + escapeHtml(hostData.id) + '</p>' +
+                '<p><span class="text-gray-400">OS:</span> ' + escapeHtml(hostData.os) + '</p>' +
+                '<p><span class="text-gray-400">Ports:</span> ' + hostData.port_count + '</p>';
+            if (hostData.ports.length) {
+                html += '<table class="w-full text-xs mt-1">' +
+                    '<tr class="text-gray-500"><th class="text-left">Port</th><th class="text-left">Service</th><th class="text-left">Detail</th></tr>';
+                hostData.ports.forEach(function(p) {
+                    var c = p.extra ? escapeHtml(p.extra) : '';
+                    html += '<tr class="border-b border-gray-800"><td class="py-0.5">' + p.port + '/' + p.protocol +
+                        '</td><td>' + escapeHtml(p.service || '-') + '</td><td class="text-gray-500">' + c + '</td></tr>';
+                });
+                html += '</table>';
+            }
+            if (hostData.vulns && hostData.vulns.length) {
+                html += '<div class="mt-2"><span class="text-red-400 text-xs">&#x26A0; Vulnerabilities:</span>';
+                hostData.vulns.forEach(function(v) {
+                    html += '<div class="text-xs text-red-300 mt-0.5">' + escapeHtml(v.script) + '</div>';
+                });
+                html += '</div>';
+            }
+            html += '</div>';
+            el.innerHTML = html;
+        } else {
+            var svcId = nodeData.id.replace('svc:', '');
+            el.innerHTML = '<p class="text-yellow-300 font-semibold">Service: ' + escapeHtml(svcId) + '</p>' +
+                '<p class="text-gray-500 text-xs mt-1">Connected hosts are highlighted.</p>';
+        }
+    }
+
+    function toggleServiceFilter(svc, btn) {
+        var isActive = btn.classList.contains('bg-indigo-600');
+        btn.classList.toggle('bg-indigo-600');
+        btn.classList.toggle('text-white');
+        btn.classList.toggle('bg-gray-800');
+        btn.classList.toggle('text-gray-400');
+
+        // Show/hide edges for this service
+        var svcNodeId = 'svc:' + svc;
+        edges.forEach(function(edge) {
+            if (edge.to === svcNodeId || edge.from === svcNodeId) {
+                if (isActive) {
+                    edges.update({ id: edge.id, hidden: true });
+                } else {
+                    edges.update({ id: edge.id, hidden: false });
+                }
+            }
+        });
+        // Toggle service node visibility
+        if (isActive) {
+            nodes.update({ id: svcNodeId, hidden: true });
+        } else {
+            nodes.update({ id: svcNodeId, hidden: false });
+        }
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    window.runTopoScan = function() {
+        var target = document.getElementById('scan-target').value.trim();
+        var subcommand = document.getElementById('scan-type').value;
+        var output = document.getElementById('scan-output-bar');
+        var btn = document.getElementById('scan-btn');
+        if (!target) { alert('Enter a target'); return; }
+        btn.disabled = true; btn.textContent = 'Scanning...';
+        output.classList.remove('hidden');
+        output.textContent = 'Running nmap ' + subcommand + ' on ' + target + '...\n';
+        fetch('/api/case/{{ case.case_id }}/scan/nmap', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({subcommand: subcommand, target: target})
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            output.textContent += (data.output || data.error || 'No output') + '\n';
+            if (data.evidence_count !== undefined) output.textContent += '\nEvidence files: ' + data.evidence_count;
+            output.scrollTop = output.scrollHeight;
+            btn.disabled = false; btn.textContent = 'Scan';
+            // Re-fetch topology after scan
+            fetch('/api/case/{{ case.case_id }}/topology')
+                .then(function(r) { return r.json(); })
+                .then(function(newData) {
+                    if (newData.hosts && newData.hosts.length > 0) {
+                        topologyData = newData;
+                        buildGraph(newData);
+                    }
+                });
+        })
+        .catch(function(e) {
+            output.textContent += 'Error: ' + e.message;
+            btn.disabled = false; btn.textContent = 'Scan';
+        });
+    };
+})();
+</script>
+{% endblock %}

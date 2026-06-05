@@ -1,0 +1,222 @@
+# v2 runbook — GCP cloud assessment
+name: "GCP Cloud Assessment"
+description: "Enumerate GCP resources: IAM policies, Cloud Storage buckets, Compute Engine instances, Cloud Functions, service accounts"
+version: "2.0"
+
+vars:
+  gcp_project: ""
+  gcp_zone: "us-central1-a"
+  gcp_sa: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "GCP assessment — project:{gcp_project} zone:{gcp_zone} (case: {case_id})"
+
+  # Phase 1: Project & IAM
+  - id: iam_enum
+    name: "Project & IAM enumeration"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: gcp_proj
+        name: "Project metadata"
+        tool: gcloud
+        args: ["projects", "describe", "{gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_project.json"]
+        timeout: 15
+        artifacts: ["{case_dir}/gcp_project.json"]
+
+      - id: gcp_iam
+        name: "IAM policies"
+        tool: gcloud
+        args: ["projects", "get-iam-policy", "{gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_iam_policy.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/gcp_iam_policy.json"]
+
+      - id: gcp_iam_roles
+        name: "Custom IAM roles"
+        tool: gcloud
+        args: ["iam", "roles", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_custom_roles.json"]
+        timeout: 30
+
+      - id: gcp_sa_list
+        name: "Service accounts"
+        tool: gcloud
+        args: ["iam", "service-accounts", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_service_accounts.json"]
+        timeout: 30
+
+      - id: gcp_sa_keys
+        name: "Service account keys"
+        tool: gcloud
+        args: ["iam", "service-accounts", "keys", "list",
+               "--iam-account={gcp_sa}",
+               "--managed-by=user",
+               "--format=json",
+               "-o", "{case_dir}/gcp_sa_keys.json"]
+        timeout: 30
+
+  # Phase 2: Cloud Storage
+  - id: storage_enum
+    name: "Cloud Storage enumeration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: gcp_storage_list
+        name: "List buckets"
+        tool: gsutil
+        args: ["ls",
+               "-p", "{gcp_project}",
+               "-o", "{case_dir}/gcp_buckets.txt"]
+        timeout: 30
+
+      - id: gcp_storage_iam
+        name: "Bucket IAM policies"
+        tool: python3
+        args: ["-c",
+               "\"import subprocess; buckets=open('{case_dir}/gcp_buckets.txt').read().split(); [subprocess.run(['gsutil','-p','{gcp_project}','iam','get',b,'>',f'{{project_dir}}/gcp_bucket_iam_{i}.json'],shell=True) for i,b in enumerate(buckets)]\"",
+               "-o", "{case_dir}/gcp_bucket_iam_report.txt"]
+        timeout: 120
+
+      - id: gcp_storage_anon
+        name: "Check public buckets"
+        tool: gsutil
+        args: ["ls", "gs://*",
+               "-o", "{case_dir}/gcp_all_buckets.txt"]
+        timeout: 60
+
+  # Phase 3: Compute Engine
+  - id: compute_enum
+    name: "Compute Engine enumeration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: gcp_instances
+        name: "List instances"
+        tool: gcloud
+        args: ["compute", "instances", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_instances.json"]
+        timeout: 60
+
+      - id: gcp_firewall
+        name: "Firewall rules"
+        tool: gcloud
+        args: ["compute", "firewall-rules", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_firewall_rules.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/gcp_firewall_rules.json"]
+
+      - id: gcp_networks
+        name: "VPC networks"
+        tool: gcloud
+        args: ["compute", "networks", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_networks.json"]
+        timeout: 30
+
+      - id: gcp_disks
+        name: "List persistent disks"
+        tool: gcloud
+        args: ["compute", "disks", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_disks.json"]
+        timeout: 30
+
+      - id: gcp_snapshots
+        name: "List snapshots"
+        tool: gcloud
+        args: ["compute", "snapshots", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_snapshots.json"]
+        timeout: 30
+
+  # Phase 4: Cloud Functions
+  - id: functions_enum
+    name: "Cloud Functions enumeration"
+    type: parallel
+    steps:
+      - id: gcp_functions
+        name: "List Cloud Functions"
+        tool: gcloud
+        args: ["functions", "list",
+               "--project={gcp_project}",
+               "--region=us-central1",
+               "--format=json",
+               "-o", "{case_dir}/gcp_functions.json"]
+        timeout: 30
+
+      - id: gcp_func_all
+        name: "List all regions"
+        tool: gcloud
+        args: ["functions", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_functions_all.json"]
+        timeout: 60
+
+  # Phase 5: KMS & Secrets
+  - id: secrets_enum
+    name: "KMS & Secrets Manager"
+    type: parallel
+    steps:
+      - id: gcp_kms
+        name: "KMS key rings"
+        tool: gcloud
+        args: ["kms", "keyrings", "list",
+               "--project={gcp_project}",
+               "--location=global",
+               "--format=json",
+               "-o", "{case_dir}/gcp_kms_keyrings.json"]
+        timeout: 30
+
+      - id: gcp_secrets
+        name: "Secret Manager secrets"
+        tool: gcloud
+        args: ["secrets", "list",
+               "--project={gcp_project}",
+               "--format=json",
+               "-o", "{case_dir}/gcp_secrets.json"]
+        timeout: 30
+
+  # Phase 6: Report
+  - id: report
+    name: "Generate GCP assessment report"
+    type: report
+    format: markdown
+    title: "GCP Cloud Assessment"
+    output: "{case_dir}/gcp-assessment-report.md"
+    sections:
+      - heading: "Project"
+        body: "- Project: {gcp_project}\n- Zone: {gcp_zone}"
+      - heading: "IAM"
+        body: "- Project IAM: {case_dir}/gcp_iam_policy.json\n- Service accounts: {case_dir}/gcp_service_accounts.json\n- SA keys: {case_dir}/gcp_sa_keys.json"
+      - heading: "Storage"
+        body: "- Buckets: {case_dir}/gcp_buckets.txt\n- Bucket IAM: {case_dir}/gcp_bucket_iam_report.txt"
+      - heading: "Compute"
+        body: "- Instances: {case_dir}/gcp_instances.json\n- Firewall rules: {case_dir}/gcp_firewall_rules.json\n- Snapshots: {case_dir}/gcp_snapshots.json"
+      - heading: "Functions"
+        body: "- Functions: {case_dir}/gcp_functions.json"
+      - heading: "Secrets"
+        body: "- KMS key rings: {case_dir}/gcp_kms_keyrings.json\n- Secret Manager: {case_dir}/gcp_secrets.json"
+
+postflight:
+  - id: done
+    type: notify
+    level: info
+    message: "GCP assessment complete — {case_dir}"

@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+{% block title %}Runbook — {{ case.case_id }}{% endblock %}
+{% block head %}
+<style>
+    .pb-step { transition: all 0.15s ease; }
+    .pb-step:hover { border-color: #6366f1; }
+    .pb-connector { width: 2px; height: 24px; background: #374151; margin: 0 auto; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-4">
+            <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
+            <h1 class="text-lg font-semibold flex items-center gap-2">
+                <i data-lucide="book-open" class="w-5 h-5 text-indigo-400"></i>
+                Runbook Editor — {{ case.case_id }}
+            </h1>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="addStep()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm transition-colors">
+                <i data-lucide="plus" class="w-3.5 h-3.5 inline"></i> Add Step
+            </button>
+        </div>
+    </div>
+
+    <!-- Launch Runbook -->
+    <div class="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4 mb-4">
+        <h2 class="text-sm font-semibold text-indigo-300 mb-3 flex items-center gap-1">
+            <i data-lucide="play" class="w-4 h-4"></i> Launch Runbook
+        </h2>
+        <div class="flex gap-3 items-end flex-wrap">
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Target</label>
+                <input id="pb-target" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-64" placeholder="target.com or IP" value="">
+            </div>
+            <button onclick="runRunbook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Run Runbook</button>
+            <div class="text-xs text-gray-500 flex items-center gap-2 ml-auto">
+                <span>Import from:</span>
+                <select id="import-runbook" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-300">
+                    <option value="">— Select system runbook —</option>
+                </select>
+                <button onclick="importRunbook()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Import</button>
+            </div>
+        </div>
+        <div id="rb-status" class="mt-2 text-xs hidden"></div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <!-- Step list -->
+        <div class="lg:col-span-2 space-y-0">
+            <div id="step-list" class="space-y-0">
+                <div class="text-gray-500 text-center py-12">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Step editor -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h2 class="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-1">
+                <i data-lucide="edit" class="w-4 h-4"></i> Step Editor
+            </h2>
+            <form id="step-form" class="space-y-3" onsubmit="return saveStep(event)">
+                <input type="hidden" id="edit-id" value="">
+                <div>
+                    <label class="text-xs text-gray-400 block mb-0.5">Name</label>
+                    <input id="step-name" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="e.g., Port Scan" required>
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400 block mb-0.5">Tool / Action</label>
+                    <input id="step-tool" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 font-mono" placeholder="nmap, nuclei, ssh, custom" required>
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400 block mb-0.5">Target / Args</label>
+                    <input id="step-target" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 font-mono" placeholder="--target 10.0.0.1 -p 80,443">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-xs text-gray-400 block mb-0.5">Timeout (s)</label>
+                        <input id="step-timeout" type="number" value="300" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-400 block mb-0.5">Retries</label>
+                        <input id="step-retries" type="number" value="0" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200">
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400 block mb-0.5">Description</label>
+                    <textarea id="step-desc" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200"></textarea>
+                </div>
+                <div class="flex gap-2">
+                    <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm flex-1 transition-colors">Save</button>
+                    <button type="button" onclick="cancelEdit()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm transition-colors">Cancel</button>
+                </div>
+            </form>
+            <hr class="border-gray-800 my-3">
+            <div class="text-xs text-gray-500">
+                <button onclick="exportRunbook()" class="text-indigo-400 hover:text-indigo-300">Export JSON</button>
+                <span class="mx-1">|</span>
+                <button onclick="importRunbook()" class="text-indigo-400 hover:text-indigo-300">Import JSON</button>
+            </div>
+            <textarea id="runbook-import" rows="4" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-400 mt-2 hidden" placeholder="Paste JSON here..."></textarea>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+    var steps = [];
+    var editIndex = -1;
+
+    loadSteps();
+    loadRunbooks();
+
+    function loadRunbooks() {
+        fetch('/api/runbooks/list')
+            .then(function(r) { return r.json(); })
+            .then(function(list) {
+                var sel = document.getElementById('import-runbook');
+                sel.innerHTML = '<option value="">— Select system runbook —</option>';
+                list.forEach(function(rb) {
+                    var opt = document.createElement('option');
+                    opt.value = rb.filename;
+                    opt.textContent = rb.name + ' (' + rb.step_count + ' steps)';
+                    sel.appendChild(opt);
+                });
+            })
+            .catch(function() {});
+    }
+
+    window.runRunbook = function() {
+        var target = document.getElementById('pb-target').value.trim();
+        if (!target) { alert('Enter a target'); return; }
+        if (!steps.length) { alert('Runbook has no steps. Add some first.'); return; }
+
+        var btn = document.querySelector('button[onclick="runRunbook()"]');
+        btn.disabled = true;
+        btn.textContent = 'Running...';
+        var status = document.getElementById('rb-status');
+        status.className = 'mt-2 text-xs text-yellow-400';
+        status.textContent = 'Launching runbook...';
+        status.classList.remove('hidden');
+
+        fetch('/api/case/{{ case.case_id }}/runbook/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({target: target}),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'ok') {
+                status.textContent = 'Launched! Job: ' + data.job_id + '. Results will appear in case runbook log.';
+                status.className = 'mt-2 text-xs text-green-400';
+                btn.textContent = 'Running...';
+                pollJob(data.job_id, status, btn);
+            } else {
+                status.textContent = 'Error: ' + (data.error || 'Unknown');
+                status.className = 'mt-2 text-xs text-red-400';
+                btn.disabled = false;
+                btn.textContent = 'Run Runbook';
+            }
+        })
+        .catch(function(err) {
+            status.textContent = 'Error: ' + err.message;
+            status.className = 'mt-2 text-xs text-red-400';
+            btn.disabled = false;
+            btn.textContent = 'Run Runbook';
+        });
+    };
+
+    function pollJob(jobId, statusEl, btn) {
+        var interval = setInterval(function() {
+            fetch('/api/jobs/' + encodeURIComponent(jobId))
+                .then(function(r) { return r.json(); })
+                .then(function(job) {
+                    if (job.status === 'completed') {
+                        clearInterval(interval);
+                        statusEl.textContent = 'Runbook completed! ' + (job.result ? job.result.step_count + ' steps executed.' : '');
+                        statusEl.className = 'mt-2 text-xs text-green-400';
+                        btn.disabled = false;
+                        btn.textContent = 'Run Runbook';
+                    } else if (job.status === 'failed') {
+                        clearInterval(interval);
+                        statusEl.textContent = 'Runbook failed: ' + (job.error || 'Unknown error');
+                        statusEl.className = 'mt-2 text-xs text-red-400';
+                        btn.disabled = false;
+                        btn.textContent = 'Run Runbook';
+                    } else if (job.status === 'running') {
+                        var msg = job.message || 'Running...';
+                        statusEl.textContent = 'Step ' + (job.current_step || '?') + '/' + (job.total_steps || '?') + ': ' + msg;
+                    }
+                })
+                .catch(function() {});
+        }, 2000);
+    }
+
+    function loadSteps() {
+        fetch('/api/case/{{ case.case_id }}/runbook')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                steps = data.steps || [];
+                renderSteps();
+            });
+    }
+
+    function renderSteps() {
+        var container = document.getElementById('step-list');
+        if (!steps.length) {
+            container.innerHTML = '<div class="text-gray-500 text-center py-12"><i data-lucide="list" class="w-6 h-6 mx-auto mb-2"></i><p>No runbook steps yet</p><p class="text-xs mt-1">Click "Add Step" to begin</p></div>';
+            lucide.createIcons();
+            return;
+        }
+        var html = '';
+        steps.forEach(function(s, i) {
+            html += '<div class="pb-step bg-gray-900 border border-gray-800 rounded-lg p-3">' +
+                (i > 0 ? '<div class="pb-connector -mt-3 mb-1"></div>' : '') +
+                '<div class="flex items-start justify-between">' +
+                '<div class="flex-1 min-w-0">' +
+                '<div class="flex items-center gap-2">' +
+                '<span class="text-xs text-gray-500 font-mono">#' + (i + 1) + '</span>' +
+                '<span class="text-sm font-medium text-gray-200 truncate">' + escapeHtml(s.name || 'Unnamed') + '</span>' +
+                '<span class="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 font-mono">' + escapeHtml(s.tool || s.action || '?') + '</span>' +
+                '</div>' +
+                (s.target ? '<div class="text-xs text-gray-500 font-mono mt-0.5">' + escapeHtml(s.target) + '</div>' : '') +
+                (s.description ? '<div class="text-xs text-gray-500 mt-0.5">' + escapeHtml(s.description) + '</div>' : '') +
+                '<div class="text-[10px] text-gray-600 mt-0.5">timeout: ' + (s.timeout || 300) + 's | retries: ' + (s.retries || 0) + '</div>' +
+                '</div>' +
+                '<div class="flex gap-1 shrink-0 ml-2">' +
+                '<button onclick="editStep(' + i + ')" class="text-indigo-400 hover:text-indigo-300 text-xs">edit</button>' +
+                '<button onclick="deleteStep(' + i + ')" class="text-red-400 hover:text-red-300 text-xs">del</button>' +
+                '<button onclick="moveStep(' + i + ', -1)" class="text-gray-500 hover:text-gray-300 text-xs">&uarr;</button>' +
+                '<button onclick="moveStep(' + i + ', 1)" class="text-gray-500 hover:text-gray-300 text-xs">&darr;</button>' +
+                '</div></div></div>';
+        });
+        container.innerHTML = html;
+        lucide.createIcons();
+    }
+
+    window.addStep = function() {
+        editIndex = -1;
+        resetForm();
+        document.getElementById('step-name').focus();
+    };
+
+    window.editStep = function(i) {
+        editIndex = i;
+        var s = steps[i];
+        document.getElementById('edit-id').value = i;
+        document.getElementById('step-name').value = s.name || '';
+        document.getElementById('step-tool').value = s.tool || s.action || '';
+        document.getElementById('step-target').value = s.target || '';
+        document.getElementById('step-timeout').value = s.timeout || 300;
+        document.getElementById('step-retries').value = s.retries || 0;
+        document.getElementById('step-desc').value = s.description || '';
+        document.getElementById('step-name').focus();
+    };
+
+    window.saveStep = function(e) {
+        e.preventDefault();
+        var step = {
+            name: document.getElementById('step-name').value.trim(),
+            tool: document.getElementById('step-tool').value.trim(),
+            target: document.getElementById('step-target').value.trim(),
+            timeout: parseInt(document.getElementById('step-timeout').value) || 300,
+            retries: parseInt(document.getElementById('step-retries').value) || 0,
+            description: document.getElementById('step-desc').value.trim(),
+        };
+        if (!step.name || !step.tool) return false;
+        if (editIndex >= 0) {
+            steps[editIndex] = step;
+        } else {
+            steps.push(step);
+        }
+        savePlaybook();
+        cancelEdit();
+        return false;
+    };
+
+    window.deleteStep = function(i) {
+        if (!confirm('Delete step "' + (steps[i].name || '') + '"?')) return;
+        steps.splice(i, 1);
+        savePlaybook();
+    };
+
+    window.moveStep = function(i, dir) {
+        var j = i + dir;
+        if (j < 0 || j >= steps.length) return;
+        var tmp = steps[i];
+        steps[i] = steps[j];
+        steps[j] = tmp;
+        savePlaybook();
+    };
+
+    function savePlaybook() {
+        fetch('/api/case/{{ case.case_id }}/runbook', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({steps: steps}),
+        }).then(function(r) { return r.json(); }).then(function() {
+            renderSteps();
+        });
+    }
+
+    function cancelEdit() {
+        editIndex = -1;
+        resetForm();
+    }
+
+    function resetForm() {
+        document.getElementById('edit-id').value = '';
+        document.getElementById('step-name').value = '';
+        document.getElementById('step-tool').value = '';
+        document.getElementById('step-target').value = '';
+        document.getElementById('step-timeout').value = '300';
+        document.getElementById('step-retries').value = '0';
+        document.getElementById('step-desc').value = '';
+    }
+
+    window.exportRunbook = function() {
+        var ta = document.getElementById('runbook-import');
+        ta.classList.remove('hidden');
+        ta.value = JSON.stringify({steps: steps}, null, 2);
+        ta.select();
+    };
+
+    window.importRunbook = function() {
+        var sel = document.getElementById('import-runbook');
+        var filename = sel.value;
+        if (!filename) {
+            var ta = document.getElementById('runbook-import');
+            ta.classList.remove('hidden');
+            try {
+                var data = JSON.parse(ta.value);
+                if (data.steps) { steps = data.steps; savePlaybook(); }
+            } catch(e) { alert('Invalid JSON: ' + e.message); }
+        } else {
+            var btn = document.querySelector('button[onclick="importRunbook()"]');
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+            fetch('/api/runbook/' + encodeURIComponent(filename) + '/steps')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.steps && data.steps.length) {
+                        if (!confirm('Import ' + data.steps.length + ' steps from "' + (data.name || filename) + '"? This will replace your current runbook.')) {
+                            btn.disabled = false;
+                            btn.textContent = 'Import';
+                            return;
+                        }
+                        steps = data.steps;
+                        savePlaybook();
+                    } else {
+                        alert('No importable steps found in this runbook');
+                    }
+                    btn.disabled = false;
+                    btn.textContent = 'Import';
+                })
+                .catch(function(err) {
+                    alert('Error: ' + err.message);
+                    btn.disabled = false;
+                    btn.textContent = 'Import';
+                });
+        }
+    };
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    window.cancelEdit = cancelEdit;
+})();
+</script>
+{% endblock %}

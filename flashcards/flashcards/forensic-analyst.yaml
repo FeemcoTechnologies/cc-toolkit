@@ -1,0 +1,603 @@
+title: "Forensic Analyst"
+description: "Disk, memory, and network forensics — tools, techniques, and procedures"
+cards:
+  - question: 'What command acquires a disk image with DD and compresses with gzip?'
+    answer: 'dd if=/dev/sda bs=4M | gzip > image.dd.gz — use bs=4M for performance, verify with sha256sum afterward.'
+
+  - question: 'How does NTFS differ from FAT32 in terms of file size limits and journaling?'
+    answer: 'NTFS supports files larger than 4GB and uses a change journal ($UsnJrnl) for metadata tracking, whereas FAT32 is limited to 4GB per file and has no journaling.'
+
+  - question: 'What is the MFT and why is it critical in NTFS forensics?'
+    answer: 'The Master File Table (MFT) contains metadata records for every file and folder on an NTFS volume. Each record is 1024 bytes and holds timestamps, data runs, and file attributes.'
+
+  - question: 'How can you recover a deleted file from an NTFS volume using the MFT?'
+    answer: 'If the file record is still in the MFT and the clusters haven''t been overwritten, tools like `icat` from Sleuth Kit can read the data runs. The file may also appear in $Recycle.Bin with a renamed entry.'
+
+  - question: 'What is file carving and when would you use it?'
+    answer: 'File carving extracts files from raw data using header/footer signatures without relying on filesystem metadata. It is used when the filesystem is damaged or formatted.'
+
+  - question: 'Name three tools that perform file carving.'
+    answer: 'Foremost, Scalpel, and PhotoRec. Each uses signature-based recovery to reconstruct files from unallocated space.'
+
+  - question: 'What is the difference between MBR and GPT partitioning schemes?'
+    answer: 'MBR uses a 32-bit entry table supporting up to 2TB disks and 4 primary partitions. GPT uses 64-bit entries, supports larger disks, and stores multiple redundant partition table headers.'
+
+  - question: 'What is the `fsstat` command in Sleuth Kit used for?'
+    answer: 'fsstat displays filesystem details like type, block size, inode counts, and mount times from a disk image without mounting it.'
+
+  - question: 'How do you locate deleted inodes in an EXT4 filesystem?'
+    answer: 'Use `ils` or `fls -d` from Sleuth Kit to list deleted inodes. Extended attributes and journal replay may recover metadata for recently deleted files.'
+
+  - question: 'What is purpose of the $LogFile in NTFS?'
+    answer: '$LogFile records transaction metadata for filesystem operations, enabling crash recovery and providing a forensic log of recent file changes.'
+
+  - question: 'How would you verify that a forensic image is an exact bit-for-bit copy?'
+    answer: 'Compute SHA-256 or MD5 hashes of both the source and destination at acquisition time using a tool like `sha256sum` or FTK Imager''s verify function, and compare them.'
+
+  - question: 'Which Volatility plugin lists active processes from a memory dump?'
+    answer: '`windows.pslist` (Volatility 3) or `pslist` (Volatility 2) enumerates processes by walking the EPROCESS doubly linked list.'
+
+  - question: 'How does `psscan` differ from `pslist` in Volatility?'
+    answer: '`psscan` uses pool-tag scanning to find EPROCESS structures in memory, which can detect hidden or unlinked processes that `pslist` misses.'
+
+  - question: 'What does Volatility''s `malfind` plugin detect?'
+    answer: '`malfind` scans for injected code by identifying memory pages with PAGE_EXECUTE_READWRITE protections that are not backed by a known mapped file.'
+
+  - question: 'How would you extract a process executable from a memory dump?'
+    answer: 'Use `procdump` (Volatility 2) or `windows.dumpfiles.DumpFiles` with the process PID to dump the executable image from memory.'
+
+  - question: 'How do you identify a rootkit using Volatility?'
+    answer: 'Run `modscan` or `driverirp` to detect hidden kernel drivers. Combine with `ssdt` to verify SSDT hooks and `apihooks` for inline API hooks.'
+
+  - question: 'What is the Windows Registry and where are the main hive files stored?'
+    answer: 'The Registry is a hierarchical database of system and application settings. The main hives — SAM, SYSTEM, SOFTWARE, SECURITY, and DEFAULT — are in `C:\Windows\System32\config\`.'
+
+  - question: 'How do you extract password hashes from a SAM hive?'
+    answer: 'Use `samdump2` or `secretsdump.py` (Impacket) with the SYSTEM hive to decrypt the hashes stored in the SAM hive''s hashed password field.'
+
+  - question: 'What forensic artifact tracks recently executed programs on Windows?'
+    answer: 'The `UserAssist` key under `NTUSER.DAT\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist` records application executions with ROT-13 encoded paths and run counts.'
+
+  - question: 'Where does Windows store jump list data and what can it reveal?'
+    answer: 'Jump lists are in `%APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations` and show recently accessed files per application, with timestamps of opens.'
+
+  - question: 'How does the USN Journal help reconstruct file activity?'
+    answer: '$UsnJrnl (Update Sequence Number Journal) records every file change — create, delete, modify, rename — with a timestamp and reason code. Use `usnparse` or `MFTECmd` to extract entries.'
+
+  - question: 'What can Shellbags reveal about user activity?'
+    answer: 'Shellbags store window view settings and folder expansion state. They can prove a user browsed specific folders even if the files were later deleted.'
+
+  - question: 'What is the Shimcache and what does it record?'
+    answer: 'Shimcache (AppCompatCache) in `SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache` lists recently executed executables with last-modified timestamps.'
+
+  - question: 'What is the purpose of Amcache.hve in forensic analysis?'
+    answer: 'Amcache.hve tracks program execution, file paths, and installation metadata for executables. It is more comprehensive than Prefetch and can identify removed applications.'
+
+  - question: 'How do you recover deleted Registry keys?'
+    answer: 'Use tools like `regslack` or `Registry Explorer` to scan unallocated space within hive files. Deleted keys may persist until their storage bins are overwritten.'
+
+  - question: 'Which Registry key stores mounted USB device information?'
+    answer: '`SYSTEM\CurrentControlSet\Enum\USBSTOR` lists USB devices by serial number, and `SYSTEM\MountedDevices` maps drive letters to volume GUIDs.'
+
+  - question: 'What MRU lists exist in the Registry for tracking file access?'
+    answer: 'MRU lists under `Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU` track command dialog entries, and `ComDlg32\OpenSavePidlMRU` tracks file open/save dialogs.'
+
+  - question: 'What does Volatility''s `linux.bash` plugin retrieve?'
+    answer: 'It recovers the bash history for each running bash process from memory, showing commands the user executed during the session.'
+
+  - question: 'How can you detect a hidden process in a Linux memory dump?'
+    answer: 'Run `linux.psaux` and compare with `linux.pstree` to find inconsistencies. Use `linux.check_afinfo` to detect hidden kernel modules.'
+
+  - question: 'What information does `linux.netstat` in Volatility provide?'
+    answer: 'It lists active network connections, listening ports, and associated processes from kernel socket structures.'
+
+  - question: 'What is the `dmesg` log useful for in forensic analysis?'
+    answer: '`dmesg` contains kernel ring buffer messages including driver loads, hardware changes, and USB device insertions — useful for detecting device connections.'
+
+  - question: 'What artifacts in `/var/log/auth.log` are most relevant during incident response?'
+    answer: 'SSH login successes/failures, sudo elevation commands, user creation events, and PAM module messages — all with precise timestamps.'
+
+  - question: 'How does `.bash_history` help reconstruct user actions?'
+    answer: '`.bash_history` stores command-line inputs by user. However, it may be truncated, rotated, or deliberately wiped, and only captures interactive shell commands.'
+
+  - question: 'What Linux file tracks user login sessions and their duration?'
+    answer: '`/var/log/wtmp` records every login/logout event with user, terminal, and timestamp. Use the `last` command to read it.'
+
+  - question: 'How would you locate recently modified files on a Linux system during triage?'
+    answer: 'Run `find / -mmin -60 -type f` to find files modified in the last 60 minutes, or `ls -lt /home/*` for user-accessed files.'
+
+  - question: 'How do you reconstruct a TCP stream in Wireshark?'
+    answer: 'Right-click a TCP packet and select ''Follow > TCP Stream''. This reassembles the full application-layer conversation from SYN to FIN.'
+
+  - question: 'What Wireshark filter shows all HTTP GET requests?'
+    answer: '`http.request.method == '
+
+  - question: 'How can you detect a data exfiltration attempt in a PCAP?'
+    answer: 'Look for large outbound transfers on uncommon ports, DNS queries with encoded subdomains, HTTP POSTs to unusual destinations, or ICMP with oversized payloads.'
+
+  - question: 'What is the purpose of a TLS handshake in network forensics?'
+    answer: 'The TLS handshake negotiates encryption parameters and exchanges certificates. Even if the payload is encrypted, examining the ClientHello (SNI, cipher suites) reveals the target domain.'
+
+  - question: 'What Wireshark filter detects ARP spoofing?'
+    answer: '`arp.duplicate-address-detected` or manually compare `arp.src.hw_mac` against the vendor OUI to detect mismatched MAC-to-IP mappings.'
+
+  - question: 'How would you identify C2 beaconing in network traffic?'
+    answer: 'Beaconing appears as periodic HTTP/HTTPS requests at fixed intervals with consistent packet sizes and payload patterns. Use Wireshark IO graphs or Zeek to visualize periodicity.'
+
+  - question: 'What is the difference between a logical and a physical mobile acquisition?'
+    answer: 'Logical acquisition extracts filesystem-level data (SMS, contacts, call logs) via backup APIs. Physical acquisition reads raw flash memory, recovering deleted data and partitions.'
+
+  - question: 'Which iOS acquisition method requires the device to be jailbroken and why?'
+    answer: 'Physical acquisition on iOS requires jailbreaking to bypass sandbox restrictions and gain raw block-level access to the NAND flash.'
+
+  - question: 'How does Cellebrite UFED typically acquire data from a locked iOS device?'
+    answer: 'UFED uses a combination of bootloader exploits (checkm8 for older devices), brute-force via Advanced Logical Acquisition (BFU), or agent-based extraction for passcode-bypassed devices.'
+
+  - question: 'What is the significance of the iOS `knowledgeC` database?'
+    answer: '`knowledgeC.db` in `/root/Library/CoreDuet/` stores application usage, battery charging events, and device activity — useful for timeline reconstruction.'
+
+  - question: 'How do you extract deleted SQLite records from a mobile device?'
+    answer: 'Carve unallocated space within the SQLite WAL and journal files using tools like `sqlite-carver` or autopsy. Deleted rows often remain until the database pages are reclaimed.'
+
+  - question: 'What information does the iOS `manifest.db` contain?'
+    answer: '`manifest.db` is a SQLite database in iTunes backups that maps each file to its domain, path, and SHA-1 hash, allowing reconstruction of the iOS filesystem.'
+
+  - question: 'What does FTK Imager do during the ''Verify Images'' step?'
+    answer: 'FTK Imager recalculates the hash of each segment file and compares it to the original acquisition hash stored in the image metadata.'
+
+  - question: 'How do you create a forensic timeline using Plaso (log2timeline)?'
+    answer: 'Run `log2timeline.py timeline.plaso /path/to/image` to parse artifacts into a Plaso storage file, then `psort.py timeline.plaso -o l2tcsv > timeline.csv` for analysis.'
+
+  - question: 'What is a super timeline and how is it generated?'
+    answer: 'A super timeline combines multiple timestamped artifacts (Registry, logs, filesystem metadata, Prefetch) into a single sorted CSV. Plaso is the standard tool for generating one.'
+
+  - question: 'How can timeline analysis help identify the initial compromise vector?'
+    answer: 'Correlating network connection logs with file downloads, process creation events, and Registry modifications around the same timestamp reveals the attacker''s entry point.'
+
+  - question: 'How does the Sleuth Kit tool `mactime` work?'
+    answer: '`mactime` reads a bodyfile and outputs a sorted timeline of every MAC time (modify, access, change) across the filesystem.'
+
+  - question: 'What is the Sleuth Kit tool `fls` used for?'
+    answer: '`fls` lists filesystem entries from a disk image, including deleted files, by parsing MFT entries or EXT4 inodes depending on the filesystem type.'
+
+  - question: 'How do you extract a specific file from an image using Sleuth Kit?'
+    answer: 'First find the inode with `fls`, then use `icat image.dd inode_number > output.file` to extract that file''s content.'
+
+  - question: 'What does `istat` in Sleuth Kit show about a file?'
+    answer: '`istat` displays detailed metadata for a given inode including timestamps, permissions, flags, and data block addresses.'
+
+  - question: 'How would you search for a keyword across an entire disk image in Autopsy?'
+    answer: 'Use the Keyword Search module or create an index with Apache Solr. Autopsy supports regex and substring matching against extracted text and unallocated space.'
+
+  - question: 'What is X-Ways Forensics and how does it differ from FTK?'
+    answer: 'X-Ways is a fast, disk-editing forensic platform with direct NTFS parsing and file carving. It is single-user with a steeper learning curve, whereas FTK has a more polished workflow.'
+
+  - question: 'What is EnCase''s primary evidence file format?'
+    answer: 'EnCase uses the Expert Witness Format (EWF), which segments images into .E01, .E02, etc. files with embedded CRC32 hashes for integrity verification.'
+
+  - question: 'How do you mount an E01 image as a read-only drive on Linux?'
+    answer: 'Use `ewfmount image.E01 /mnt/ewf` to expose the raw image via a virtual device, then `mount -o loop,ro /mnt/ewf/ewf1 /mnt/case` to mount the filesystem.'
+
+  - question: 'When would you perform a live acquisition instead of a dead acquisition?'
+    answer: 'Live acquisition is necessary when the system cannot be shut down (server, encrypted drive, critical infrastructure). It captures running processes, network connections, and memory.'
+
+  - question: 'What is the Linux `dd` command equivalent for imaging a drive with status?'
+    answer: '`dd if=/dev/sda of=image.dd bs=4M status=progress conv=noerror,sync` — `noerror` continues on read errors, `sync` pads bad sectors with zeros.'
+
+  - question: 'How does FTK Imager''s ''Physical Drive'' acquisition differ from ''Logical Drive''?'
+    answer: 'Physical Drive images the entire device including unallocated space, slack, and partition gaps. Logical Drive only captures allocated files and folders.'
+
+  - question: 'How do you verify a forensic image with `sha256sum`?'
+    answer: 'Run `sha256sum image.dd` and compare the output hash to the original acquired hash recorded in the chain-of-custody documentation.'
+
+  - question: 'What is the NIST National Software Reference Library (NSRL) used for?'
+    answer: 'NSRL is a hash set of known software files. Examiners use it to filter out known, benign OS and application files and focus on unknown or user-created files.'
+
+  - question: 'How would you generate a hash set of all files in a mounted image?'
+    answer: 'Use `find /mnt/image -type f -exec sha256sum {} + > file_hashes.txt` to produce a list. Autopsy and FTK also have built-in hash set generation.'
+
+  - question: 'What is the chain of custody and why is it important?'
+    answer: 'Chain of custody is a documented chronological record of evidence handling — who collected, transferred, analyzed, and stored it. It ensures admissibility in court.'
+
+  - question: 'What fields should every chain-of-custody entry contain?'
+    answer: 'Date/time, evidence identifier, purpose of transfer, from/to names and locations, and signatures of both parties.'
+
+  - question: 'What is the correct procedure for transporting digital evidence?'
+    answer: 'Transport in a locked, padded container Faraday bag (if wireless devices) with temperature monitoring. Maintain a hand-carried log and avoid X-ray scanners for magnetic media.'
+
+  - question: 'How do you store forensic evidence long term?'
+    answer: 'Store in a locked, access-controlled evidence room. Hard drives in anti-static bags at 15-25°C. Optical media in jewel cases upright. Log all access.'
+
+  - question: 'What is the rule against hearsay as it applies to digital evidence?'
+    answer: 'Digital evidence is often considered hearsay because it is an out-of-court statement offered to prove the truth of the matter. It may require a business records exception or live testimony.'
+
+  - question: 'What is the difference between a search warrant and a subpoena in digital forensics?'
+    answer: 'A search warrant authorizes law enforcement to search and seize devices. A subpoena compels a person to produce evidence but does not authorize a search.'
+
+  - question: 'What is the ''best evidence rule'' and how does it apply to forensic images?'
+    answer: 'The best evidence rule requires the original evidence unless it is unavailable. A forensic bit-for-bit image is generally accepted as the best evidence when the original is preserved.'
+
+  - question: 'When can you seize a device without a warrant?'
+    answer: 'Exigent circumstances (risk of destruction or escape), consent, search incident to arrest, or border search authority. Always document the legal basis.'
+
+  - question: 'What consent requirements apply to employer-employee device searches?'
+    answer: 'Employers may search company-owned devices with clear written policies and employee acknowledgment. Personal devices may require separate consent or a warrant.'
+
+  - question: 'What is Stored Communications Act (SCA) and how does it affect forensic examiners?'
+    answer: 'The SCA restricts access to stored electronic communications (emails, messages). Examiners need a warrant for content under 180 days old or subscriber consent.'
+
+  - question: 'What qualifications must a forensic examiner establish before being accepted as an expert?'
+    answer: 'Certifications (GCFE, GCFA, CCE), years of experience, publications, training courses, and prior testimony history are presented during voir dire.'
+
+  - question: 'How should you prepare forensic exhibits for court presentation?'
+    answer: 'Create clear, annotated exhibits — timeline charts, screen captures of key artifacts, and a summary report. Avoid jargon. Each exhibit must have a unique identifier.'
+
+  - question: 'What is a forensic report and what sections should it include?'
+    answer: 'A forensic report documents examiner, case details, evidence items, acquisition methodology, tools used, findings, conclusions, and chain of custody. It should be objective and defensible.'
+
+  - question: 'How do you write a finding for file system timestamps that show evidence of tampering?'
+    answer: 'Describe the specific timestamps (MACE), state the tool used, and explain why they are inconsistent — e.g., ''Modify time predates creation time, indicating possible timestomping.'''
+
+  - question: 'What is a forensic methodology and why must you document it?'
+    answer: 'A forensic methodology describes the step-by-step tools and procedures used. Documentation allows peer review, reproduction, and defense against claims of error or bias.'
+
+  - question: 'How do you handle encrypted evidence that you cannot access?'
+    answer: 'Document the encryption method, search memory dumps for keys/passphrases, attempt known passwords, and explore legal compulsion (decryption orders). Never guess.'
+
+  - question: 'What steganography detection methods are commonly used?'
+    answer: 'Analyze LSB patterns in images, conduct statistical chi-square attacks, detect duplicate color palettes, and compare file size vs pixel data expectations.'
+
+  - question: 'How would you detect steganography in an audio file?'
+    answer: 'Use tools like WavSteg or Sonic Visualiser to examine spectrograms for hidden patterns, or check for out-of-band data appended after the audio stream.'
+
+  - question: 'How can you detect that a file has been hidden using steganography?'
+    answer: 'Use `stegexpose` or manual analysis comparing the file''s entropy distribution. High-entropy blocks in a low-entropy image suggest embedded data.'
+
+  - question: 'What is file signature analysis and why is it important?'
+    answer: 'File signature analysis checks a file''s magic bytes against its extension. A mismatch may indicate anti-forensics, data hiding, or a deliberately misnamed file.'
+
+  - question: 'What are the magic bytes for a JPEG file and a PNG file?'
+    answer: 'JPEG starts with `FF D8 FF` and ends with `FF D9`. PNG starts with `89 50 4E 47 0D 0A 1A 0A`.'
+
+  - question: 'How can you batch-check file signatures across an entire disk image?'
+    answer: 'Use `file` command on extracted files, or Autopsy''s File Type Identification module which compares headers against a known signature database.'
+
+  - question: 'What forensic artifact can identify timestomping on an NTFS volume?'
+    answer: 'The $MFT''s $FILE_NAME attribute timestamp often remains unchanged when only the $STANDARD_INFORMATION is modified. The tool `MFTEcmd` flags mismatches.'
+
+  - question: 'How would you detect log wiping on a Linux system?'
+    answer: 'Look for gaps in syslog sequence numbers, truncated log rotation, missing days in `/var/log/`, or `shred`/`wipe` commands in `.bash_history`.'
+
+  - question: 'What is the `shred` command and how does it affect forensic recovery?'
+    answer: '`shred` overwrites a file multiple times with random data before deleting it, making recovery via file carving or unallocated space analysis nearly impossible.'
+
+  - question: 'What is anti-forensics and give examples of common techniques?'
+    answer: 'Anti-forensics attempts to hinder analysis. Examples: timestomping, log deletion, encryption, data hiding in slack space, and forensic tool detection.'
+
+  - question: 'What forensic tool lists NTFS alternate data streams?'
+    answer: 'Sysinternals `streams.exe` on Windows or `fls -S` on Sleuth Kit. FTK Imager and Autopsy also display ADSs in the file listing.'
+
+  - question: 'How do you analyze email headers to identify the true sender?'
+    answer: 'Read the Received: headers from bottom to top to trace the relay path. The first trusted Received header with the original IP identifies the sending MTA.'
+
+  - question: 'What is the difference between .PST and .OST files?'
+    answer: '.PST (Personal Storage Table) is an Outlook data file stored locally by POP/IMAP users. .OST (Offline Storage Table) is a cached copy of Exchange mailbox data synced with the server.'
+
+  - question: 'What tool extracts emails from a PST file for forensic review?'
+    answer: '`pst-utils` (`readpst`) on Linux converts PST to mbox. `MailXaminer`, `FTK`, and `EnCase` also parse PST files natively with search and tagging.'
+
+  - question: 'What email header field identifies the message ID and references for threading?'
+    answer: '`Message-ID:` uniquely identifies each email. `References:` and `In-Reply-To:` link replies to their parent messages for thread reconstruction.'
+
+  - question: 'What does the `Received-SPF` header indicate?'
+    answer: 'SPF (Sender Policy Framework) validates that the sending server is authorized by the domain owner. `pass` means the email is legitimate, `fail` suggests spoofing.'
+
+  - question: 'How would you recover a deleted email from an Exchange server?'
+    answer: 'Use the Exchange Admin Center to recover deleted items from the Recoverable Items folder (retention-hold protected). Single-item recovery or eDiscovery search works up to the retention limit.'
+
+  - question: 'What is DMARC and how does it help authenticate emails?'
+    answer: 'DMARC (Domain-based Message Authentication, Reporting & Conformance) policies tell receivers how to handle SPF/DKIM failures — quarantine, reject, or monitor.'
+
+  - question: 'What Chrome forensic artifact records downloaded files and the source URL?'
+    answer: 'The `downloads` table in the History SQLite database stores the target path, source URL, total bytes, and start/completion timestamps.'
+
+  - question: 'How do you parse Chrome cookies for forensic analysis?'
+    answer: 'The `Cookies` SQLite database in the Chrome profile folder contains host_key, name, value, creation_utc, and expiration_utc columns.'
+
+  - question: 'Where does Firefox store browsing history on Windows?'
+    answer: 'In the Firefox profile folder under `%APPDATA%\Mozilla\Firefox\Profiles\<profile>\places.sqlite` with `moz_places` and `moz_historyvisits` tables.'
+
+  - question: 'What is the Firefox `places.sqlite` and what does it contain?'
+    answer: '`places.sqlite` is a SQLite database containing all bookmarks (`moz_bookmarks`), browsing history (`moz_places`), and visit timestamps (`moz_historyvisits`).'
+
+  - question: 'What is a browser forensic timeline and how is it constructed?'
+    answer: 'Combine SQLite timestamps from history, downloads, cookies, and cache into a sorted timeline using a tool like `browser_history.pl` or Hindsight.'
+
+  - question: 'How does private browsing affect forensic recovery of browser data?'
+    answer: 'Private browsing disables history and cookie recording during the session, but cache data may persist, and RAM captures can still contain session content.'
+
+  - question: 'What is Hindsight and what does it analyze?'
+    answer: 'Hindsight is an open-source tool that parses Chrome/Chromium browser artifacts — history, downloads, cookies, bookmarks, extensions, and local storage.'
+
+  - question: 'What is the structure of a Windows LNK file and why is it forensically valuable?'
+    answer: 'LNK files contain the target path, volume serial number, creation/modify timestamps of the target, and the local machine name. They show recently accessed files.'
+
+  - question: 'What Event IDs track user logon and logoff on modern Windows?'
+    answer: 'Event ID 4624 (successful logon), 4625 (failed logon), 4634 (logoff), and 4647 (initiated logoff) log account, logon type, and source IP.'
+
+  - question: 'How would you detect PowerShell execution from Event Logs?'
+    answer: 'Event ID 4104 (ScriptBlock Logging) captures PowerShell script blocks. Event ID 400 (engine start) shows PowerShell session start times.'
+
+  - question: 'What Windows Event ID indicates a service was installed?'
+    answer: 'Event ID 7045 logs service installation with service name, image path, and start type. Combined with 4697 (Security) for a more complete picture.'
+
+  - question: 'How do you extract and parse Windows Event Logs from a forensic image?'
+    answer: 'Locate `.evtx` files in `C:\Windows\System32\winevt\Logs\`. Use `wevtutil` on live system or `python-evtx`/EvtxECmd to parse offline EVTX files to CSV.'
+
+  - question: 'Write a basic YARA rule that detects a PDF with the string ''malicious''.'
+    answer: '`rule detect_pdf { strings: $magic = {25 50 44 46} $str = '
+
+  - question: 'How would you run YARA across an entire mounted forensic image?'
+    answer: '`yara -r -s myrules.yara /mnt/image/` scans recursively. Use `-m` to limit max MB for large files. Combine with `find` and `xargs` for performance.'
+
+  - question: 'What is `grep` used for in forensic text searches?'
+    answer: '`grep -r -a -i ''keyword'' /mnt/image/` searches all text including binary files. `-a` treats binary as text, `-i` ignores case.'
+
+  - question: 'How do you search for credit card numbers across a disk image?'
+    answer: 'Use `grep -P ''[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}''` with Luhn algorithm validation in a script to reduce false positives.'
+
+  - question: 'How does `bulk_extractor` scan for features in a disk image?'
+    answer: '`bulk_extractor` reads raw sectors and extracts email addresses, URLs, credit cards, phone numbers, and other patterns using regex without parsing the filesystem.'
+
+  - question: 'What is `scalpel` and how does its configuration file work?'
+    answer: '`scalpel` is a file carver that uses `scalpel.conf` to define header/footer byte sequences and max file sizes for each file type to extract.'
+
+  - question: 'How do you carve deleted JPEG files from unallocated space?'
+    answer: 'Use `foremost -t jpeg -i image.dd -o output/` — it searches for `FF D8 FF` headers and `FF D9` footers, extracting files up to the configured max size.'
+
+  - question: 'What is the difference between Foremost and Scalpel?'
+    answer: 'Foremost and Scalpel are both header/footer carvers. Scalpel is faster and more configurable per file type but Foremost supports multi-threading and has simpler configuration.'
+
+  - question: 'What is the `strings` command useful for in forensics?'
+    answer: '`strings` extracts printable character sequences from binary files or raw images. Default min length is 4; use `-n 8` for longer strings to find passwords or IPs.'
+
+  - question: 'How do you locate a specific string across an E01 image without mounting?'
+    answer: 'Use `ewfexport image.E01 -t - | strings | grep ''keyword''` to pipe the raw image content through `strings` and grep.'
+
+  - question: 'What is `photorec` and what does it recover?'
+    answer: 'PhotoRec is a file carver part of the TestDisk suite. It recovers 480+ file types by signature matching and does not require a filesystem.'
+
+  - question: 'How would you compare two disk images to identify changed files?'
+    answer: 'Hash all files in each image with `sha256deep -r /mnt/a > a.txt` and `sha256deep -r /mnt/b > b.txt`, then diff the results with `diff a.txt b.txt`.'
+
+  - question: 'How do you handle an encrypted BitLocker drive during forensics?'
+    answer: 'Search memory for the BitLocker key (uses `bitlocker` Volatility plugin), attempt recovery key from AD/printout, or use `dislocker` on Linux with the key.'
+
+  - question: 'What is the standard order of volatility when collecting evidence?'
+    answer: 'CPU registers/cache, RAM, network connections, running processes, temporary files, disk storage, and archives — collect in decreasing order of volatility.'
+
+  - question: 'What is a forensic boot CD and when is it used?'
+    answer: 'A forensic boot CD (e.g., Caine, Paladin, DEFT) boots the suspect system into a trusted environment for dead acquisition without writing to the suspect drive.'
+
+  - question: 'How do you bypass a Windows login password during live forensic acquisition?'
+    answer: 'Use a forensic boot CD (Caine) with Windows Registry mount tools, or use `chntpw` to reset the hash. For forensic integrity, acquire RAM first, then reset.'
+
+  - question: 'Which Volatility plugin dumps the Windows Registry hives from memory?'
+    answer: 'In Volatility 3: `windows.registry.hivescan` locates and `windows.registry.dumpregistry` dumps each hive to file for offline analysis.'
+
+  - question: 'How do you extract an LSASS process dump from memory to analyze credentials?'
+    answer: 'Use Volatility''s `windows.lsadump.Lsadump` plugin or `procdump -n lsass.exe -o lsass.dmp` then analyze offline with Mimikatz.'
+
+  - question: 'What is kernel object analysis and why is it valuable in memory forensics?'
+    answer: 'Kernel object analysis walks the kernel''s object manager to locate and validate objects (processes, drivers, files) — useful for detecting DKOM rootkits.'
+
+  - question: 'How does a DKOM rootkit hide processes from the kernel?'
+    answer: 'Direct Kernel Object Manipulation (DKOM) unlinks an EPROCESS from the active process list. Volatility''s `psscan` detects it by finding orphaned EPROCESS via pool tags.'
+
+  - question: 'What is `modscan` in Volatility and what does it find?'
+    answer: '`modscan` scans memory pool tags to locate kernel driver objects (DRIVER_OBJECT), revealing loaded drivers including those hidden from the standard module list.'
+
+  - question: 'How does the `svcscan` plugin help detect malicious services?'
+    answer: '`svcscan` enumerates Windows services by walking the service record structure in memory, detecting hidden services not visible in the SCM.'
+
+  - question: 'What is `vadinfo` and what information does it reveal about a process?'
+    answer: '`vadinfo` dumps the Virtual Address Descriptor (VAD) tree for a process, showing every allocated memory region''s protection, size, and mapped file.'
+
+  - question: 'How would you extract a screenshot of the desktop from a memory dump?'
+    answer: 'Use Volatility''s `screenshot` plugin (BitBlt method) or `windows.screenshot` — it renders the GDI desktop window from memory.'
+
+  - question: 'How do you identify a process hollowing attack in memory?'
+    answer: 'Check for a process whose image path is legitimate (e.g., svchost.exe) but whose memory contains injected executable code. `malfind` and `ldrmodules` flag these.'
+
+  - question: 'What CLI command runs a Volatility 3 plugin against a memory dump?'
+    answer: '`python3 vol.py -f memory.raw windows.pslist` — the `-f` flag specifies the dump file, and the plugin is the dot-separated module path.'
+
+  - question: 'How does Rekall''s `autodetect` feature differ from Volatility''s profile system?'
+    answer: 'Rekall''s `autodetect` automatically determines the OS version and profile without manual specification, whereas Volatility typically requires a `--profile` argument.'
+
+  - question: 'What is the Windows SuperFetch/prefetch artifact storing execution history?'
+    answer: 'SuperFetch (modern Windows) stores `.db` files in `C:\Windows\Prefetch` — each file contains up to 8 executions, paths, and loaded DLLs for an application.'
+
+  - question: 'What forensic information does the Windows Search database (Windows.edb) contain?'
+    answer: '`Windows.edb` stores indexed filenames, file contents, and property store metadata. It can reveal files the user searched for or accessed indirectly.'
+
+  - question: 'How does $Recycle.Bin track deleted files including their original paths?'
+    answer: 'Each file in `$Recycle.Bin\<SID>\` is renamed to `$R<random>.<ext>` with a corresponding `$I<random>.<ext>` metadata file containing the original path, size, and deletion time.'
+
+  - question: 'What is `Rifiuti2` used for?'
+    answer: '`Rifiuti2` parses Windows Recycle Bin `$I` metadata files from Windows Vista and later to extract the original file path and deletion timestamp.'
+
+  - question: 'How can the Jump Lists artifact differentiate between file opens and file saves?'
+    answer: 'Jump Lists track both application launches (DestList stream) and individual file accesses. Each entry includes a timestamp and AppID, distinguishing file opens from saves.'
+
+  - question: 'How do you determine if a Windows system was last shutdown gracefully?'
+    answer: 'Check Event ID 6006 (Event Log service stopped) for graceful shutdown or ID 41 (Kernel-Power) for unexpected shutdown in the System log.'
+
+  - question: 'What artifact records the first time a USB device was connected to Windows?'
+    answer: '`SYSTEM\CurrentControlSet\Enum\USBSTOR\<Device>\<Serial>\Properties\{83da6326-97a6-4088-9453-a1923f573b29}\0064` stores the first install date as FILETIME.'
+
+  - question: 'How do you extract Wi-Fi passwords from a Windows memory dump?'
+    answer: 'Use Volatility''s `windows.wifi.WiFi` plugin or extract the SYSTEM hive and parse `SOFTWARE\Microsoft\WlanSvc\Interfaces` for stored SSID profiles.'
+
+  - question: 'What is the purpose of `Prefetch Hash` correlation in forensic analysis?'
+    answer: 'The hash in a Prefetch filename (e.g., `CMD.EXE-XXXXXXXX.pf`) is derived from the file path. Correlating the hash across system files validates whether the Prefetch is legitimate.'
+
+  - question: 'What is `appcompatcache` and how does it differ from Shimcache?'
+    answer: 'AppcompatCache and Shimcache are the same artifact (also called AppCompatCache). It is a Windows Registry key in the SYSTEM hive listing executed executables.'
+
+  - question: 'How do you extract a timeline from Windows Event Logs using EvtxECmd?'
+    answer: '`EvtxECmd -f Security.evtx --csv output.csv` parses the log to CSV. Use `--dt` for custom date formats and `--inc` to include fields by EventID.'
+
+  - question: 'What is the Windows `setupapi.dev.log` used for in forensics?'
+    answer: 'It logs device installation events including USB VID/PID, serial number, and installation success/failure. Useful for identifying device first-connect times.'
+
+  - question: 'How do you extract the command line from a running process in memory?'
+    answer: 'Volatility''s `cmdline` plugin reads the RTL_USER_PROCESS_PARAMETERS structure in the PEB to retrieve the full command line string.'
+
+  - question: 'How would you detect a cookie-stealing malware from a browser cache analysis?'
+    answer: 'Search for HTTP POST requests to attacker-controlled IPs containing cookie data, or look for `document.cookie` in JavaScript extracted from cache.'
+
+  - question: 'What is the purpose of the `windows.callbacks.Callbacks` Volatility 3 plugin?'
+    answer: 'It lists kernel callbacks including process creation, image load, thread creation, and registry operation notifications — often abused by rootkits.'
+
+  - question: 'How do you differentiate between a legitimate service and a persistence mechanism in Registry?'
+    answer: 'Check `SYSTEM\CurrentControlSet\Services\` — look for services pointing to non-system paths with `ImagePath` containing unusual arguments or temp directories.'
+
+  - question: 'What is the Windows $Boot file and what does it contain?'
+    answer: '$Boot is the first 16 sectors of an NTFS volume, containing the boot sector code and BPB (BIOS Parameter Block) describing the volume geometry.'
+
+  - question: 'What does the file `SAM` hive''s `Users\Names\<username>` key contain?'
+    answer: 'It stores the RID (relative identifier for each user account), the last logon timestamp, account flags (disabled, locked), and password hash.'
+
+  - question: 'How do you determine if a Windows system was domain-joined from a disk image?'
+    answer: 'Check `SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Domain` and `SYSTEM\CurrentControlSet\Services\Netlogon\Parameters\DynamicSiteName`.'
+
+  - question: 'What is the purpose of Volume Shadow Copy (VSS) in forensic analysis?'
+    answer: 'VSS captures point-in-time snapshots of files. Even if the live filesystem shows deleted or overwritten files, previous versions may survive in shadow copies.'
+
+  - question: 'How do you mount a Volume Shadow Copy from a forensic image?'
+    answer: 'Use `vshadowmount` from Sleuth Kit to locate and export shadow copy volumes, then mount the resulting raw image with `mount -o loop,ro`.'
+
+  - question: 'What is the McAfee `SiteList.xml` and why is it relevant in enterprise forensics?'
+    answer: '`SiteList.xml` may contain hardcoded administrative credentials for McAfee ePO. Locate it in `C:\ProgramData\McAfee\Common Framework\`.'
+
+  - question: 'How does the `psscapture` tool differ from standalone memory capture?'
+    answer: '`psscapture` is a Microsoft tool that captures a lightweight triage dump including selected processes and kernel memory, smaller than a full RAM dump.'
+
+  - question: 'What is `winpmem` and how does it capture memory on Windows?'
+    answer: '`winpmem` uses a signed kernel driver to read physical memory. Run `winpmem.exe memory.raw` to produce a raw memory image.'
+
+  - question: 'How would you capture the contents of a BitLocker-encrypted drive while the system is running?'
+    answer: 'The drive is decrypted at the OS level while the system is on. Use FTK Imager or `dd` on the mounted drive letter to capture the logical decrypted view.'
+
+  - question: 'How do you analyze a JPEG file to determine if it has been edited?'
+    answer: 'Examine EXIF metadata for editing tool names (`Software` tag), check for multiple quantization tables, and look for non-contiguous DHT markers indicating recompression.'
+
+  - question: 'What is EXIF data and what forensic value does it have?'
+    answer: 'EXIF (Exchangeable Image File Format) metadata embedded in JPEG/TIFF files stores camera model, GPS coordinates, timestamp, and software used to modify the image.'
+
+  - question: 'How do you strip EXIF data from an image for privacy reasons?'
+    answer: '`exiftool -all= image.jpg` removes all EXIF metadata, or use `mat2` to clean metadata across multiple file types.'
+
+  - question: 'What is `exiftool` and how is it used in a forensic context?'
+    answer: '`exiftool` reads and writes EXIF/IPTC metadata in images and documents. Use `exiftool -a -u -g1 image.jpg` to dump all tags for forensic examination.'
+
+  - question: 'What is the purpose of a forensic write-blocker in mobile device acquisition?'
+    answer: 'Mobile write-blockers (UFED Touch, XRY) isolate the device''s storage chip to prevent the acquisition tool from writing any data to the flash memory.'
+
+  - question: 'How does an iOS logical backup differ from an iTunes backup?'
+    answer: 'A forensic logical backup (e.g., via libimobiledevice) replicates the iTunes backup but may also extract extended Keychain data and diagnostic logs.'
+
+  - question: 'What is the iOS `root\Library\Caches\com.apple.Safari\Cache.db` used for?'
+    answer: 'It is the Safari browser cache database — stores resource URL, data blob, and timestamps for cached web pages.'
+
+  - question: 'How can you recover deleted text messages from an iOS device?'
+    answer: 'Parse the `sms.db` SQLite database in `/private/var/mobile/Library/SMS/`. Deleted messages remain in the database until the pages are vacuumed.'
+
+  - question: 'How do you extract the Android `mmssms.db` from a physical dump?'
+    answer: '`mmssms.db` is at `/data/data/com.android.providers.telephony/databases/`. Open with SQLite browser or parse with `dumpexif` and `strings`. Contains SMS and MMS messages.'
+
+  - question: 'What is the purpose of the Android `cache.img` partition?'
+    answer: '`cache.img` stores system update files, OTA packages, and recovery logs. It may contain downloaded malware payloads or forensic evidence of device modifications.'
+
+  - question: 'How does JTAG forensics work for mobile devices?'
+    answer: 'JTAG (Joint Test Action Group) connects to test points on the device''s circuit board to access raw NAND flash via the CPU''s debug interface, bypassing the OS.'
+
+  - question: 'What is chip-off forensics and when is it necessary?'
+    answer: 'Chip-off physically removes the NAND flash chip from the device and reads it with a programmer. Used when the device is damaged, locked, or has no known exploit.'
+
+  - question: 'What sections should a complete forensic report contain?'
+    answer: 'Case identifier, examiner identity, evidence description, acquisition methodology, tools/versions, analysis findings, timeline, conclusion, and chain of custody.'
+
+  - question: 'How do you handle contradictory findings between two forensic tools?'
+    answer: 'Document both results, verify with a third tool, check tool versions and configurations, and explain the discrepancy. Do not cherry-pick the favorable result.'
+
+  - question: 'What is the Daubert standard and how does it apply to forensic tools?'
+    answer: 'The Daubert standard requires expert testimony to be based on reliable methods — tested, peer-reviewed, with known error rates. Forensic tools must meet these criteria to be admissible.'
+
+  - question: 'How do you prepare for cross-examination as a forensic expert?'
+    answer: 'Review all reports, understand your tool''s limitations, know the chain of custody, anticipate challenges to your methodology, and stay within your area of expertise.'
+
+  - question: 'How would you explain MFT resident vs non-resident data to a jury?'
+    answer: 'Small files are stored directly inside the file record table (resident). Larger files have pointers to clusters elsewhere on the disk (non-resident). Use an analogy like a filing cabinet index.'
+
+  - question: 'What is the role of a forensic examiner during voir dire?'
+    answer: 'The examiner answers questions about their background, certifications, training, and experience so the court can determine if they qualify as an expert.'
+
+  - question: 'How do you ensure your forensic findings are repeatable and reproducible?'
+    answer: 'Use documented, validated tools; maintain detailed notes of every step; use hashing and known-good tool versions; and ideally have a second examiner verify key findings.'
+
+  - question: 'What is the difference between spoliation and legitimate evidence handling?'
+    answer: 'Spoliation is the intentional or negligent destruction of potential evidence. Proper forensic acquisition (read-only, hashing) and chain-of-custody documentation prevent spoliation claims.'
+
+  - question: 'What is the purpose of a forensic investigation scope statement?'
+    answer: 'The scope defines what devices, time ranges, data types, and users are authorized. It prevents mission creep and protects the examiner from allegations of exceeding authorization.'
+
+  - question: 'How would you detect `Timestamp` modification by an attacker using SetMACE?'
+    answer: 'Compare $STANDARD_INFORMATION vs $FILE_NAME timestamps in the MFT. Tools like `MFTEcmd` flag inconsistencies. Non-integer microsecond values may also indicate tool-based modification.'
+
+  - question: 'How can you detect data hidden in the NTFS $Boot area?'
+    answer: 'The boot sector has reserved unused bytes. Compare the known Windows BPB layout against the actual bytes. Tools like `sigcheck` flag anomalies in the boot file.'
+
+  - question: 'What is $AttrDef in NTFS and does it have forensic value?'
+    answer: '$AttrDef lists the standard NTFS attribute types and their sizes. It has limited direct forensic value but can identify anomalous or custom attribute types.'
+
+  - question: 'What is the purpose of the `autoruns` utility in live forensics?'
+    answer: 'Sysinternals Autoruns enumerates every startup point — services, scheduled tasks, drivers, browser extensions — helping identify persistence mechanisms.'
+
+  - question: 'How do you detect a DLL search-order hijack in a Windows system?'
+    answer: 'Check the process''s loaded DLLs (using Volatility `ldrmodules` or `listdlls`) and compare against known system paths. A DLL loaded from the current directory or user profile is suspicious.'
+
+  - question: 'What is the Windows `CIM` repository and what forensic value does it hold?'
+    answer: 'The CIM repository (`%SYSTEMROOT%\System32\wbem\Repository\`) stores WMI data. Attackers use WMI persistence via `__FilterToConsumerBinding`. Object corruption suggests tampering.'
+
+  - question: 'How do you extract the Windows product key from a forensic image?'
+    answer: 'From `SOFTWARE\Microsoft\Windows NT\CurrentVersion\DigitalProductId` — parse the binary with a script per the known product key bit decoding algorithm.'
+
+  - question: 'How would you extract a process''s environment variables from a memory dump?'
+    answer: 'Use Volatility''s `envars` (v2) or `windows.envars.Envars` (v3) to read the process environment block, revealing working directories, temp paths, and configuration variables.'
+
+  - question: 'What is the purpose of `indxparse` in Sleuth Kit?'
+    answer: '`indxparse` parses NTFS index buffers (directories) to recover entries even when the directory listing is corrupted or partial.'
+
+  - question: 'How do you validate that a forensic tool is working correctly?'
+    answer: 'Test against a known reference dataset (e.g., NIST Computer Forensic Reference Data Sets). Validate each tool version independently during setup.'
+
+  - question: 'What is the `dcfldd` tool and how does it improve on standard `dd`?'
+    answer: '`dcfldd` is a forensic version of `dd` with built-in MD5/SHA256 hashing, chunked output, split image support, and progress reports.'
+
+  - question: 'How do you handle a macOS system forensic acquisition?'
+    answer: 'Boot into target disk mode (T2) or recovery mode. Use `asr` or `dd` for disk imaging and `osxpmem` for memory. APFS volumes require special handling for snapshots.'
+
+  - question: 'What is the macOS Unified Log and how do you parse it?'
+    answer: 'The Unified Log stores systemwide activity in `.tracev3` files under `/var/db/diagnostics/`. Use the `log show` command or MacTrace for extraction.'
+
+  - question: 'How do you analyze the macOS knowledgeC database?'
+    answer: 'The `knowledgeC.db` in `/private/var/db/CoreDuet/` stores app usage, device activity, and battery data. Parse its `ZOBJECT` and `ZSTRUCTUREDMETADATA` tables.'
+
+  - question: 'What is the Secure Enclave in iOS and how does it affect forensics?'
+    answer: 'The Secure Enclave is a separate coprocessor handling cryptographic operations (Touch ID, Face ID, keys). Forensic tools cannot directly access its contents.'
+
+  - question: 'How do you locate Wi-Fi connection history on an Android device?'
+    answer: 'Check `/data/misc/wifi/wpa_supplicant.conf` for stored SSIDs and PSKs, or the `WifiConfigStore.xml` in newer Android versions.'
+

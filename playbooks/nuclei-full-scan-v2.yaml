@@ -1,0 +1,169 @@
+# v2 runbook — Full Nuclei scan with official + custom templates + findings import
+name: "Nuclei Full Scan"
+description: "Comprehensive nuclei scan using official nuclei-templates (CVEs, misconfigs, exposures, tech) plus custom templates, auto-imported as findings"
+version: "2.0"
+
+vars:
+  official_templates_dir: "~/nuclei-templates/"
+  custom_templates_dir: ""
+
+preflight:
+  - id: setup
+    type: log
+    message: "Nuclei full scan against {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 0: Ensure official templates cloned ----
+  - id: ensure_templates
+    name: "Check / clone official nuclei-templates"
+    type: conditional
+    condition:
+      not_exists: "{official_templates_dir}"
+    then:
+      - id: clone_templates
+        name: "Clone nuclei-templates repo"
+        tool: git
+        args: ["clone", "--depth", "1",
+               "https://github.com/projectdiscovery/nuclei-templates.git",
+               "{official_templates_dir}"]
+        timeout: 300
+
+  # ---- Phase 1: Critical/High CVEs ----
+  - id: cve_scan
+    name: "Critical and High CVE scan"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: nuclei_cves
+        name: "All CVE templates (critical+high)"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{official_templates_dir}/cves/",
+               "-severity", "critical,high",
+               "-json", "-o", "{case_dir}/nuclei-cves.json"]
+        timeout: 1200
+        artifacts: ["{case_dir}/nuclei-cves.json"]
+
+      - id: nuclei_cves_medium
+        name: "CVE templates (medium)"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{official_templates_dir}/cves/",
+               "-severity", "medium",
+               "-json", "-o", "{case_dir}/nuclei-cves-medium.json"]
+        timeout: 600
+        artifacts: ["{case_dir}/nuclei-cves-medium.json"]
+
+  # ---- Phase 2: Misconfigurations ----
+  - id: misconfig_scan
+    name: "Misconfiguration and exposure scan"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: nuclei_misconfig
+        name: "Misconfiguration templates"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{official_templates_dir}/misconfiguration/",
+               "-severity", "critical,high,medium",
+               "-json", "-o", "{case_dir}/nuclei-misconfig.json"]
+        timeout: 600
+        artifacts: ["{case_dir}/nuclei-misconfig.json"]
+
+      - id: nuclei_exposures
+        name: "Exposure templates"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{official_templates_dir}/exposures/",
+               "-severity", "critical,high,medium",
+               "-json", "-o", "{case_dir}/nuclei-exposures.json"]
+        timeout: 600
+
+  # ---- Phase 3: Technology detection ----
+  - id: tech_scan
+    name: "Technology fingerprinting"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: nuclei_tech
+        name: "Technology detection"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{official_templates_dir}/technologies/",
+               "-json", "-o", "{case_dir}/nuclei-technologies.json"]
+        timeout: 300
+        artifacts: ["{case_dir}/nuclei-technologies.json"]
+
+  # ---- Phase 4: Custom templates from rules ----
+  - id: custom_scan
+    name: "Custom nuclei templates"
+    type: conditional
+    condition:
+      any:
+        - exists: "{custom_templates_dir}"
+    then:
+      - id: nuclei_custom
+        name: "Run custom templates"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{custom_templates_dir}",
+               "-json", "-o", "{case_dir}/nuclei-custom.json"]
+        timeout: 600
+        artifacts: ["{case_dir}/nuclei-custom.json"]
+
+  # ---- Phase 5: Default-login / default-paths ----
+  - id: default_scan
+    name: "Default logins and paths"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: nuclei_default_login
+        name: "Default login credentials"
+        tool: nuclei
+        args: ["-u", "{target}",
+               "-t", "{official_templates_dir}/default-logins/",
+               "-json", "-o", "{case_dir}/nuclei-default-logins.json"]
+        timeout: 300
+        artifacts: ["{case_dir}/nuclei-default-logins.json"]
+
+  # ---- Phase 6: Import findings ----
+  - id: import_findings
+    name: "Import nuclei results as findings"
+    type: sequential
+    steps:
+      - id: import_cves
+        name: "Import CVE findings"
+        type: api
+        endpoint: "/api/case/{case_id}/findings/import/nuclei"
+        payload: {"file": "{case_dir}/nuclei-cves.json"}
+        timeout: 60
+
+      - id: import_misconfig
+        name: "Import misconfig findings"
+        type: api
+        endpoint: "/api/case/{case_id}/findings/import/nuclei"
+        payload: {"file": "{case_dir}/nuclei-misconfig.json"}
+        timeout: 60
+
+      - id: import_exposures
+        name: "Import exposure findings"
+        type: api
+        endpoint: "/api/case/{case_id}/findings/import/nuclei"
+        payload: {"file": "{case_dir}/nuclei-exposures.json"}
+        timeout: 60
+
+  # ---- Phase 7: Summary ----
+  - id: summary
+    name: "Scan summary"
+    type: log
+    message: |
+      Nuclei full scan complete for {target}.
+      Results in {case_dir}/:
+      - CVEs (critical/high): nuclei-cves.json
+      - CVEs (medium): nuclei-cves-medium.json
+      - Misconfigurations: nuclei-misconfig.json
+      - Exposures: nuclei-exposures.json
+      - Technologies: nuclei-technologies.json
+      - Default logins: nuclei-default-logins.json
+      - Custom templates: nuclei-custom.json (optional)
+      Findings automatically imported via API.

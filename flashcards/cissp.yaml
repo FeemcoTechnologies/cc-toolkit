@@ -1,0 +1,415 @@
+title: CISSP
+description: (ISC)² CISSP — 8 domains of the Common Body of Knowledge
+cards:
+- question: What are the three principles of the CIA triad?
+  answer: Confidentiality, Integrity, Availability.
+- question: What is the difference between a vulnerability, a threat, and a risk?
+  answer: vulnerability is a weakness, a threat is something that could exploit that weakness, and...
+- question: What is the Parkerian Hexad?
+  answer: CIA plus Possession/Control, Authenticity, and Utility — a more comprehensive model by Donn...
+- question: What is the difference between precision and accuracy in security metrics?
+  answer: Precision is how consistent the measurements are; accuracy is how close they are to the...
+- question: What is defense in depth?
+  answer: Multiple layers of security controls so that if one fails, others still provide protection.
+- question: What is the principle of least privilege?
+  answer: Users and processes should have only the minimum permissions needed to perform their function.
+- question: What is separation of duties (SoD)?
+  answer: No single person should have complete control over a critical function; duties are split to...
+- question: What is need-to-know?
+  answer: Users should only access data required for their specific job duties, even if they have...
+- question: What is a security control?
+  answer: 'safeguard or countermeasure to avoid, mitigate, or reduce risk. Types: administrative,...'
+- question: What are the three types of security controls by function?
+  answer: Preventive, Detective, Corrective.
+- question: What are the NIST 800-53 control families?
+  answer: 20 families including AC, AU, AT, CM, CP, IA, IR, MA, MP, PE, PL, PS, RA, SA, SC, SI.
+- question: What is the difference between a policy, standard, procedure, and guideline?
+  answer: 'Policy: high-level management intent. Standard: specific mandatory requirements. Procedure:...'
+- question: What is risk management?
+  answer: process of identifying, assessing, and responding to risk. Frameworks include NIST RMF, ISO...
+- question: What are the four risk response strategies?
+  answer: Avoid, Transfer, Mitigate, Accept.
+- question: What is residual risk?
+  answer: risk remaining after controls are implemented. Inherent risk minus control effectiveness...
+- question: What is a quantitative risk assessment?
+  answer: 'Uses numeric values: SLE = AV × EF. ARO. ALE = SLE × ARO.'
+- question: What is a qualitative risk assessment?
+  answer: Uses subjective ratings for likelihood and impact. Uses matrices to prioritize.
+- question: What is a risk register?
+  answer: document listing identified risks, their likelihood/impact/score, response strategy, owner,...
+- question: What is the difference between risk appetite and risk tolerance?
+  answer: Risk appetite is the broad amount of risk an organization is willing to accept. Risk...
+- question: What is the PKI hierarchy?
+  answer: Root CA → Intermediate CA → Issuing CA → End-entity certificates. Chain of trust ends at...
+- question: What is a CRL and an OCSP?
+  answer: 'CRL: periodically published list of revoked certs. OCSP: real-time check of a cert''s...'
+- question: What are the five types of authentication factors?
+  answer: Something you know, Something you have, Something you are, Somewhere you are, Something you...
+- question: What is AAA in access control?
+  answer: Authentication, Authorization, Accounting. Often via RADIUS or TACACS+.
+- question: What are the three main access control models?
+  answer: DAC, MAC, RBAC.
+- question: What is a Brute Force attack?
+  answer: Systematically trying all possible passwords or keys until the correct one is found.
+- question: What is a Rainbow Table attack?
+  answer: precomputed table of password hash mappings used to reverse password hashes. Mitigated by...
+- question: What is Kerberos authentication?
+  answer: ticket-based protocol using a KDC that issues TGTs and service tickets with timestamps for...
+- question: What is a SAML assertion?
+  answer: XML-based authentication statement from an Identity Provider to a Service Provider,...
+- question: What is OAuth 2.0?
+  answer: authorization framework allowing delegated access via access tokens. Uses authorization...
+- question: What is security confinement and what are examples?
+  answer: 'Containment mechanisms to limit damage from a breach: jail, chroot, sandbox, virtual...'
+- question: What is the Common Criteria (ISO 15408)?
+  answer: evaluation framework for IT security products. Defines EALs 1-7 and Protection Profiles.
+- question: What is FIPS 140-3?
+  answer: US government standard for cryptographic module validation. Levels 1-4 covering physical...
+- question: What is a TPM (Trusted Platform Module)?
+  answer: hardware security chip that stores cryptographic keys, performs measured boot, and provides...
+- question: What is an HSM (Hardware Security Module)?
+  answer: hardened, tamper-resistant device for managing cryptographic keys and performing crypto...
+- question: What is FDE (Full Disk Encryption)?
+  answer: 'Encrypts all data on a storage device. Examples: BitLocker, FileVault, LUKS. Protects data...'
+- question: What is a Honeypot?
+  answer: decoy system designed to attract attackers, monitor their behavior, and gather threat...
+- question: What is a Sandbox in security?
+  answer: isolated environment for executing untrusted code or analyzing malware without risk to the...
+- question: What is the difference between IDS and IPS?
+  answer: 'IDS: monitors and alerts. IPS: monitors and blocks/thwarts in real-time.'
+- question: What is a WAF (Web Application Firewall)?
+  answer: Filters HTTP/HTTPS traffic to web applications, detecting and blocking attacks like SQLi,...
+- question: What is a SIEM?
+  answer: Security Information and Event Management — aggregates logs from multiple sources,...
+- question: What is a Security Baseline?
+  answer: minimum set of security configurations applied to systems, often based on CIS Benchmarks,...
+- question: What is the difference between Black-box, White-box, and Gray-box testing?
+  answer: 'Black-box: no internal knowledge; White-box: full knowledge; Gray-box: partial knowledge.'
+- question: What is a Synthetic Transaction (in security monitoring)?
+  answer: simulated user action to verify application or monitoring system availability and...
+- question: What is an SLA (Service Level Agreement)?
+  answer: contract defining expected service levels, metrics, remedies for breaches, and...
+- question: What is a BCP (Business Continuity Plan)?
+  answer: plan ensuring critical business functions continue during and after a disruption. Covers...
+- question: What is a BIA (Business Impact Analysis)?
+  answer: Process identifying critical functions, their dependencies, and recovery requirements.
+- question: What is RTO (Recovery Time Objective)?
+  answer: Maximum acceptable time to restore a function after a disruption.
+- question: What is RPO (Recovery Point Objective)?
+  answer: Maximum acceptable data loss measured in time (how far back data must be restored).
+- question: What is MTD (Maximum Tolerable Downtime)?
+  answer: The total duration a business function can be unavailable before causing irreparable harm.
+- question: What is a BCP exercise/tabletop?
+  answer: discussion-based or functional simulation exercise testing the BCP, identifying gaps, and...
+- question: What are the three main types of disaster recovery sites?
+  answer: Hot site, Warm site, Cold site.
+- question: What is an MTBF (Mean Time Between Failures)?
+  answer: Average time a system operates between failures. Higher MTBF = more reliable.
+- question: What is an MTTR (Mean Time to Repair)?
+  answer: Average time to fix a failed system. Lower MTTR = faster recovery.
+- question: What are RAID levels?
+  answer: RAID 0, RAID 1, RAID 5, RAID 6, RAID 10.
+- question: What is a backup strategy (3-2-1 rule)?
+  answer: 3 copies of data, on 2 different media types, 1 offsite copy.
+- question: What is the difference between Incremental, Differential, and Full backups?
+  answer: 'Full: all data. Incremental: changes since last backup of any type. Differential: changes...'
+- question: What is a UPS (Uninterruptible Power Supply)?
+  answer: Provides backup power during outages; allows graceful shutdown or continues operation.
+- question: What is the Software Development Lifecycle (SDLC)?
+  answer: 'Phases: Requirements, Design, Development, Testing, Deployment, Maintenance. Security is...'
+- question: What is the difference between Waterfall and Agile development?
+  answer: 'Waterfall: sequential phases, rigid. Agile: iterative sprints, flexible, continuous delivery.'
+- question: What is a Change Advisory Board (CAB)?
+  answer: A group that reviews, approves, and schedules changes to IT systems to minimize risk.
+- question: What is a Configuration Management Database (CMDB)?
+  answer: database of all IT assets, their configurations, and relationships. Used for impact...
+- question: What is a Service Level Objective (SLO)?
+  answer: specific, measurable target within an SLA, such as '99.9% uptime' or '< 4 hour response...
+- question: What is CLB (Cloud, Legal, and BCP)?
+  answer: Not a standard term — but in BCP contexts, CLB may refer to critical lines of business.
+- question: What is the difference between a vulnerability scan and a penetration test?
+  answer: 'Vulnerability scan: automated, identifies known CVEs. Pentest: manual, exploits...'
+- question: What is a false positive in vulnerability scanning?
+  answer: A reported vulnerability that doesn't actually exist (incorrect detection).
+- question: What is a false negative in vulnerability scanning?
+  answer: A vulnerability that exists but wasn't detected by the scanner.
+- question: What is a Web Application Vulnerability Scanner?
+  answer: 'Automated tool that crawls web apps and tests for common vulnerabilities. Examples: Nessus,...'
+- question: What is Fuzzing?
+  answer: testing technique that sends malformed or unexpected inputs to find crashes, memory leaks,...
+- question: What is the difference between SAST and DAST?
+  answer: 'SAST: analyzes source code for flaws without execution. DAST: tests running application by...'
+- question: What is IAST (Interactive Application Security Testing)?
+  answer: Combines SAST and DAST by instrumenting the application and analyzing behavior during...
+- question: What is Secure Coding?
+  answer: Writing code that avoids security vulnerabilities. Includes input validation, output...
+- question: What is Input Validation?
+  answer: Ensuring all input meets expected format, type, length, and range before processing....
+- question: What is a Secure Baseline for coding?
+  answer: set of mandatory secure coding rules and prohibited functions, often enforced via linters...
+- question: What is the role of a Security Champion?
+  answer: developer who promotes security within their team, conducts peer reviews, and bridges...
+- question: What is Version Control?
+  answer: system tracking changes to code/files over time. Enables rollback, branching,...
+- question: What is a Code Review?
+  answer: Manual or automated review of source code to find bugs, security flaws, and style issues...
+- question: What are the phases of an Incident Response process?
+  answer: 'NIST 800-61: Preparation, Detection & Analysis, Containment & Eradication, Recovery,...'
+- question: What is a CSIRT (Computer Security Incident Response Team)?
+  answer: A team responsible for receiving, analyzing, and responding to security incidents.
+- question: What is a Security Operations Center (SOC)?
+  answer: centralized unit monitoring, detecting, analyzing, and responding to security threats in...
+- question: What is a chain of custody?
+  answer: Documented process tracking evidence from collection through presentation in court, proving...
+- question: What is an IOC (Indicator of Compromise)?
+  answer: An artifact (IP, hash, domain, file path, registry key) indicating a system may be compromised.
+- question: What is a Playbook in IR?
+  answer: documented set of step-by-step procedures for handling specific types of incidents.
+- question: What is Data Integrity (in incident response)?
+  answer: Ensuring data wasn't altered during collection, preservation, or analysis. Verified via...
+- question: What is a forensic image?
+  answer: bit-for-bit copy of a storage device, preserving all data including slack space and deleted...
+- question: What is logical acquisition vs physical acquisition?
+  answer: 'Logical: copies files via OS. Physical: raw bit-level copy.'
+- question: What is volatility in memory forensics?
+  answer: RAM data is volatile — lost on power loss. Must be acquired from a running system before...
+- question: What is a hash (MD5/SHA1/SHA256)?
+  answer: one-way cryptographic function producing a fixed-length fingerprint of data. Used for...
+- question: What is the difference between a warrant and a subpoena?
+  answer: 'Warrant: court order for search/seizure. Subpoena: order to produce documents/testify.'
+- question: What is the Electronic Communications Privacy Act (ECPA)?
+  answer: US law governing government access to electronic communications and stored data.
+- question: What is GDPR (General Data Protection Regulation)?
+  answer: 'EU regulation protecting personal data of individuals. Key rights: access, erasure,...'
+- question: What is a Data Protection Impact Assessment (DPIA)?
+  answer: A process to identify and minimize privacy risks of new projects or data processing activities.
+- question: What is PII (Personally Identifiable Information)?
+  answer: Data that can identify an individual (name, SSN, email, phone, address, IP address, device ID).
+- question: What is PHI (Protected Health Information)?
+  answer: Any health-related data linked to an individual, protected under HIPAA.
+- question: What is a BAA (Business Associate Agreement)?
+  answer: A contract between a HIPAA-covered entity and a business associate handling PHI.
+- question: What is Intellectual Property (IP) protection?
+  answer: 'Legal rights protecting creations: patents, copyrights, trademarks, trade secrets.'
+- question: What is a Data Retention Policy?
+  answer: Defines how long different types of data are kept and when/how they are disposed of.
+- question: What is Data Classification?
+  answer: Categorizing data by sensitivity with corresponding handling requirements.
+- question: What is Data Loss Prevention (DLP)?
+  answer: Technology and processes to detect and prevent unauthorized data exfiltration.
+- question: What is Information Rights Management (IRM)?
+  answer: Technology that controls access to documents even after distribution.
+- question: What is the Data Lifecycle?
+  answer: Create → Store → Use → Share → Archive → Destroy. Each stage requires specific controls.
+- question: What is the difference between Data at Rest, Data in Transit, and Data in Use?
+  answer: 'At Rest: stored on disk. In Transit: moving across a network. In Use: loaded in memory...'
+- question: What is Encryption Types (Symmetric vs Asymmetric)?
+  answer: 'Symmetric: same key for encrypt/decrypt — fast. Asymmetric: public/private key pair —...'
+- question: What is AES (Advanced Encryption Standard)?
+  answer: Symmetric block cipher using 128/192/256-bit keys. Current US government standard.
+- question: What is RSA?
+  answer: Asymmetric algorithm based on the difficulty of factoring large prime products. Used for...
+- question: What is Elliptic Curve Cryptography (ECC)?
+  answer: Asymmetric algorithm based on elliptic curve math. Smaller keys than RSA for equivalent...
+- question: What is Quantum Computing's threat to cryptography?
+  answer: Shor's algorithm could break RSA/ECC. Post-quantum cryptography is being standardized by...
+- question: What is a Digital Signature?
+  answer: Created by signing a hash with a private key. Verifies authenticity, integrity, and...
+- question: What is a Hash Function?
+  answer: 'One-way function producing fixed-length output. Properties: collision-resistant,...'
+- question: What is a Message Authentication Code (MAC)?
+  answer: symmetric-key technique to verify both integrity and authenticity of a message.
+- question: What is Perfect Forward Secrecy (PFS)?
+  answer: If a long-term key is compromised, past session keys remain secure. Achieved via ephemeral...
+- question: What is Key Stretching?
+  answer: 'Techniques to make passwords resistant to brute-force: bcrypt, PBKDF2, Argon2.'
+- question: What is Zero Trust Architecture?
+  answer: Trust no one by default — verify every request regardless of network location. Key pillars:...
+- question: What is a CASB (Cloud Access Security Broker)?
+  answer: policy enforcement point between cloud service consumers and providers for visibility,...
+- question: What is SWG (Secure Web Gateway)?
+  answer: A proxy filtering malicious web traffic, enforcing URL policies, and inspecting SSL/TLS.
+- question: What is Cloud Security Posture Management (CSPM)?
+  answer: Automatically monitors cloud configurations against best practices to detect...
+- question: What is Software-Defined Perimeter (SDP)?
+  answer: zero-trust approach hiding infrastructure; devices authenticate before connecting, then get...
+- question: What is SD-WAN security?
+  answer: Software-defined WAN with integrated security connecting branch offices.
+- question: What is a NGFW (Next-Generation Firewall)?
+  answer: Traditional firewall + application awareness, IPS, SSL inspection, identity awareness, and...
+- question: What is a Virtual Private Network (VPN)?
+  answer: Encrypted tunnel between two endpoints. Site-to-site or remote access.
+- question: What is Wi-Fi Protected Access 3 (WPA3)?
+  answer: WiFi security standard using SAE replacing WPA2-PSK, resistant to offline dictionary...
+- question: What is EAP-TLS?
+  answer: 802.1X authentication using client and server certificates. Considered the most secure...
+- question: What is Ethernet Encryption (MACsec)?
+  answer: IEEE 802.1AE encrypting Ethernet frames at Layer 2 for hop-by-hop encryption within a LAN.
+- question: What is a VLAN?
+  answer: Virtual LAN partitioning a physical network into separate broadcast domains for segmentation.
+- question: What is an Access Control List (ACL)?
+  answer: A list of permit/deny rules applied to network interfaces for traffic filtering.
+- question: What is BGP (Border Gateway Protocol)?
+  answer: Internet routing protocol. Route hijacking is a security concern. RPKI helps validate.
+- question: What is Physical Security's importance in InfoSec?
+  answer: If an attacker gains physical access, most logical controls are bypassed. Physical controls...
+- question: What is a mantrap?
+  answer: A physical access control with two interlocking doors, allowing only one person at a time.
+- question: What is an HVAC system's role in data center security?
+  answer: Maintains temperature/humidity to prevent hardware failure. Also part of business continuity.
+- question: What is a Faraday cage?
+  answer: enclosure blocking electromagnetic signals. Used in secure facilities and for forensic...
+- question: What is a SSAE 18 / SOC 2 report?
+  answer: service auditor's report on a service organization's controls relevant to trust criteria.
+- question: What is PCI DSS?
+  answer: Payment Card Industry Data Security Standard — 12 requirements for handling cardholder...
+- question: What is HIPAA?
+  answer: US healthcare privacy law. Protects PHI. Requires administrative, physical, and technical...
+- question: What is SOX (Sarbanes-Oxley Act)?
+  answer: US law requiring financial reporting controls and auditor independence. Section 302/404...
+- question: What is the Computer Fraud and Abuse Act (CFAA)?
+  answer: US law criminalizing unauthorized access to computers. Key for prosecuting hacking.
+- question: What is a Cybersecurity Insurance policy?
+  answer: Insurance covering breach response costs, ransomware payments, legal fees, and liability...
+- question: What is a Supply Chain Attack?
+  answer: Compromising a trusted vendor or software provider to attack their customers.
+- question: What is a Third-Party Risk Assessment?
+  answer: Evaluating the security posture of vendors/partners before granting access to data or systems.
+- question: What is Security Awareness Training?
+  answer: Training employees on security policies, phishing recognition, password hygiene, and...
+- question: What is Phishing?
+  answer: social engineering attack using deceptive emails/messages to steal credentials or deliver...
+- question: What is Spear Phishing?
+  answer: targeted phishing attack against a specific individual or organization using personalized...
+- question: What is Whaling?
+  answer: Phishing targeting senior executives (CXOs) with highly tailored messages.
+- question: What is Social Engineering?
+  answer: Manipulating people to divulge confidential information or perform actions. Pretexting,...
+- question: What is Vishing?
+  answer: Voice phishing — using phone calls to trick victims into revealing sensitive information.
+- question: What is SMiShing?
+  answer: SMS phishing — sending malicious text messages with links or requests.
+- question: What is Tailgating/Piggybacking?
+  answer: Following an authorized person into a restricted area without proper credentials.
+- question: What is a Security Culture?
+  answer: The set of security values, beliefs, and behaviors shared across an organization.
+- question: What is the difference between a Security Policy, a Standard, and a Guideline?
+  answer: 'Policy: mandatory high-level rule. Standard: mandatory specific requirement. Guideline:...'
+- question: What is an Enterprise Security Architecture framework?
+  answer: structured approach to designing and aligning security controls with business strategy....
+- question: What is the Trusted Computing Base (TCB)?
+  answer: combination of hardware, firmware, and software that enforces security policy. Must be...
+- question: What is a Security Model?
+  answer: 'formal model of access control. Examples: Bell-LaPadula, Biba, Clark-Wilson, Brewer-Nash.'
+- question: What is Bell-LaPadula?
+  answer: 'confidentiality model: subjects can read below their level and write to their level or...'
+- question: What is Biba?
+  answer: 'integrity model: subjects can read above their level and write below their level.'
+- question: What is Clark-Wilson integrity model?
+  answer: Enforces integrity through well-formed transactions.
+- question: What is the Brewer-Nash (Chinese Wall) model?
+  answer: Prevents conflict of interest by dynamically restricting access based on previously...
+- question: What is Trusted Recovery?
+  answer: Ensuring a system recovers to a secure state after failure or compromise.
+- question: What is Secure Provisioning?
+  answer: process of securely deploying systems and applications with security controls...
+- question: What is Physical Security (CCTV, locks, mantrap)?
+  answer: 'Controls: CCTV for surveillance, locks for access, mantrap for entry control, biometrics...'
+- question: What is a SCIF (Sensitive Compartmented Information Facility)?
+  answer: secure room or building for handling classified intelligence. Has strict physical and...
+- question: What is Perimeter Security?
+  answer: Fencing, lighting, guards, barriers at the boundary of a facility. First layer of physical...
+- question: What is an Environmental Control?
+  answer: HVAC, fire suppression, and power management protecting IT equipment.
+- question: What is a Fire Suppression System (in data centers)?
+  answer: Gas-based systems that extinguish fires without damaging electronics.
+- question: What is the difference between an IRT (Incident Response Team), a CIRT, and a CSIRT?
+  answer: 'IRT: general incident response. CIRT: Computer Incident Response Team. CSIRT: Computer...'
+- question: What is a Security Operations Center (SOC) maturity model?
+  answer: SSE-CMM, SOC-CMM, or Gartner models — measure SOC capabilities from initial/ad hoc through...
+- question: What is a Runbook vs a Playbook?
+  answer: 'Playbook: high-level strategy for handling a threat type. Runbook: detailed technical steps...'
+- question: What is a SIEM use case?
+  answer: specific detection scenario defined by source data, correlation rules, and response actions.
+- question: What is Endpoint Detection and Response (EDR)?
+  answer: Endpoint security tools that monitor, detect, investigate, and respond to threats on...
+- question: What is Network Detection and Response (NDR)?
+  answer: Tools that analyze network traffic for malicious activity using machine learning and...
+- question: What is Threat Hunting?
+  answer: Proactively searching for threats that evaded existing detection controls....
+- question: What is User and Entity Behavior Analytics (UEBA)?
+  answer: Machine learning models establishing normal behavior baselines and flagging anomalies in...
+- question: What is a Honeynet?
+  answer: A network of honeypots, simulating multiple systems to study attacker behavior at scale.
+- question: What is an Attack Surface?
+  answer: sum of all points where an unauthorized user can access a system — reduced by hardening,...
+- question: What is an Application Programming Interface (API) gateway?
+  answer: management layer for APIs handling authentication, rate limiting, routing, and security...
+- question: What is a WebSocket and why is it relevant to security?
+  answer: 'full-duplex protocol over a single TCP connection. Security concerns: lacks origin checking...'
+- question: What is an IPSec VPN?
+  answer: 'VPN protocol encrypting IP packets. Two modes: Transport and Tunnel.'
+- question: What is SSL/TLS?
+  answer: Cryptographic protocols for secure communications over a network. TLS 1.3 is current. Uses...
+- question: What is SSH (Secure Shell)?
+  answer: A protocol for secure remote access and command execution over an encrypted channel.
+- question: What is DNS Security (DNSSEC)?
+  answer: Adds digital signatures to DNS records to prevent spoofing and cache poisoning. Uses RRSIG,...
+- question: What is a DNS over HTTPS (DoH)?
+  answer: Encrypting DNS queries in HTTPS to prevent eavesdropping and manipulation by intermediaries.
+- question: What is a Security Assertion Markup Language (SAML)?
+  answer: XML-based standard for exchanging authentication and authorization data between identity...
+- question: What is OpenID Connect (OIDC)?
+  answer: authentication layer on top of OAuth 2.0, providing ID tokens and userinfo endpoint.
+- question: What is an Edge Computing security concern?
+  answer: 'Distributed computing at the network edge. Challenges: physical access, limited compute for...'
+- question: What is the Internet of Things (IoT) security concerns?
+  answer: Weak default credentials, no auto-update, limited visibility, heterogeneous protocols,...
+- question: What is a Operational Technology (OT) security concern?
+  answer: Industrial control systems. Prioritizes availability over confidentiality. Special...
+- question: What is SCADA?
+  answer: Supervisory Control and Data Acquisition — industrial control systems for critical...
+- question: What is Mobile Device Management (MDM)?
+  answer: 'Software to manage, secure, and enforce policies on mobile devices. Capabilities: remote...'
+- question: What is a Container (Docker) security concern?
+  answer: Shared kernel, image vulnerabilities, container escape risks, registry security....
+- question: What is Serverless computing security?
+  answer: 'Function-as-a-Service. Security: function event injection, broken authentication, insecure...'
+- question: What is the Principle of Least Functionality?
+  answer: Disable all non-essential services, ports, protocols, and applications on a system to...
+- question: What is Port Security (on network switches)?
+  answer: Limits MAC addresses per port. Prevents MAC flooding and unauthorized device connection.
+- question: What is IEEE 802.1X?
+  answer: Port-based network access control. Requires authentication before granting network access.
+- question: What is a Jump Box / Bastion Host?
+  answer: hardened server used as a single access point to a secured network. All administrative...
+- question: What is a Screened Subnet (DMZ)?
+  answer: network segment separating internal and external networks. Contains public-facing servers,...
+- question: What is a Dual-Homed Host?
+  answer: system with two network interfaces connected to different networks. Can act as a firewall.
+- question: What is a Proxy Server?
+  answer: 'intermediary between clients and servers. Forward proxy: represents clients. Reverse proxy:...'
+- question: What is the difference between a Stateful and Stateless Firewall?
+  answer: 'Stateful: tracks connection state, allows return traffic automatically. Stateless:...'
+- question: What is Network Address Translation (NAT)?
+  answer: 'Maps private IPs to public IPs. Hides internal network structure. Types: SNAT, DNAT, PAT.'
+- question: What is IPv6 security consideration?
+  answer: Larger address space reduces scanning effectiveness but protocols like ICMPv6 have attack...
+- question: What is MAC Spoofing?
+  answer: Changing a device's MAC address to impersonate another device. Can bypass MAC-based access...
+- question: What is an IP Spoofing attack?
+  answer: Falsifying the source IP address to impersonate a trusted system or hide origin....
+- question: What is a DDoS (Distributed Denial of Service) attack?
+  answer: 'Overwhelming a target with traffic from multiple sources. Types: volumetric, protocol,...'
+- question: What is a Man-in-the-Middle (MITM) attack?
+  answer: Intercepting communication between two parties. ARP spoofing, DNS spoofing, rogue access...
+- question: What is a Session Replay attack?
+  answer: Capturing and retransmitting valid data to impersonate a user. Mitigated by timestamps,...
+- question: What is a Race Condition?
+  answer: When the timing of events causes unexpected behavior. TOCTOU is a common type.
+- question: What is the difference between Authentication, Authorization, and Accounting (AAA)?
+  answer: 'Authentication: verifying identity. Authorization: determining what they can access....'
+- question: What is Single Sign-On (SSO)?
+  answer: Allows users to authenticate once and access multiple applications without re-entering...
+- question: What is Federation (Identity Federation)?
+  answer: Trust relationships between organizations allowing cross-domain authentication. Uses SAML,...

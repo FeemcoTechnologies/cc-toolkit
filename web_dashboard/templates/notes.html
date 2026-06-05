@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ case.case_id }} / Notes{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div>
+        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
+        <h1 class="text-xl font-semibold mt-1">Notes</h1>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2">
+        <div id="notes-list" class="space-y-3">
+            <p class="text-gray-500">Loading...</p>
+        </div>
+    </div>
+    <div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold mb-3">New Note</h2>
+            <textarea id="note-body" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm mb-2 h-32" placeholder="Write your note..."></textarea>
+            <input id="note-tags" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm mb-2" placeholder="Tags (comma separated)">
+            <button onclick="addNote()" class="w-full bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded text-sm">Save Note</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadNotes() {
+    const el = document.getElementById('notes-list');
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/notes');
+        if (!r.ok) { el.innerHTML = '<p class="text-red-400">Failed to load notes (HTTP ' + r.status + ')</p>'; return; }
+        const notes = await r.json();
+        if (!Array.isArray(notes)) { el.innerHTML = '<p class="text-red-400">Unexpected response</p>'; return; }
+        if (notes.length === 0) { el.innerHTML = '<p class="text-gray-500">No notes yet</p>'; return; }
+        el.innerHTML = notes.slice().reverse().map(n =>
+            `<div class="bg-gray-900 rounded-lg border border-gray-800 p-3">
+                <div class="flex justify-between text-xs text-gray-500 mb-1">
+                    <span>${(n.timestamp||'').slice(0,19)}</span>
+                    <span>${(n.tags||[]).map(t => '<span class="bg-indigo-900/50 text-indigo-300 px-1.5 py-0.5 rounded">'+escapeHtml(t)+'</span>').join(' ')}</span>
+                </div>
+                <p class="text-sm text-gray-200 whitespace-pre-wrap">${escapeHtml(n.body)}</p>
+            </div>`
+        ).join('');
+    } catch (e) {
+        el.innerHTML = '<p class="text-red-400">Error loading notes: ' + e.message + '</p>';
+    }
+}
+async function addNote() {
+    const body = document.getElementById('note-body');
+    const tagsInput = document.getElementById('note-tags');
+    if (!body.value.trim()) return;
+    const tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+    await fetch('/api/case/{{ case.case_id }}/notes', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({body: body.value, tags})
+    });
+    body.value = '';
+    tagsInput.value = '';
+    loadNotes();
+}
+loadNotes();
+</script>
+{% endblock %}

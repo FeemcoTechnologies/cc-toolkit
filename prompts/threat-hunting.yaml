@@ -1,0 +1,49 @@
+title: Threat Hunting Guide
+description: Hypothesis-driven threat hunting across logs, telemetry, and endpoints — detection of adversary activity, lateral movement, persistence, and C2 beaconing.
+tags: [threat-hunting, detection, edr, siem]
+prompt: >
+  Perform a threat hunting exercise on {environment_name} using the following data sources: {data_sources}.
+
+  ## Environment
+  - Environment: {environment_name}
+  - Data sources available: {data_sources} (EDR / SIEM / DNS logs / proxy logs / NetFlow / AD logs / cloud trails)
+  - Time range: {time_range}
+  - Hunting hypothesis: {hypothesis}
+
+  ## Hunting Methodology
+
+  ### Hypothesis 1: Initial Access
+  - Search for suspicious processes spawned by Office documents (winword, excel, powerpnt spawning cmd, powershell, wscript)
+  - Identify macro execution events (Microsoft Office security settings bypass, DDE abuse)
+  - Detect browser exploitation (sandbox escape, child process from browser)
+
+  ### Hypothesis 2: Persistence
+  - Register run keys / startup folder modifications
+  - Scheduled task creation (schtasks.exe, New-ScheduledTask)
+  - WMI event subscription persistence
+  - Service installation (sc.exe, New-Service)
+  - DLL search-order hijacking (DLL side-loading)
+
+  ### Hypothesis 3: Lateral Movement
+  - RDP inbound/outbound connections from non-admin workstations
+  - SMB/PsExec/WMI remote execution patterns
+  - Pass-the-hash (NTLM authentication anomalies)
+  - Remote service creation
+  - WinRM usage anomalies
+
+  ### Hypothesis 4: C2 / Beaconing
+  - Beaconing to rare or newly-registered domains
+  - HTTP/S traffic to IPs (no DNS resolution)
+  - DNS TXT/CNAME tunneling patterns
+  - JA3/S signature clustering for unknown malware
+  - Non-standard ports for HTTPS (8443, 9443, 4443, 8081)
+  - Beaconing intervals (periodic outbound connections every N seconds)
+
+  ### Hypothesis 5: Data Exfiltration
+  - Large outbound data transfers (volume anomalies per user/host)
+  - DNS TXT record size anomalies
+  - Cloud API calls to unknown external storage
+  - Archive creation (zip, rar, 7z) on sensitive data shares
+
+  ## Output
+  Create findings for each confirmed detection with the hypothesis, data source, query used, affected entities, severity, and recommended response actions.

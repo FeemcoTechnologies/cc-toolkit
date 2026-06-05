@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}{{ data.name }} — Runbook{% endblock %}
+{% block head %}
+<style>
+    .step-card { transition: all 0.15s ease; }
+    .step-card:hover { border-color: #4b5563; }
+    .step-nested { border-left: 2px solid #374151; }
+    .type-badge { font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+    .type-tool { background: #1e3a5f; color: #93c5fd; }
+    .type-parallel { background: #3b0764; color: #d8b4fe; }
+    .type-conditional { background: #78350f; color: #fdba74; }
+    .type-foreach { background: #14532d; color: #86efac; }
+    .type-prompt { background: #1f2937; color: #9ca3af; }
+    .type-notify { background: #1e1b4b; color: #a5b4fc; }
+    .type-set { background: #1c1917; color: #a8a29e; }
+    .type-wait { background: #1e293b; color: #94a3b8; }
+    .type-runbook { background: #422006; color: #fcd34d; }
+    .type-report { background: #0f172a; color: #e2e8f0; }
+    .type-log { background: #1f2937; color: #6b7280; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+        <i data-lucide="book-open" class="w-6 h-6 text-indigo-400"></i>
+        <h1 class="text-xl font-semibold">{{ data.name }}</h1>
+        {% if data.version %}
+        <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{{ data.version }}</span>
+        {% endif %}
+    </div>
+    <a href="/runbooks" class="text-gray-400 hover:text-gray-100 text-sm">&larr; All Runbooks</a>
+</div>
+
+{% if data.description %}
+<p class="text-sm text-gray-400 mb-6">{{ data.description }}</p>
+{% endif %}
+
+<!-- Vars -->
+{% if data.vars %}
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-6">
+    <h2 class="text-sm font-semibold text-gray-300 mb-2">Variables</h2>
+    <div class="flex flex-wrap gap-2">
+        {% for k, v in data.vars.items() %}
+        <span class="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded"><span class="text-indigo-400">{{ k }}</span> = {{ v }}</span>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Launch Form -->
+<div class="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4 mb-6">
+    <h2 class="text-sm font-semibold text-indigo-300 mb-3 flex items-center gap-1">
+        <i data-lucide="play" class="w-4 h-4"></i> Launch Runbook
+    </h2>
+    <div class="flex gap-3 items-end flex-wrap">
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">Target(s)</label>
+            <input id="launch-target" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-64" placeholder="target.com or IP">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">Case ID (optional)</label>
+            <input id="launch-case" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-48" placeholder="{{ '%0.8s' | format(data.name) }}-YYYYMMDD">
+        </div>
+        <button onclick="launchRunbook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Run</button>
+    </div>
+    <div id="launch-status" class="mt-2 text-xs hidden"></div>
+</div>
+
+<!-- Step Tree -->
+<div class="space-y-1">
+    {% if data.preflight %}
+    <div class="mb-4">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Preflight</h3>
+        {% for step in data.preflight %}
+            {{ _render_step(step, 0) }}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Steps</h3>
+    {% for step in data.steps %}
+        {{ _render_step(step, 0) }}
+    {% endfor %}
+
+    {% if data.postflight %}
+    <div class="mt-4">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Postflight</h3>
+        {% for step in data.postflight %}
+            {{ _render_step(step, 0) }}
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% macro _render_step(step, depth) %}
+{% if step is not mapping %}<div class="text-red-500 text-xs ml-{{ depth * 16 }}px">⚠ Invalid step (expected dict, got {{ step.__class__.__name__ }})</div>
+{% else %}
+{% set type = step.get('type', 'tool') %}
+{% set type_class = 'type-' + type %}
+{% set indent = depth * 16 %}
+<div class="step-card bg-gray-900/50 border border-gray-800/50 rounded px-3 py-2 mb-1" style="margin-left: {{ indent }}px">
+    <div class="flex items-center gap-2 text-sm">
+        <span class="type-badge {{ type_class }}">{{ type }}</span>
+        {% if step.id %}
+        <span class="text-gray-500 font-mono text-xs">{{ step.id }}</span>
+        {% endif %}
+        {% if step.name %}
+        <span class="text-gray-200 font-medium">{{ step.name }}</span>
+        {% endif %}
+        {% if step.tool %}
+        <span class="text-gray-500 text-xs">{{ step.tool }}</span>
+        {% endif %}
+    </div>
+
+    {% if step.message %}
+    <div class="text-xs text-gray-500 mt-1 ml-0">{{ step.message }}</div>
+    {% endif %}
+
+    {% if step.description %}
+    <div class="text-xs text-gray-500 mt-1 ml-0">{{ step.description }}</div>
+    {% endif %}
+
+    {% if step.args %}
+    <div class="text-xs text-gray-600 mt-1 ml-0 font-mono">{{ step.args | join(' ') }}</div>
+    {% endif %}
+
+    {% if step.when and step.when is string and step.when != 'always' %}
+    <div class="text-xs text-yellow-600 mt-1 ml-0">when: {{ step.when }}</div>
+    {% endif %}
+
+    {% if step.timeout %}
+    <div class="text-xs text-gray-600 mt-1 ml-0">timeout: {{ step.timeout }}s</div>
+    {% endif %}
+
+    {% if step.condition %}
+    <div class="text-xs text-amber-600 mt-1 ml-0">condition: {{ step.condition }}</div>
+    {% endif %}
+
+    {% if step.artifacts %}
+    <div class="text-xs text-gray-600 mt-1 ml-0">artifacts: {{ step.artifacts | join(', ') }}</div>
+    {% endif %}
+
+    {% if step.steps %}
+    <div class="mt-2 step-nested pl-2">
+        {% for child in step.steps %}
+            {{ _render_step(child, depth + 1) }}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if step.then %}
+    <div class="mt-2 step-nested pl-2">
+        <div class="text-xs text-green-700 mb-1">then:</div>
+        {% for child in step.then %}
+            {{ _render_step(child, depth + 1) }}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if step.else %}
+    <div class="mt-2 step-nested pl-2">
+        <div class="text-xs text-red-700 mb-1">else:</div>
+        {% for child in step.else %}
+            {{ _render_step(child, depth + 1) }}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if step.vars %}
+    <div class="text-xs text-gray-600 mt-1 ml-0">vars: {{ step.vars }}</div>
+    {% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% block scripts %}
+<script>
+function launchRunbook() {
+    var target = document.getElementById('launch-target').value.trim();
+    var caseId = document.getElementById('launch-case').value.trim();
+    if (!target) { alert('Enter a target'); return; }
+
+    var btn = document.querySelector('button[onclick="launchRunbook()"]');
+    btn.disabled = true;
+    btn.textContent = 'Launching...';
+    var status = document.getElementById('launch-status');
+    status.className = 'mt-2 text-xs text-yellow-400';
+    status.textContent = 'Sending launch request...';
+    status.classList.remove('hidden');
+
+    fetch('/api/runbook/{{ filename }}/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target: target, case_id: caseId}),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'ok') {
+            status.textContent = 'Launched! Job: ' + data.job_id;
+            status.className = 'mt-2 text-xs text-green-400';
+            setTimeout(function() {
+                window.location.href = '/case/' + encodeURIComponent(data.case_id);
+            }, 1500);
+        } else {
+            status.textContent = 'Error: ' + (data.error || 'Unknown');
+            status.className = 'mt-2 text-xs text-red-400';
+            btn.disabled = false;
+            btn.textContent = 'Run';
+        }
+    })
+    .catch(function(err) {
+        status.textContent = 'Error: ' + err.message;
+        status.className = 'mt-2 text-xs text-red-400';
+        btn.disabled = false;
+        btn.textContent = 'Run';
+    });
+}
+</script>
+{% endblock %}

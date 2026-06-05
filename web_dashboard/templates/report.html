@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ case.case_id }} / Report{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <div>
+        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back to {{ case.case_id }}</a>
+        <h1 class="text-xl font-semibold mt-1">Report Generator</h1>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+    <div class="lg:col-span-3">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold mb-3">Report Preview</h2>
+            <div id="report-preview" class="text-sm text-gray-400">
+                <p>Generate a report to see preview here.</p>
+            </div>
+        </div>
+    </div>
+    <div class="space-y-4">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold mb-3">Export</h2>
+            <div class="space-y-2">
+                <button onclick="generateReport('md')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">Markdown (.md)</button>
+                <button onclick="generateReport('html')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">HTML</button>
+                <button onclick="generateReport('docx')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">Word (.docx)</button>
+                <button onclick="generateReport('pdf')" class="w-full bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded text-sm text-left">PDF</button>
+            </div>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold mb-2">Sections</h2>
+            <div class="text-xs space-y-1 text-gray-400">
+                <p>&check; Executive Summary</p>
+                <p>&check; Methodology</p>
+                <p>&check; Findings</p>
+                <p>&check; Strengths & Weaknesses</p>
+                <p>&check; Recommendations</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="report-output" class="mt-4 bg-gray-900 rounded-lg border border-gray-800 p-4 hidden">
+    <h2 class="text-sm font-semibold mb-2">Output</h2>
+    <pre id="report-output-text" class="text-xs text-gray-300 whitespace-pre-wrap"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function generateReport(format) {
+    const btn = event.target;
+    btn.textContent = 'Generating...';
+    btn.disabled = true;
+    const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({format})
+    });
+    const result = await r.json();
+    btn.textContent = format.toUpperCase();
+    btn.disabled = false;
+    const output = document.getElementById('report-output');
+    const text = document.getElementById('report-output-text');
+    output.classList.remove('hidden');
+    if (result.error) {
+        text.textContent = 'Error: ' + result.error;
+    } else {
+        text.textContent = result.output || 'Report generated successfully';
+    }
+}
+</script>
+{% endblock %}

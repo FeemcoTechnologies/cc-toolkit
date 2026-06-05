@@ -1,0 +1,197 @@
+id: cve-log4shell-detect
+info:
+  name: Apache Log4Shell - CVE-2021-44228
+  author: cc-toolkit
+  severity: critical
+  description: Detects Log4Shell JNDI injection in HTTP headers and parameters
+  tags: cve, cve2021, log4j, rce
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?x=${jndi:ldap://{{interactsh-url}}/a}"
+    headers:
+      User-Agent: "${jndi:ldap://{{interactsh-url}}/a}"
+      X-Forwarded-For: "${jndi:ldap://{{interactsh-url}}/a}"
+      Cookie: "x=${jndi:ldap://{{interactsh-url}}/a}"
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        words:
+          - "dns"
+          - "http"
+---
+id: jenkins-unauthenticated-script
+info:
+  name: Jenkins Unauthenticated Script Console
+  author: cc-toolkit
+  severity: high
+  description: Detects Jenkins script console accessible without authentication
+  tags: jenkins, rce, misconfig
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/script"
+      - "{{BaseURL}}/scriptText"
+    matchers:
+      - type: word
+        words:
+          - "Script Console"
+          - "Groovy"
+        condition: or
+---
+id: grafana-unauthenticated
+info:
+  name: Grafana Unauthenticated Access
+  author: cc-toolkit
+  severity: medium
+  description: Detects Grafana instances without authentication
+  tags: grafana, misconfig, dashboard
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/dashboards/home"
+      - "{{BaseURL}}/api/search"
+    matchers:
+      - type: word
+        words:
+          - "\"title\""
+          - "\"dashboard\""
+        condition: or
+---
+id: git-config-exposed
+info:
+  name: Exposed .git/config
+  author: cc-toolkit
+  severity: high
+  description: Detects exposed Git repository configuration
+  tags: git, exposure, recon
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.git/config"
+      - "{{BaseURL}}/.git/HEAD"
+    matchers:
+      - type: word
+        words:
+          - "[core]"
+          - "ref: refs/heads/"
+        condition: or
+---
+id: env-file-exposed
+info:
+  name: Exposed .env File
+  author: cc-toolkit
+  severity: high
+  description: Detects exposed environment files with potential secrets
+  tags: exposure, secrets
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env"
+      - "{{BaseURL}}/.env.example"
+      - "{{BaseURL}}/.env.local"
+    matchers:
+      - type: word
+        words:
+          - "APP_KEY"
+          - "DB_PASSWORD"
+          - "API_KEY"
+          - "SECRET"
+          - "DB_HOST"
+        condition: or
+---
+id: nginx-alias-traversal
+info:
+  name: NGINX Alias Traversal
+  author: cc-toolkit
+  severity: medium
+  description: Detects NGINX alias configuration path traversal vulnerability
+  tags: nginx, path-traversal
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/../"
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        words:
+          - "index of"
+          - "Directory listing for"
+        condition: or
+---
+id: cors-misconfig-wildcard
+info:
+  name: CORS Misconfiguration - Wildcard Origin
+  author: cc-toolkit
+  severity: medium
+  description: Detects CORS headers allowing any origin with credential support
+  tags: cors, misconfig
+
+requests:
+  - method: GET
+    headers:
+      Origin: "https://evil.com"
+    path:
+      - "{{BaseURL}}"
+    matchers-condition: and
+    matchers:
+      - type: word
+        words:
+          - "Access-Control-Allow-Origin: https://evil.com"
+        part: header
+      - type: word
+        words:
+          - "Access-Control-Allow-Credentials: true"
+        part: header
+---
+id: s3-bucket-listing
+info:
+  name: S3 Bucket Listing Enabled
+  author: cc-toolkit
+  severity: medium
+  description: Detects publicly listable S3 buckets
+  tags: cloud, aws, s3
+
+requests:
+  - method: GET
+    path:
+      - "http://{{BaseURL}}.s3.amazonaws.com/"
+      - "http://{{BaseURL}}.s3.us-east-1.amazonaws.com/"
+    matchers:
+      - type: word
+        words:
+          - "<ListBucketResult"
+          - "<Contents>"
+        condition: or
+---
+id: springboot-actuator
+info:
+  name: Spring Boot Actuator Exposed
+  author: cc-toolkit
+  severity: medium
+  description: Detects exposed Spring Boot actuator endpoints
+  tags: spring, java, exposure
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator"
+      - "{{BaseURL}}/actuator/health"
+      - "{{BaseURL}}/actuator/env"
+      - "{{BaseURL}}/actuator/beans"
+    matchers:
+      - type: word
+        words:
+          - "\"status\""
+          - "\"health\""
+          - "spring.application.name"
+          - "\"beans\""
+        condition: or
