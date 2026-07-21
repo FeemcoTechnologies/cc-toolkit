@@ -23,8 +23,11 @@ class FindingsDB:
 
     def _read(self) -> dict:
         if self._path.exists():
-            return json.loads(self._path.read_text())
-        return {"findings": []}
+            try:
+                return json.loads(self._path.read_text())
+            except (json.JSONDecodeError, ValueError, OSError):
+                return {"findings": [], "_counter": 0}
+        return {"findings": [], "_counter": 0}
 
     def _write(self, data: dict):
         tmp = self._path.with_suffix(".tmp")
@@ -35,7 +38,10 @@ class FindingsDB:
             description: str = "", remediation: str = "",
             evidence_refs: list = None, source: str = "",
             cve: str = "", cwe: str = "", impact: str = "",
-            poc: str = "", references: list = None) -> dict:
+            poc: str = "", references: list = None,
+            command_output: str = "",
+            cvss_score: float = None, cvss_vector: str = "",
+            tags: list = None, affected_hosts: str = "") -> dict:
         if severity not in self.SEVERITIES:
             severity = "medium"
         finding = {
@@ -50,26 +56,68 @@ class FindingsDB:
             "cwe": cwe,
             "impact": impact,
             "poc": poc,
+            "command_output": command_output,
+            "affected_hosts": affected_hosts,
             "references": references or [],
             "status": "unvalidated",
+            "cvss_score": cvss_score,
+            "cvss_vector": cvss_vector or "",
+            "tags": tags or [],
             "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "updated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         with self._lock:
             data = self._read()
-            finding["id"] = f"F{len(data['findings'])+1:04d}"
+            counter = data.get("_counter", 0) + 1
+            data["_counter"] = counter
+            finding["id"] = f"F{counter:04d}"
             data["findings"].append(finding)
             self._write(data)
         return finding
 
-    def list(self, severity: str = "", status: str = "") -> List[dict]:
+    def list(self, severity: str = "", status: str = "",
+             tag: str = "") -> List[dict]:
         with self._lock:
             findings = self._read()["findings"]
         if severity:
             findings = [f for f in findings if f["severity"] == severity]
         if status:
             findings = [f for f in findings if f["status"] == status]
+        if tag:
+            findings = [f for f in findings if tag in f.get("tags", [])]
         return findings
+
+    def tags(self) -> dict:
+        """Return tag usage stats across all findings in this case."""
+        counts = {}
+        with self._lock:
+            for f in self._read()["findings"]:
+                for t in f.get("tags", []):
+                    counts[t] = counts.get(t, 0) + 1
+        return counts
+
+    def add_tag(self, finding_id: str, tag: str) -> Optional[dict]:
+        with self._lock:
+            data = self._read()
+            for f in data["findings"]:
+                if f["id"] == finding_id:
+                    if tag not in f.get("tags", []):
+                        f.setdefault("tags", []).append(tag)
+                        f["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        self._write(data)
+                    return dict(f)
+        return None
+
+    def remove_tag(self, finding_id: str, tag: str) -> Optional[dict]:
+        with self._lock:
+            data = self._read()
+            for f in data["findings"]:
+                if f["id"] == finding_id:
+                    f["tags"] = [t for t in f.get("tags", []) if t != tag]
+                    f["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    self._write(data)
+                    return dict(f)
+        return None
 
     def get(self, finding_id: str) -> Optional[dict]:
         with self._lock:
@@ -81,7 +129,9 @@ class FindingsDB:
     def update(self, finding_id: str, **kwargs) -> Optional[dict]:
         allowed = {"title", "severity", "description", "remediation",
                    "evidence_refs", "status", "source",
-                   "cve", "cwe", "impact", "poc", "references"}
+                   "cve", "cwe", "impact", "poc", "references",
+                   "command_output", "cvss_score", "cvss_vector", "tags",
+                   "affected_hosts"}
         with self._lock:
             data = self._read()
             for f in data["findings"]:

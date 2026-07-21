@@ -7,6 +7,12 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Assets</span>
+</nav>
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold flex items-center gap-2">
         <i data-lucide="hard-drive" class="w-6 h-6 text-indigo-400"></i>
@@ -215,7 +221,9 @@ async function loadCustomers() {
 
 async function createCustomer() {
     const name = document.getElementById('new-customer-name').value.trim();
+    const btn = document.querySelector('#panel-customers button.bg-indigo-600');
     if (!name) return;
+    btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i>'; lucide.createIcons();
     try {
         const r = await fetch('/api/customers', {
             method: 'POST',
@@ -226,20 +234,23 @@ async function createCustomer() {
             document.getElementById('new-customer-name').value = '';
             loadCustomers();
             loadStats();
+            toast('Customer created', true);
         } else {
             const err = await r.json();
-            alert(err.error || 'Create failed');
+            toast(err.error || 'Create failed', false);
         }
-    } catch(e) { alert(e.message); }
+    } catch(e) { toast(e.message, false); }
+    btn.disabled = false; btn.innerHTML = 'Add Customer';
 }
 
 async function deleteCustomer(cid) {
     if (!confirm('Delete customer "' + cid + '" and all their assets?')) return;
     try {
         await fetch('/api/customers/' + cid, {method: 'DELETE'});
+        toast('Customer deleted', true);
         loadCustomers();
         loadStats();
-    } catch(e) { alert(e.message); }
+    } catch(e) { toast(e.message, false); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -349,11 +360,12 @@ async function submitNewAsset(event) {
             closeNewAssetModal();
             loadAssets();
             loadStats();
+            toast('Asset created', true);
         } else {
             const err = await r.json();
-            alert(err.error || 'Create failed');
+            toast(err.error || 'Create failed', false);
         }
-    } catch(e) { alert(e.message); }
+    } catch(e) { toast(e.message, false); }
     return false;
 }
 
@@ -361,9 +373,10 @@ async function deleteAsset(aid) {
     if (!confirm('Delete this asset and all its credentials?')) return;
     try {
         await fetch('/api/assets/' + aid, {method: 'DELETE'});
+        toast('Asset deleted', true);
         loadAssets();
         loadStats();
-    } catch(e) { alert(e.message); }
+    } catch(e) { toast(e.message, false); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -457,11 +470,12 @@ async function submitCred(event) {
             closeCredModal();
             loadCreds();
             loadStats();
+            toast('Credential saved', true);
         } else {
             const err = await r.json();
-            alert(err.error || 'Create failed');
+            toast(err.error || 'Create failed', false);
         }
-    } catch(e) { alert(e.message); }
+    } catch(e) { toast(e.message, false); }
     return false;
 }
 
@@ -469,8 +483,9 @@ async function deleteCred(cid) {
     if (!confirm('Delete this credential?')) return;
     try {
         await fetch('/api/credentials/' + cid, {method: 'DELETE'});
+        toast('Credential deleted', true);
         loadCreds();
-    } catch(e) { alert(e.message); }
+    } catch(e) { toast(e.message, false); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -510,7 +525,7 @@ async function uploadNmapFile(event) {
 async function extractFindings() {
     const caseId = document.getElementById('extract-case').value;
     const customerId = document.getElementById('extract-customer').value;
-    if (!caseId) { alert('Select a case'); return; }
+    if (!caseId) { toast('Select a case', false); return; }
     const el = document.getElementById('extract-result');
     el.className = 'mt-3 text-sm text-yellow-400';
     el.textContent = 'Extracting...';

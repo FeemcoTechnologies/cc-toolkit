@@ -1,0 +1,548 @@
+name: "Supabase Security Assessment"
+description: >
+  Comprehensive Supabase security assessment covering: anon/service_role key
+  exposure, RLS policy bypass & IDOR, auth flow abuse (open signup, rate limiting,
+  enumeration), storage bucket security, Stripe/payment integration abuse, Edge
+  Functions, and realtime subscription testing
+version: "2.0"
+target_required: true
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+  supabase_project_ref: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Supabase security assessment starting — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Supabase project discovery & key exposure
+  - id: discovery
+    name: "Supabase project discovery & key exposure"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: js_scan_keys
+        name: "Scan JS bundles for Supabase anon/service_role keys"
+        tool: bash
+        args:
+          - "-c"
+          - "curl -sk '{target}' | grep -oiE '(sb-[a-zA-Z0-9_-]{20,}|eyJ[a-zA-Z0-9_-]{20,}\\.eyJ[a-zA-Z0-9_-]{20,}|service_role[_-]?key|anon[_-]?key|supabase[_-]?key|SUPABASE[_-]?(URL|KEY|ANON|SERVICE|SECRET))' | sort -u"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/supabase-keys-found.txt"
+
+      - id: env_file_check
+        name: "Check for exposed .env / config files"
+        tool: ffuf
+        args:
+          - "-u"
+          - "{target}/FUZZ"
+          - "-w"
+          - "{wordlist}"
+          - "-mc"
+          - "200"
+          - "-e"
+          - ".env,.env.local,.env.production,.env.development,config.js,config.json"
+          - "-o"
+          - "{case_dir}/ffuf-env.json"
+          - "-of"
+          - "json"
+          - "-ac"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/ffuf-env.json"
+
+      - id: supabase_url_discovery
+        name: "Discover Supabase project URL from source"
+        tool: bash
+        args:
+          - "-c"
+          - "curl -sk '{target}' | grep -oiE '(https?://[a-zA-Z0-9.-]*supabase\\.(co|in)|app\\.supabase\\.(io|co)|[a-zA-Z0-9_-]{20,}\\.supabase\\.co|ref:[a-zA-Z0-9_-]+)' | sort -u"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/supabase-urls.txt"
+
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args:
+          - "-a3"
+          - "{target}"
+          - "--log-verbose"
+          - "{case_dir}/whatweb-supabase.txt"
+        timeout: 60
+
+  - id: anon_key_check
+    name: "Anon key access level assessment"
+    type: sequential
+    steps:
+      - id: extract_anon_key
+        name: "Extract anon key from artifacts"
+        tool: bash
+        args:
+          - "-c"
+          - "grep -roE 'eyJ[a-zA-Z0-9_-]{20,}\\.eyJ[a-zA-Z0-9_-]{20,}[a-zA-Z0-9_-]{2,}' {case_dir} 2>/dev/null | head -1 | cut -d: -f2- | tr -d '\\n' > {case_dir}/anon_key.txt"
+        timeout: 10
+
+      - id: anon_key_test
+        name: "Test anon key against REST API"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            ANON_KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            PROJECT_URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$ANON_KEY\" ] && [ -n \"$PROJECT_URL\" ]; then
+              echo \"=== REST API /rest/v1/ ===\" >> {case_dir}/anon-key-access.txt;
+              curl -sk \"$PROJECT_URL/rest/v1/\" -H \"apikey: $ANON_KEY\" >> {case_dir}/anon-key-access.txt 2>&1;
+              echo \"\" >> {case_dir}/anon-key-access.txt;
+              echo \"=== Auth /auth/v1/user ===\" >> {case_dir}/anon-key-access.txt;
+              curl -sk \"$PROJECT_URL/auth/v1/user\" -H \"apikey: $ANON_KEY\" >> {case_dir}/anon-key-access.txt 2>&1;
+            else
+              echo \"No anon key or project URL found — manual extraction needed\" > {case_dir}/anon-key-access.txt;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/anon-key-access.txt"
+
+  # Phase 2: Row Level Security (RLS) & IDOR testing
+  - id: rls_idor
+    name: "RLS bypass & IDOR testing"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: public_table_enum
+        name: "Enumerate public tables via REST API"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            for table in users profiles accounts orders products categories merchants customers payments subscriptions settings config audit_logs sessions; do
+              echo \"=== Table: $table ===\" >> {case_dir}/public-tables.txt;
+              curl -sk \"$URL/rest/v1/$table?limit=1\" -H \"apikey: $KEY\" >> {case_dir}/public-tables.txt 2>&1;
+              echo \"\" >> {case_dir}/public-tables.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/public-tables.txt"
+
+      - id: idor_cross_tenant
+        name: "Cross-tenant IDOR via ID tampering"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            for id in 1 2 3 9999 10000 '00000000-0000-0000-0000-000000000001' 'ffffffff-ffff-ffff-ffff-ffffffffffff'; do
+              echo \"=== ID: $id ===\" >> {case_dir}/idor-probes.txt;
+              curl -sk \"$URL/rest/v1/users?id=eq.$id\" -H \"apikey: $KEY\" >> {case_dir}/idor-probes.txt 2>&1;
+              echo \"\" >> {case_dir}/idor-probes.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/idor-probes.txt"
+
+      - id: rls_header_bypass
+        name: "RLS header bypass attempts"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            for header in \"X-User-Id: admin\" \"X-Client-Info: admin\" \"Authorization: Bearer admin\" \"X-Hasura-Admin-Secret: myadminsecretkey\" \"X-Hasura-Role: admin\" \"X-Supabase-Auth: admin\" \"X-Admin-Key: true\" \"X-Role: service_role\"; do
+              hname=$(echo \"$header\" | cut -d: -f1);
+              hval=$(echo \"$header\" | cut -d: -f2-);
+              echo \"=== Header: $header ===\" >> {case_dir}/rls-bypass-headers.txt;
+              curl -sk \"$URL/rest/v1/\" -H \"apikey: $KEY\" -H \"$hname: $hval\" >> {case_dir}/rls-bypass-headers.txt 2>&1;
+              echo \"\" >> {case_dir}/rls-bypass-headers.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/rls-bypass-headers.txt"
+
+      - id: graphql_enum
+        name: "Supabase GraphQL endpoint testing"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            echo \"=== GraphQL introspection ===\" >> {case_dir}/graphql-test.txt;
+            curl -sk \"$URL/graphql/v1\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"query\":\"{__schema{types{name}}}\"}' >> {case_dir}/graphql-test.txt 2>&1
+        timeout: 30
+        artifacts:
+          - "{case_dir}/graphql-test.txt"
+
+      - id: service_role_test
+        name: "Check if service_role key is exposed or guessable"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            REF=$(echo \"$URL\" | grep -oE '[a-zA-Z0-9_-]{20,}');
+            if [ -n \"$REF\" ]; then
+              echo \"Testing with known patterns for ref: $REF\" > {case_dir}/service-role-test.txt;
+              for attempt in \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IlJFRiIsInJvbGUiOiJzZXJ2aWNlX3JvbGUifQ.test\" \"$KEY\" \"service_role_key\"; do
+                echo \"=== Attempt: $attempt ===\" >> {case_dir}/service-role-test.txt;
+                curl -sk \"$URL/rest/v1/\" -H \"apiKey: $attempt\" -H \"Authorization: Bearer $attempt\" >> {case_dir}/service-role-test.txt 2>&1;
+                echo \"\" >> {case_dir}/service-role-test.txt;
+              done;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/service-role-test.txt"
+
+  # Phase 3: Auth flow security
+  - id: auth_testing
+    name: "Supabase Auth security testing"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: open_signup
+        name: "Test open signup without verification"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== Open signup test ===\" >> {case_dir}/auth-signup.txt;
+              curl -sk \"$URL/auth/v1/signup\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"test_open_signup@example.com\",\"password\":\"Test1234!\"}' >> {case_dir}/auth-signup.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-signup.txt;
+              echo \"=== Magic link test ===\" >> {case_dir}/auth-signup.txt;
+              curl -sk \"$URL/auth/v1/magiclink\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"test_magic@example.com\"}' >> {case_dir}/auth-signup.txt 2>&1;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/auth-signup.txt"
+
+      - id: rate_limiting
+        name: "Rate limiting tests on auth endpoints"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== Rate limit: login ===\" >> {case_dir}/auth-rate-limit.txt;
+              for i in $(seq 1 20); do
+                curl -sk -w \"%{http_code} \" -o /dev/null \"$URL/auth/v1/token?grant_type=password\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"test@example.com\",\"password\":\"wrong\"}' >> {case_dir}/auth-rate-limit.txt 2>&1;
+              done;
+              echo \"\" >> {case_dir}/auth-rate-limit.txt;
+              echo \"=== Rate limit: signup ===\" >> {case_dir}/auth-rate-limit.txt;
+              for i in $(seq 1 20); do
+                curl -sk -w \"%{http_code} \" -o /dev/null \"$URL/auth/v1/signup\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"rate_test_'$i'@example.com\",\"password\":\"Test1234!\"}' >> {case_dir}/auth-rate-limit.txt 2>&1;
+              done;
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/auth-rate-limit.txt"
+
+      - id: user_enumeration
+        name: "Username/email enumeration checks"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== Enum via signup (existing user) ===\" >> {case_dir}/auth-enum.txt;
+              curl -sk -w \"\\nHTTP: %{http_code} Body: %{size_download}\" \"$URL/auth/v1/signup\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"admin@example.com\",\"password\":\"Test1234!\"}' >> {case_dir}/auth-enum.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-enum.txt;
+              echo \"=== Enum via signup (unknown user) ===\" >> {case_dir}/auth-enum.txt;
+              curl -sk -w \"\\nHTTP: %{http_code} Body: %{size_download}\" \"$URL/auth/v1/signup\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"nonexistent_'$(date +%s)'@example.com\",\"password\":\"Test1234!\"}' >> {case_dir}/auth-enum.txt 2>&1;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/auth-enum.txt"
+
+      - id: password_reset
+        name: "Password reset abuse testing"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== Password reset request ===\" >> {case_dir}/auth-password-reset.txt;
+              curl -sk -w \"\\nHTTP: %{http_code}\" \"$URL/auth/v1/recover\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"admin@example.com\"}' >> {case_dir}/auth-password-reset.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-password-reset.txt;
+              echo \"=== OTP test ===\" >> {case_dir}/auth-password-reset.txt;
+              curl -sk -w \"\\nHTTP: %{http_code}\" \"$URL/auth/v1/otp\" -H \"apikey: $KEY\" -H \"Content-Type: application/json\" -d '{\"email\":\"admin@example.com\"}' >> {case_dir}/auth-password-reset.txt 2>&1;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/auth-password-reset.txt"
+
+  # Phase 4: Storage bucket security
+  - id: storage_test
+    name: "Storage bucket security testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: list_buckets
+        name: "Enumerate storage buckets"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== List buckets ===\" >> {case_dir}/storage-buckets.txt;
+              curl -sk \"$URL/storage/v1/bucket\" -H \"apikey: $KEY\" >> {case_dir}/storage-buckets.txt 2>&1;
+              echo \"\" >> {case_dir}/storage-buckets.txt;
+              echo \"=== Public bucket check ===\" >> {case_dir}/storage-buckets.txt;
+              curl -sk \"$URL/storage/v1/bucket\" -H \"apikey: $KEY\" -H \"Authorization: Bearer $KEY\" >> {case_dir}/storage-buckets.txt 2>&1;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/storage-buckets.txt"
+
+      - id: bucket_access
+        name: "Test individual bucket access"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              for bucket in public private uploads files images avatars documents backups exports; do
+                echo \"=== Bucket: $bucket ===\" >> {case_dir}/storage-bucket-access.txt;
+                curl -sk \"$URL/storage/v1/object/$bucket/\" -H \"apikey: $KEY\" >> {case_dir}/storage-bucket-access.txt 2>&1;
+                echo \"\" >> {case_dir}/storage-bucket-access.txt;
+              done;
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/storage-bucket-access.txt"
+
+      - id: rls_bucket_bypass
+        name: "Storage RLS bypass via direct object access"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== Try upload without auth ===\" >> {case_dir}/storage-rls-bypass.txt;
+              curl -sk -X POST \"$URL/storage/v1/object/public/test_upload.txt\" -H \"apikey: $KEY\" -H \"Content-Type: text/plain\" -d 'test' >> {case_dir}/storage-rls-bypass.txt 2>&1;
+              echo \"\" >> {case_dir}/storage-rls-bypass.txt;
+              echo \"=== Try download common files ===\" >> {case_dir}/storage-rls-bypass.txt;
+              for f in config.json .env index.html index.js; do
+                curl -sk \"$URL/storage/v1/object/public/$f\" -H \"apikey: $KEY\" -w \" HTTP:%{http_code}\" >> {case_dir}/storage-rls-bypass.txt 2>&1;
+                echo \"\" >> {case_dir}/storage-rls-bypass.txt;
+              done;
+            fi
+        timeout: 30
+
+  # Phase 5: Edge Functions & Realtime
+  - id: advanced_features
+    name: "Edge Functions, Realtime & CORS testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: edge_functions
+        name: "Discover and test Edge Functions"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              FUNC_URL=$(echo \"$URL\" | sed 's/supabase\\.co/functions.supabase.co/');
+              for func in hello health auth webhook api stripe sync process notify; do
+                echo \"=== Function: $func ===\" >> {case_dir}/edge-functions.txt;
+                curl -sk \"$FUNC_URL/$func\" -H \"apikey: $KEY\" -H \"Authorization: Bearer $KEY\" >> {case_dir}/edge-functions.txt 2>&1;
+                echo \"\" >> {case_dir}/edge-functions.txt;
+              done;
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/edge-functions.txt"
+
+      - id: realtime_test
+        name: "Realtime subscription abuse check"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              WSS_URL=$(echo \"$URL\" | sed 's/^http/ws/');
+              echo \"Realtime endpoint: $WSS_URL/realtime/v1/ws?apikey=$KEY\" > {case_dir}/realtime-test.txt;
+              echo \"\" >> {case_dir}/realtime-test.txt;
+              echo \"=== REST heartbeat ===\" >> {case_dir}/realtime-test.txt;
+              curl -sk \"$URL/realtime/v1/\" -H \"apikey: $KEY\" >> {case_dir}/realtime-test.txt 2>&1;
+            fi
+        timeout: 15
+
+      - id: cors_test
+        name: "CORS misconfiguration testing"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            echo \"=== CORS origin reflection ===\" > {case_dir}/cors-test.txt;
+            curl -sk -H \"Origin: https://evil.com\" -H \"apikey: $KEY\" \"$URL/rest/v1/\" -I >> {case_dir}/cors-test.txt 2>&1;
+            echo \"\" >> {case_dir}/cors-test.txt;
+            for ep in auth/v1/signup rest/v1/ graphql/v1 storage/v1/bucket; do
+              echo \"=== EP: $ep ===\" >> {case_dir}/cors-test.txt;
+              curl -sk -H \"Origin: https://evil.com\" -H \"apikey: $KEY\" \"$URL/$ep\" -I >> {case_dir}/cors-test.txt 2>&1;
+              echo \"\" >> {case_dir}/cors-test.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/cors-test.txt"
+
+  # Phase 6: Payment / Stripe integration (if applicable)
+  - id: payment_checks
+    name: "Payment & Stripe integration abuse"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: stripe_checkout_unauth
+        name: "Test unauth Stripe checkout access"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo \"=== Checking for Stripe-related endpoints ===\" > {case_dir}/stripe-abuse.txt;
+            for ep in checkout api/checkout create-checkout-session stripe/webhook api/stripe charge subscribe api/subscribe; do
+              echo \"=== $ep ===\" >> {case_dir}/stripe-abuse.txt;
+              curl -sk \"{target}/$ep\" -w \" HTTP:%{http_code}\" >> {case_dir}/stripe-abuse.txt 2>&1;
+              echo \"\" >> {case_dir}/stripe-abuse.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/stripe-abuse.txt"
+
+      - id: price_manipulation
+        name: "Stripe price / amount tampering"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo \"=== Look for price IDs in source ===\" > {case_dir}/price-tamper.txt;
+            curl -sk '{target}' | grep -oiE '(price_[a-zA-Z0-9]{20,}|prod_[a-zA-Z0-9]{20,}|\\$[0-9]+\\.[0-9]{2}|amount|price|total|[\\?&]price=[a-zA-Z0-9_]+)' | sort -u >> {case_dir}/price-tamper.txt 2>&1
+        timeout: 30
+        artifacts:
+          - "{case_dir}/price-tamper.txt"
+
+      - id: promo_code
+        name: "Promo code brute-force / abuse"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo \"=== Checking for promo endpoints ===\" > {case_dir}/promo-abuse.txt;
+            for ep in promo promo-code apply-promo coupon validate-promo discount api/promo; do
+              echo \"=== $ep ===\" >> {case_dir}/promo-abuse.txt;
+              curl -sk \"{target}/$ep\" -H \"Content-Type: application/json\" -d '{\"code\":\"TEST100\",\"amount\":99999}' -w \" HTTP:%{http_code}\" >> {case_dir}/promo-abuse.txt 2>&1;
+              echo \"\" >> {case_dir}/promo-abuse.txt;
+            done
+        timeout: 30
+
+  # Phase 7: MFA & additional security checks
+  - id: security_checks
+    name: "Additional security configuration checks"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: mfa_check
+        name: "Check for MFA enforcement"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            KEY=$(cat {case_dir}/anon_key.txt 2>/dev/null);
+            URL=$(grep -oE 'https?://[a-zA-Z0-9.-]+supabase\\.(co|in)' {case_dir}/supabase-urls.txt 2>/dev/null | head -1);
+            if [ -n \"$URL\" ]; then
+              echo \"=== MFA settings ===\" > {case_dir}/mfa-check.txt;
+              curl -sk \"$URL/auth/v1/factors\" -H \"apikey: $KEY\" -H \"Authorization: Bearer $KEY\" >> {case_dir}/mfa-check.txt 2>&1;
+              echo \"\" >> {case_dir}/mfa-check.txt;
+              echo \"=== Settings endpoint ===\" >> {case_dir}/mfa-check.txt;
+              curl -sk \"$URL/auth/v1/settings\" -H \"apikey: $KEY\" >> {case_dir}/mfa-check.txt 2>&1;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/mfa-check.txt"
+
+      - id: info_disclosure
+        name: "Supabase info disclosure checks"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo \"=== Check for Supabase-specific paths ===\" > {case_dir}/info-disclosure.txt;
+            for path in /project/settings /project/api /dashboard /supabase /api/swagger /api/docs /docs /openapi.json /health /version /info; do
+              echo \"=== $path ===\" >> {case_dir}/info-disclosure.txt;
+              curl -sk \"{target}$path\" -w \" HTTP:%{http_code} Size:%{size_download}\" >> {case_dir}/info-disclosure.txt 2>&1;
+              echo \"\" >> {case_dir}/info-disclosure.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/info-disclosure.txt"
+
+      - id: headers_security
+        name: "Security headers assessment"
+        tool: bash
+        args:
+          - "-c"
+          - "curl -skI '{target}' -o {case_dir}/security-headers.txt"
+        timeout: 15
+        artifacts:
+          - "{case_dir}/security-headers.txt"
+
+  # Phase 8: Report
+  - id: report
+    name: "Supabase security report"
+    type: report
+    format: markdown
+    title: "Supabase Security Assessment Report — {target}"
+    output: "{case_dir}/supabase-security-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- Target: {target}\n- Supabase Ref: {supabase_project_ref}"
+      - heading: "Discovery & Key Exposure"
+        body: "- Keys found: {case_dir}/supabase-keys-found.txt\n- Env file fuzz: {case_dir}/ffuf-env.json\n- Supabase URLs: {case_dir}/supabase-urls.txt\n- Technology: {case_dir}/whatweb-supabase.txt\n- Anon key access: {case_dir}/anon-key-access.txt"
+      - heading: "RLS & IDOR Testing"
+        body: "- Public table enum: {case_dir}/public-tables.txt\n- Cross-tenant IDOR: {case_dir}/idor-probes.txt\n- RLS header bypass: {case_dir}/rls-bypass-headers.txt\n- GraphQL test: {case_dir}/graphql-test.txt\n- Service role test: {case_dir}/service-role-test.txt"
+      - heading: "Auth Flow"
+        body: "- Open signup: {case_dir}/auth-signup.txt\n- Rate limiting: {case_dir}/auth-rate-limit.txt\n- User enumeration: {case_dir}/auth-enum.txt\n- Password reset: {case_dir}/auth-password-reset.txt"
+      - heading: "Storage"
+        body: "- Bucket list: {case_dir}/storage-buckets.txt\n- Bucket access: {case_dir}/storage-bucket-access.txt\n- RLS bypass: {case_dir}/storage-rls-bypass.txt"
+      - heading: "Advanced Features"
+        body: "- Edge Functions: {case_dir}/edge-functions.txt\n- Realtime: {case_dir}/realtime-test.txt\n- CORS: {case_dir}/cors-test.txt"
+      - heading: "Payment Integration"
+        body: "- Stripe endpoints: {case_dir}/stripe-abuse.txt\n- Price tampering: {case_dir}/price-tamper.txt\n- Promo code: {case_dir}/promo-abuse.txt"
+      - heading: "Security Configuration"
+        body: "- MFA check: {case_dir}/mfa-check.txt\n- Info disclosure: {case_dir}/info-disclosure.txt\n- Security headers: {case_dir}/security-headers.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Supabase security assessment complete — report at {case_dir}/supabase-security-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Supabase security assessment finished for {target}. Results in {case_dir}"

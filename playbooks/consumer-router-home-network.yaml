@@ -1,0 +1,513 @@
+name: "Consumer Router & IoT Home Network Assessment"
+description: >
+  Comprehensive security assessment of consumer-grade ISP routers and home IoT
+  networks. Covers: router discovery & fingerprinting, default/admin credential
+  checks, DNS amplification (recursion/dnsmasq), UPnP/NAT-PMP/mDNS enumeration,
+  flat-network IoT device discovery, common embedded-web-server scanning
+  (lighttpd, busybox httpd), Wi-Fi security checks, and telnet/SNMP/TFTP
+  service auditing
+version: "2.0"
+target_required: true
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+  router_user: ""
+  router_pass: ""
+  dns_test_domain: "dnsamplificationtest.com"
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Consumer router/IoT home network assessment starting — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Router & gateway discovery
+  - id: router_discovery
+    name: "Router & gateway discovery"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: gateway_find
+        name: "Find default gateway / router"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Default gateway ===" > {case_dir}/router-discovery.txt;
+            ip route | grep default >> {case_dir}/router-discovery.txt 2>&1;
+            echo "" >> {case_dir}/router-discovery.txt;
+            echo "=== ARP table (local devices) ===" >> {case_dir}/router-discovery.txt;
+            arp -a >> {case_dir}/router-discovery.txt 2>&1;
+            echo "" >> {case_dir}/router-discovery.txt;
+            echo "=== Neigh table ===" >> {case_dir}/router-discovery.txt;
+            ip neigh >> {case_dir}/router-discovery.txt 2>&1
+        timeout: 15
+        artifacts:
+          - "{case_dir}/router-discovery.txt"
+
+      - id: scan_local_subnet
+        name: "Scan local subnet for active hosts"
+        tool: nmap
+        args:
+          - "-sn"
+          - "-T4"
+          - "{target}"
+          - "-oA"
+          - "{case_dir}/subnet-ping-sweep"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/subnet-ping-sweep.txt"
+          - "{case_dir}/subnet-ping-sweep.xml"
+
+      - id: nmap_router_ports
+        name: "Router port scan (common ISP router ports)"
+        tool: nmap
+        args:
+          - "-sS"
+          - "-sV"
+          - "-T4"
+          - "-Pn"
+          - "-p"
+          - "22,23,53,80,161,443,445,500,1900,5351,5353,8080,8443,8888,49152-49156"
+          - "--open"
+          - "--script"
+          - "http-title,http-server-header,http-devframework,http-headers,ssl-cert"
+          - "-oA"
+          - "{case_dir}/router-ports"
+          - "{target}"
+        timeout: 180
+        artifacts:
+          - "{case_dir}/router-ports.txt"
+          - "{case_dir}/router-ports.xml"
+
+  # Phase 2: Router web interface assessment
+  - id: router_web
+    name: "Router web interface assessment"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: whatweb_router
+        name: "Fingerprint router web interface"
+        tool: whatweb
+        args:
+          - "-a3"
+          - "{target}:80"
+          - "--log-verbose"
+          - "{case_dir}/whatweb-router.txt"
+        timeout: 60
+        artifacts:
+          - "{case_dir}/whatweb-router.txt"
+
+      - id: whatweb_router_ssl
+        name: "Fingerprint router HTTPS interface (if any)"
+        tool: whatweb
+        args:
+          - "-a3"
+          - "https://{target}:443"
+          - "--log-verbose"
+          - "{case_dir}/whatweb-router-ssl.txt"
+        timeout: 60
+        artifacts:
+          - "{case_dir}/whatweb-router-ssl.txt"
+
+      - id: default_creds
+        name: "Check for default router credentials"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Default credential checks ===" > {case_dir}/router-creds.txt;
+            for pair in "admin:admin" "admin:password" "admin:1234" "admin:12345" "admin:123456" "admin:router" "admin:password" "root:root" "root:admin" "admin:changeme" "cisco:cisco" "netgear:password" "linksys:admin" "tp-link:admin" "dlink:admin" "asus:admin" "spectrum:admin" "guest:guest" "user:user" "ubnt:ubnt"; do
+              user=$(echo "$pair" | cut -d: -f1);
+              pass=$(echo "$pair" | cut -d: -f2);
+              echo "=== Trying $user:$pass ===" >> {case_dir}/router-creds.txt;
+              curl -sk -u "$user:$pass" "http://{target}/" -w " HTTP:%{http_code} Size:%{size_download}" >> {case_dir}/router-creds.txt 2>&1;
+              echo "" >> {case_dir}/router-creds.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/router-creds.txt"
+
+      - id: router_dir_fuzz
+        name: "Fuzz router web interface for hidden paths"
+        tool: ffuf
+        args:
+          - "-u"
+          - "http://{target}/FUZZ"
+          - "-w"
+          - "{wordlist}"
+          - "-mc"
+          - "200,204,301,302,401,403,500"
+          - "-ac"
+          - "-o"
+          - "{case_dir}/ffuf-router.json"
+          - "-of"
+          - "json"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/ffuf-router.json"
+
+  # Phase 3: DNS security testing
+  - id: dns_security
+    name: "DNS amplification & recursion testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: dns_recursion
+        name: "Check for open DNS recursion"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== DNS recursion test ===" > {case_dir}/dns-recursion.txt;
+            nslookup -port=53 google.com {target} 2>&1 | head -20 >> {case_dir}/dns-recursion.txt;
+            echo "" >> {case_dir}/dns-recursion.txt;
+            echo "=== Amplification factor test ===" >> {case_dir}/dns-recursion.txt;
+            dig +short @{target} google.com A 2>&1 >> {case_dir}/dns-recursion.txt;
+            echo "" >> {case_dir}/dns-recursion.txt;
+            echo "=== ANY query test (amplification vector) ===" >> {case_dir}/dns-recursion.txt;
+            dig +short @{target} google.com ANY 2>&1 | head -20 >> {case_dir}/dns-recursion.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/dns-recursion.txt"
+
+      - id: dns_version
+        name: "Detect DNS server version"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== DNS version bind ===" > {case_dir}/dns-version.txt;
+            dig CHAOS TXT version.bind @{target} 2>&1 >> {case_dir}/dns-version.txt;
+            echo "" >> {case_dir}/dns-version.txt;
+            echo "=== DNS version server ===" >> {case_dir}/dns-version.txt;
+            dig CHAOS TXT version.server @{target} 2>&1 >> {case_dir}/dns-version.txt;
+            echo "" >> {case_dir}/dns-version.txt;
+            echo "=== DNS hostname bind ===" >> {case_dir}/dns-version.txt;
+            dig CHAOS TXT hostname.bind @{target} 2>&1 >> {case_dir}/dns-version.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/dns-version.txt"
+
+      - id: dnsmasq_vuln
+        name: "Check for known dnsmasq CVEs"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            VERSION=$(dig CHAOS TXT version.bind @{target} 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1);
+            echo "=== dnsmasq version: $VERSION ===" > {case_dir}/dnsmasq-vulns.txt;
+            if [ -n "$VERSION" ]; then
+              echo "dnsmasq $VERSION detected — check CVEs:" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "  CVE-2021-3448 (DNSSEC leak)" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "  CVE-2020-25686 (DNSpooq)" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "  CVE-2020-25687 (DNSpooq heap overflow)" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "  CVE-2020-25681-25685 (DNSpooq family)" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "  CVE-2023-28450 (DoS)" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "  CVE-2023-50387 (DNSSEC validation)" >> {case_dir}/dnsmasq-vulns.txt;
+            else
+              echo "Could not determine dnsmasq version from external queries" >> {case_dir}/dnsmasq-vulns.txt;
+              echo "Try running: nmap --script dns-recursion,dns-nsid -p53 {target}" >> {case_dir}/dnsmasq-vulns.txt;
+            fi
+        timeout: 15
+        artifacts:
+          - "{case_dir}/dnsmasq-vulns.txt"
+
+  # Phase 4: UPnP / NAT-PMP / mDNS discovery
+  - id: service_discovery
+    name: "UPnP, NAT-PMP & mDNS discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: upnp_discover
+        name: "UPnP discovery via M-SEARCH"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== UPnP M-SEARCH ===" > {case_dir}/upnp-discovery.txt;
+            echo 'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 3\r\nST: ssdp:all\r\n\r\n' | nc -w3 -u 239.255.255.250 1900 2>&1 | strings >> {case_dir}/upnp-discovery.txt;
+            echo "" >> {case_dir}/upnp-discovery.txt;
+            echo "=== UPnP probe directly at router ===" >> {case_dir}/upnp-discovery.txt;
+            echo 'M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: "ssdp:discover"\r\nMX: 3\r\nST: ssdp:all\r\n\r\n' | nc -w3 -u {target} 1900 2>&1 | strings >> {case_dir}/upnp-discovery.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/upnp-discovery.txt"
+
+      - id: nat_pmp
+        name: "NAT-PMP (port 5351) check"
+        tool: bash
+        args:
+          - "-c"
+          - python3 -c "import socket,struct; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); pkt=struct.pack('!BBH',0,0,0); s.sendto(pkt,('{target}',5351)); data,addr=s.recvfrom(32); ver,op,result,epoch=struct.unpack('!BBHI',data[:8]); print(f'NAT-PMP: v{ver} op{op} r{result}')" 2>&1 | tee {case_dir}/nat-pmp.txt || echo "No NAT-PMP response" > {case_dir}/nat-pmp.txt
+        timeout: 15
+        artifacts:
+          - "{case_dir}/nat-pmp.txt"
+
+      - id: mdns_scan
+        name: "mDNS (port 5353) service discovery"
+        tool: bash
+        args:
+          - "-c"
+          - "T={target} python3 -c \"import socket,struct,os;t=os.environ['T'];s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(3);pkt=bytes.fromhex('000000010000000000000000095f7365727669636573075f646e732d7364045f756470056c6f63616c00000c0001');s.sendto(pkt,(t,5353));data,addr=s.recvfrom(1024);print('mDNS: %d bytes from %s' % (len(data),addr))\" 2>&1 | tee {case_dir}/mdns-scan.txt || echo 'No mDNS from target' > {case_dir}/mdns-scan.txt"
+        timeout: 20
+        artifacts:
+          - "{case_dir}/mdns-scan.txt"
+
+  # Phase 5: IoT device & flat network enumeration
+  - id: iot_discovery
+    name: "IoT device & flat network discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: arp_scan
+        name: "Full ARP scan of local subnet"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== ARP scan ===" > {case_dir}/iot-devices.txt;
+            arp-scan --local --retry=3 --timeout=500 2>&1 >> {case_dir}/iot-devices.txt;
+            echo "" >> {case_dir}/iot-devices.txt;
+            echo "=== MAC vendor lookup ===" >> {case_dir}/iot-devices.txt;
+            arp -a | while read line; do
+              ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+');
+              mac=$(echo "$line" | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}');
+              echo "$ip -> $mac";
+            done >> {case_dir}/iot-devices.txt 2>&1
+        timeout: 60
+        artifacts:
+          - "{case_dir}/iot-devices.txt"
+
+      - id: iot_portscan
+        name: "Scan IoT-relevant ports on all discovered hosts"
+        tool: nmap
+        args:
+          - "-sT"
+          - "-T4"
+          - "--open"
+          - "-p"
+          - "21,23,80,443,554,993,1883,3389,5000,5900,8080,8443,8883,9000,49152"
+          - "-oA"
+          - "{case_dir}/iot-ports"
+          - "{target}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/iot-ports.txt"
+          - "{case_dir}/iot-ports.xml"
+
+      - id: iot_os_detect
+        name: "OS detection on discovered hosts"
+        tool: nmap
+        args:
+          - "-sS"
+          - "-T4"
+          - "-O"
+          - "--osscan-guess"
+          - "-p"
+          - "22,80,443,8080"
+          - "-oA"
+          - "{case_dir}/iot-os"
+          - "{target}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/iot-os.txt"
+          - "{case_dir}/iot-os.xml"
+
+  # Phase 6: Common embedded-service scanning
+  - id: embedded_services
+    name: "Embedded service vulnerability scanning"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: lighttpd_check
+        name: "Check for lighttpd / embedded web server vulns"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== lighttpd / embedded web server check ===" > {case_dir}/embedded-web.txt;
+            curl -skI "http://{target}:80" -o {case_dir}/embedded-web-headers.txt 2>&1;
+            SERVER=$(grep -i "^server:" {case_dir}/embedded-web-headers.txt | head -1);
+            echo "$SERVER" >> {case_dir}/embedded-web.txt;
+            echo "" >> {case_dir}/embedded-web.txt;
+            if echo "$SERVER" | grep -qi "lighttpd"; then
+              echo "lighttpd detected — known issues:" >> {case_dir}/embedded-web.txt;
+              echo "  CVE-2018-19045 (1.4.51-1.4.50 DoS)" >> {case_dir}/embedded-web.txt;
+              echo "  CVE-2019-11043 (PHP-FPM path info)" >> {case_dir}/embedded-web.txt;
+              echo "  Directory listing enabled by default" >> {case_dir}/embedded-web.txt;
+            fi;
+            if echo "$SERVER" | grep -qi "busybox"; then
+              echo "BusyBox httpd detected — known issues:" >> {case_dir}/embedded-web.txt;
+              echo "  Default install often has no auth" >> {case_dir}/embedded-web.txt;
+              echo "  CVE-2006-1052 (1.1.0 CGI) " >> {case_dir}/embedded-web.txt;
+            fi
+        timeout: 15
+        artifacts:
+          - "{case_dir}/embedded-web.txt"
+          - "{case_dir}/embedded-web-headers.txt"
+
+      - id: telnet_check
+        name: "Check for open telnet / insecure remote access"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Telnet check ===" > {case_dir}/telnet-check.txt;
+            nc -zv -w3 {target} 23 2>&1 >> {case_dir}/telnet-check.txt;
+            echo "" >> {case_dir}/telnet-check.txt;
+            if nc -zv -w3 {target} 23 2>&1 | grep -q "succeeded"; then
+              echo "TELNET OPEN — try default creds:" >> {case_dir}/telnet-check.txt;
+              echo "  root:root, root:admin, admin:admin, admin:password" >> {case_dir}/telnet-check.txt;
+            fi;
+            echo "" >> {case_dir}/telnet-check.txt;
+            echo "=== SSH check ===" >> {case_dir}/telnet-check.txt;
+            nc -zv -w3 {target} 22 2>&1 >> {case_dir}/telnet-check.txt
+        timeout: 15
+        artifacts:
+          - "{case_dir}/telnet-check.txt"
+
+      - id: snmp_check
+        name: "Check for open SNMP (public community)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== SNMP check ===" > {case_dir}/snmp-check.txt;
+            snmpwalk -v2c -c public {target} 1.3.6.1.2.1.1.5.0 2>&1 | head -5 >> {case_dir}/snmp-check.txt;
+            snmpwalk -v1 -c public {target} 1.3.6.1.2.1.1.1.0 2>&1 | head -5 >> {case_dir}/snmp-check.txt;
+            snmpwalk -v2c -c private {target} system 2>&1 | head -5 >> {case_dir}/snmp-check.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/snmp-check.txt"
+
+      - id: tftp_check
+        name: "Check for TFTP server"
+        tool: bash
+        args:
+          - "-c"
+          - python3 -c "import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(3);pkt=b'\x00\x01test.txt\x00octet\x00';s.sendto(pkt,('{target}',69));data,addr=s.recvfrom(516);print(f'TFTP response from {addr}')" 2>&1 | tee {case_dir}/tftp-check.txt || echo "No TFTP response (likely not running)" > {case_dir}/tftp-check.txt
+        timeout: 10
+        artifacts:
+          - "{case_dir}/tftp-check.txt"
+
+  # Phase 7: Wi-Fi security checks (if target is wireless)
+  - id: wifi_checks
+    name: "Wi-Fi security checks"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: wifi_scan_nearby
+        name: "Scan for nearby Wi-Fi networks"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== iwconfig ===" > {case_dir}/wifi-scan.txt;
+            iwconfig 2>&1 >> {case_dir}/wifi-scan.txt;
+            echo "" >> {case_dir}/wifi-scan.txt;
+            if command -v iwlist &>/dev/null; then
+              for iface in $(iwconfig 2>/dev/null | grep -oE '^[a-zA-Z0-9]+'); do
+                echo "=== Scanning $iface ===" >> {case_dir}/wifi-scan.txt;
+                iwlist "$iface" scan 2>&1 | grep -E "(ESSID|Encryption|Channel|Quality|Address)" >> {case_dir}/wifi-scan.txt;
+              done;
+            else
+              echo "iwlist not available" >> {case_dir}/wifi-scan.txt;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/wifi-scan.txt"
+
+      - id: wps_check
+        name: "WPS vulnerability check"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== WPS check ===" > {case_dir}/wps-check.txt;
+            if command -v wash &>/dev/null; then
+              for iface in $(iwconfig 2>/dev/null | grep -oE '^[a-zA-Z0-9]+'); do
+                timeout 10 wash -i "$iface" 2>&1 >> {case_dir}/wps-check.txt;
+              done;
+            else
+              echo "wash (reaver) not available — manual WPS testing recommended" >> {case_dir}/wps-check.txt;
+            fi
+        timeout: 20
+        artifacts:
+          - "{case_dir}/wps-check.txt"
+
+  # Phase 8: Comprehensive vulnerability scan
+  - id: vuln_scan
+    name: "Router/IoT vulnerability scanning"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: nuclei_router
+        name: "Nuclei scan for router/IoT CVEs"
+        tool: nuclei
+        args:
+          - "-u"
+          - "http://{target}"
+          - "-tags"
+          - "cve,router,iot,ics,dns,network"
+          - "-jsonl"
+          - "-o"
+          - "{case_dir}/nuclei-router.json"
+          - "-c"
+          - "10"
+        timeout: 600
+        artifacts:
+          - "{case_dir}/nuclei-router.json"
+
+      - id: nmap_vuln_scripts
+        name: "Nmap vulnerability scripts against router"
+        tool: nmap
+        args:
+          - "-sS"
+          - "-T4"
+          - "-Pn"
+          - "-p"
+          - "22,23,53,80,443,161,445,1900,5351,8080,8443"
+          - "--script"
+          - "dns-recursion,dns-nsid,dns-zone-transfer,http-vuln*,upnp-info,broadcast-dns-service-discovery,http-default-accounts,http-title,http-server-header"
+          - "-oA"
+          - "{case_dir}/router-vuln-scripts"
+          - "{target}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/router-vuln-scripts.txt"
+          - "{case_dir}/router-vuln-scripts.xml"
+
+  # Phase 9: Report
+  - id: report
+    name: "Consumer router / IoT home network assessment report"
+    type: report
+    format: markdown
+    title: "Consumer Router & IoT Home Network Assessment — {target}"
+    output: "{case_dir}/consumer-router-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- Target subnet: {target}\n- Router discovery: {case_dir}/router-discovery.txt\n- Subnet hosts: {case_dir}/subnet-ping-sweep.txt\n- Router ports: {case_dir}/router-ports.txt"
+      - heading: "Router Web Interface"
+        body: "- WhatWeb HTTP: {case_dir}/whatweb-router.txt\n- WhatWeb HTTPS: {case_dir}/whatweb-router-ssl.txt\n- Default credentials: {case_dir}/router-creds.txt\n- Hidden paths: {case_dir}/ffuf-router.json"
+      - heading: "DNS Security"
+        body: "- DNS recursion: {case_dir}/dns-recursion.txt\n- DNS version: {case_dir}/dns-version.txt\n- dnsmasq CVEs: {case_dir}/dnsmasq-vulns.txt"
+      - heading: "Service Discovery"
+        body: "- UPnP: {case_dir}/upnp-discovery.txt\n- NAT-PMP: {case_dir}/nat-pmp.txt\n- mDNS: {case_dir}/mdns-scan.txt"
+      - heading: "IoT & Flat Network"
+        body: "- IoT devices: {case_dir}/iot-devices.txt\n- IoT ports: {case_dir}/iot-ports.txt\n- OS detection: {case_dir}/iot-os.txt"
+      - heading: "Embedded Services"
+        body: "- Embedded web: {case_dir}/embedded-web.txt\n- Telnet/SSH: {case_dir}/telnet-check.txt\n- SNMP: {case_dir}/snmp-check.txt\n- TFTP: {case_dir}/tftp-check.txt"
+      - heading: "Wi-Fi Security"
+        body: "- Wi-Fi scan: {case_dir}/wifi-scan.txt\n- WPS: {case_dir}/wps-check.txt"
+      - heading: "Vulnerability Scan"
+        body: "- Nuclei: {case_dir}/nuclei-router.json\n- Nmap vuln scripts: {case_dir}/router-vuln-scripts.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Consumer router/IoT assessment complete — report at {case_dir}/consumer-router-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Consumer router/IoT assessment finished for {target}. Results in {case_dir}"

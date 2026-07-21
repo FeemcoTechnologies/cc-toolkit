@@ -1,10 +1,10 @@
 name: "Server-Side Request Forgery (SSRF)"
 description: "SSRF detection and exploitation: blind SSRF via Collaborator/Interactsh, cloud metadata access, internal port scanning, and protocol smuggling"
-version: "1.0"
+version: "2.0"
 
 vars:
   callback: ""
-  wordlist: "/wordlists/webcontent-top-10000.txt"
+  wordlist: "/wordlists/Generic_Fuzz.txt"
 
 preflight:
   - id: setup
@@ -22,7 +22,7 @@ steps:
         name: "Fuzz common SSRF parameters"
         tool: ffuf
         args: ["-u", "{target}/?FUZZ=http://{callback}/ssrf",
-               "-w", "/wordlists/ssrf-params.txt",
+               "-w", "{wordlist}",
                "-mc", "200,302,500",
                "-o", "{case_dir}/ffuf-ssrf.json", "-of", "json",
                "-ac"]
@@ -208,9 +208,30 @@ steps:
 
   # ---- Phase 6: Report ----
   - id: report
-    name: "SSRF assessment note"
+    name: "SSRF assessment report"
+    type: report
+    format: markdown
+    title: "SSRF Assessment Report — {target}"
+    output: "{case_dir}/ssrf-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Entry Point Discovery"
+        body: "- FFuF params: {case_dir}/ffuf-ssrf.json\n- Technology: {case_dir}/whatweb-ssrf.txt\n- Header probes: {case_dir}/ssrf-headers.txt"
+      - heading: "Cloud Metadata"
+        body: "- AWS IMDS: {case_dir}/ssrf-aws-imds.txt\n- AWS IAM: {case_dir}/ssrf-aws-iam.txt\n- AWS user-data: {case_dir}/ssrf-aws-userdata.txt\n- GCP metadata: {case_dir}/ssrf-gcp.txt\n- Azure IMDS: {case_dir}/ssrf-azure.txt"
+      - heading: "Internal Port Scan"
+        body: "- localhost:80: {case_dir}/ssrf-localhost-80.txt\n- localhost:443: {case_dir}/ssrf-localhost-443.txt\n- localhost:8080: {case_dir}/ssrf-localhost-8080.txt\n- localhost:3306: {case_dir}/ssrf-localhost-3306.txt\n- localhost:6379: {case_dir}/ssrf-localhost-6379.txt"
+      - heading: "Protocol Smuggling"
+        body: "- file://: {case_dir}/ssrf-file-proto.txt\n- dict://: {case_dir}/ssrf-dict-proto.txt\n- gopher://: {case_dir}/ssrf-gopher-proto.txt\n- ftp://: {case_dir}/ssrf-ftp-proto.txt"
+      - heading: "Blind SSRF Callbacks"
+        body: "- HTTP callback: {case_dir}/ssrf-callback-http.txt\n- DNS callback: {case_dir}/ssrf-callback-dns.txt\n- Monitor {callback} for outbound connections"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      SSRF assessment complete for {target}.
-      Check {case_dir}/ for cloud metadata, port scan, protocol smuggling, and callback results.
-      Monitor {callback} for outbound connections.
+    message: "SSRF assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "SSRF assessment finished for {target}. Results in {case_dir}"

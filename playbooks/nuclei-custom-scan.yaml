@@ -1,37 +1,99 @@
-# v2 runbook — Nuclei scan using custom templates from rules section
-name: "Nuclei Custom Template Scan"
-description: "Scan a target with our custom Nuclei templates (XSS, SQLi, LFI, SSRF, etc.)"
-version: "1.0"
-
+name: Nuclei Custom Template Scan
+description: Scan a target with our custom Nuclei templates (XSS, SQLi, LFI, SSRF,
+  etc.) — parallel execution with severity reporting
+version: '2.0'
 vars:
-  nuclei_templates_dir: "/share/git-repo/Scripts/nuclei"
-
-steps:
-  - id: setup
-    type: log
-    message: "Nuclei custom scan against {target}"
-
-  - id: nuclei_custom
-    name: "Nuclei with custom templates"
-    tool: nuclei
-    args: ["-u", "{target}", "-t", "{nuclei_templates_dir}", "-json", "-o", "{case_dir}/nuclei-custom.json", "-nt"]
-    timeout: 600
-    artifacts: ["{case_dir}/nuclei-custom.json"]
-
-  - id: summary
-    name: "Summarize findings"
-    type: conditional
-    condition:
-      ref: nuclei_custom
-      field: rc
-      expected: 0
-    then:
-      - id: findings_notify
-        type: notify
-        level: info
-        message: "Nuclei custom scan complete — results in {case_dir}/nuclei-custom.json"
-
-postflight:
-  - id: done
+  nuclei_templates_dir: /share/git-repo/Scripts/nuclei
+  severity: critical,high,medium,low,info
+  rate_limit: '150'
+preflight:
+- id: setup
+  type: log
+  message: 'Nuclei custom scan against {target} (case: {case_id})'
+  name: Setup
+- id: dir_check
+  name: Verify templates directory
+  type: conditional
+  condition:
+    any:
+    - exists: '{nuclei_templates_dir}'
+  else:
+  - id: warn_dir
     type: notify
-    message: "Nuclei custom scan done — {case_dir}"
+    level: warn
+    message: Nuclei templates dir {nuclei_templates_dir} not found — scan may fail
+    name: Warn Dir
+steps:
+- id: nuclei_custom
+  name: Nuclei with custom templates
+  tool: nuclei
+  args:
+  - -u
+  - '{target}'
+  - -t
+  - '{nuclei_templates_dir}'
+  - -json
+  - -o
+  - '{case_dir}/nuclei-custom.json'
+  - -nt
+  - -rl
+  - '{rate_limit}'
+  - -severity
+  - '{severity}'
+  timeout: 600
+  artifacts:
+  - '{case_dir}/nuclei-custom.json'
+  type: tool
+- id: summary
+  name: Summarize findings
+  type: conditional
+  condition:
+    ref: nuclei_custom
+    field: rc
+    expected: 0
+  then:
+  - id: findings_notify
+    type: notify
+    level: info
+    message: Nuclei custom scan complete — results in {case_dir}/nuclei-custom.json
+    name: Findings Notify
+  - id: count_findings
+    name: Count findings by severity
+    tool: grep
+    args:
+    - -c
+    - '"severity":"critical"'
+    - '{case_dir}/nuclei-custom.json'
+    - -o
+    - '{case_dir}/nuclei-severity-count.txt'
+    timeout: 10
+    type: tool
+  else:
+  - id: no_findings
+    type: notify
+    level: info
+    message: Nuclei scan completed with no findings
+    name: No Findings
+- id: report
+  name: Nuclei scan report
+  type: report
+  format: markdown
+  title: Nuclei Custom Scan — {target}
+  output: '{case_dir}/nuclei-report.md'
+  sections:
+  - heading: Target
+    body: '- URL: {target}
+
+      - Templates: {nuclei_templates_dir}
+
+      - Severity filter: {severity}'
+  - heading: Results
+    body: '- JSON results: {case_dir}/nuclei-custom.json
+
+      - Severity counts: {case_dir}/nuclei-severity-count.txt'
+postflight:
+- id: done
+  type: notify
+  level: success
+  message: Nuclei custom scan done — {case_dir}
+  name: Done

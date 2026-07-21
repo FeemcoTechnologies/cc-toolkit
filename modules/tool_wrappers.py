@@ -6,9 +6,12 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sqlite3
+import tempfile
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from shutil import which
@@ -136,7 +139,7 @@ def mitm_start(port: int = 8080, upstream: str = "") -> subprocess.Popen:
     if upstream:
         env["UPSTREAM_PROXY"] = upstream
     proc = subprocess.Popen(
-        cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
     return proc
 
@@ -198,6 +201,7 @@ def route_scan(target_range: str = "172.16.0.0/12",
 
     suspicious: List[str] = []
     import ipaddress
+    _hops_lock = threading.Lock()
 
     def _trace(addr: str):
         ans, _ = traceroute(addr, verbose=0, timeout=2)
@@ -206,7 +210,8 @@ def route_scan(target_range: str = "172.16.0.0/12",
             try:
                 ip = pkt.answer.src
                 if ipaddress.ip_address(ip).is_private and ip not in local_routes:
-                    hops.add(ip)
+                    with _hops_lock:
+                        hops.add(ip)
             except Exception:
 
                 logger.debug("Exception in tool_wrappers.py", exc_info=True)
@@ -221,7 +226,8 @@ def route_scan(target_range: str = "172.16.0.0/12",
         for f in concurrent.futures.as_completed(fut):
             hops = f.result()
             if hops:
-                suspicious.extend(hops)
+                with _hops_lock:
+                    suspicious.extend(hops)
                 print(f"  Suspicious: {hops}")
 
     return list(set(suspicious))
@@ -326,6 +332,79 @@ def sigma_convert(input_file: str, target_format: str = "siem",
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# CodeQL query scanner
+# ---------------------------------------------------------------------------
+def codeql_scan(rule_path: str, target: str, language: str = "") -> Dict:
+    """Run a CodeQL query against a source code directory.
+
+    Creates a CodeQL database from the target source, then analyzes
+    it with the given query. Returns SARIF results or error dict.
+    """
+    codeql = which("codeql")
+    if not codeql:
+        return {"error": "codeql not found in PATH"}
+    rule_p = Path(rule_path)
+    if not rule_p.exists():
+        return {"error": f"Query file not found: {rule_path}"}
+    target_p = Path(target)
+    if not target_p.is_dir():
+        return {"error": f"Target must be a source directory: {target}"}
+
+    # Auto-detect language from target files if not provided
+    lang_map = {".py": "python", ".js": "javascript", ".ts": "javascript",
+                ".java": "java", ".cs": "csharp", ".go": "go",
+                ".rb": "ruby", ".rs": "rust", ".cpp": "cpp", ".c": "cpp",
+                ".swift": "swift"}
+    if not language:
+        for f in target_p.rglob("*"):
+            if f.suffix in lang_map:
+                language = lang_map[f.suffix]
+                break
+    if not language:
+        return {"error": "Could not detect source language. Specify language parameter."}
+
+    try:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="codeql_"))
+        db_dir = tmp_dir / "db"
+        out_file = tmp_dir / "results.sarif"
+
+        # Step 1: create database
+        cmd_create = [codeql, "database", "create", str(db_dir),
+                      f"--language={language}", f"--source-root={target}"]
+        r1 = subprocess.run(cmd_create, capture_output=True, text=True, timeout=600)
+
+        # Step 2: run query
+        cmd_analyze = [codeql, "database", "analyze", str(db_dir),
+                       str(rule_p), "--format=sarif-latest", f"--output={str(out_file)}"]
+        r2 = subprocess.run(cmd_analyze, capture_output=True, text=True, timeout=600)
+
+        results = {
+            "rc_create": r1.returncode,
+            "rc_analyze": r2.returncode,
+            "stderr_create": r1.stderr[:1000] if r1.stderr else "",
+            "stderr_analyze": r2.stderr[:1000] if r2.stderr else "",
+            "output_file": str(out_file),
+            "language": language,
+            "query": rule_p.name,
+        }
+        if out_file.exists():
+            try:
+                sarif = json.loads(out_file.read_text(encoding="utf-8"))
+                results["finding_count"] = sum(
+                    len(run.get("results", [])) for run in sarif.get("runs", []))
+                results["sarif"] = sarif
+            except Exception:
+                pass
+        return results
+    except subprocess.TimeoutExpired:
+        return {"error": "CodeQL scan timed out"}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1349,7 +1428,7 @@ def chisel_client(server: str, remote_port: int = 8080, local_port: int = 1080,
     else:
         cmd = [ch, "client", server, f"{remote_port}:127.0.0.1:{local_port}"]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"status": f"Chisel client started -> {server}",
                 "pid": proc.pid, "mode": "reverse" if reverse else "forward"}
     except Exception as e:
@@ -1365,7 +1444,7 @@ def chisel_server(port: int = 8080, socks: bool = True) -> Dict:
     if socks:
         cmd.append("--socks5")
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"status": f"Chisel server on :{port}", "pid": proc.pid}
     except Exception as e:
         return {"error": str(e)}
@@ -1378,7 +1457,7 @@ def ligolo_agent(server: str, proxy_port: int = 11601) -> Dict:
         return {"error": "ligolo-agent not found in PATH"}
     cmd = [lg, "-connect", f"{server}:{proxy_port}", "-ignore-cert"]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"status": f"Ligolo agent -> {server}:{proxy_port}", "pid": proc.pid}
     except Exception as e:
         return {"error": str(e)}
@@ -1391,7 +1470,7 @@ def ligolo_proxy(listen_port: int = 11601) -> Dict:
         return {"error": "ligolo-proxy not found in PATH"}
     cmd = [lg, "-listen", f"0.0.0.0:{listen_port}", "-self-cert"]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"status": f"Ligolo proxy on :{listen_port}", "pid": proc.pid}
     except Exception as e:
         return {"error": str(e)}
@@ -1511,7 +1590,7 @@ class LootDB:
 
     def __init__(self, path: Optional[Path] = None):
         self.db_path = Path(path or Path.cwd() / "loot.db")
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._init_db()
 
     def _init_db(self):
@@ -1610,7 +1689,7 @@ def evilginx_start(domain: str, config_dir: Optional[str] = None,
     if config_dir:
         cmd.extend(["-c", config_dir])
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"status": f"EvilGinx2 started for {domain}", "pid": proc.pid}
     except Exception as e:
         return {"error": str(e)}

@@ -1,124 +1,149 @@
-# v2 runbook — wireless network pentesting audit
-name: "Wireless Audit & Pentest"
-description: "Scan, capture handshake, deauth, crack WPA/WPA2, monitor for rogue APs"
-version: "2.0"
-
+name: Wireless Audit & Pentest
+description: Scan, capture handshake, deauth, crack WPA/WPA2, monitor for rogue APs
+version: '2.0'
 vars:
-  iface: "wlan0"
-  band: "abg"
-  channel: "1"
-
+  iface: wlan0
+  band: abg
+  channel: '1'
 steps:
-  - id: preamble
-    type: log
-    message: "Wireless audit starting — interface: {iface}, band: {band}"
-
-  # ---- Phase 1: Pre-flight checks ----
-  - id: iface_check
-    name: "Check interface"
-    type: conditional
-    condition:
-      file_exists: "/sys/class/net/{iface}"
-    else:
-      - id: no_iface
-        type: notify
-        level: critical
-        message: "Interface {iface} not found — aborting"
-
-  - id: monitor_mode
-    name: "Enable monitor mode"
-    tool: airmon-ng
-    args: ["start", "{iface}"]
+- id: preamble
+  type: log
+  message: 'Wireless audit starting — interface: {iface}, band: {band}'
+  name: Preamble
+- id: iface_check
+  name: Check interface
+  type: conditional
+  condition:
+    file_exists: /sys/class/net/{iface}
+  else:
+  - id: no_iface
+    type: notify
+    level: critical
+    message: Interface {iface} not found — aborting
+    name: No Iface
+- id: monitor_mode
+  name: Enable monitor mode
+  tool: airmon-ng
+  args:
+  - start
+  - '{iface}'
+  timeout: 15
+  type: tool
+- id: mon_iface
+  name: Detect monitor interface
+  type: set
+  var: mon_iface
+  value: '{iface}mon'
+- id: scan_aps
+  name: Scan access points
+  type: parallel
+  steps:
+  - id: airodump_scan
+    name: Airodump-ng AP scan
+    tool: airodump-ng
+    args:
+    - --band
+    - '{band}'
+    - --write
+    - '{case_dir}/ap-scan'
+    - --output-format
+    - csv
+    - '{iface}'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/ap-scan-01.csv'
+    type: tool
+  - id: wash_scan
+    name: WPS scan
+    tool: wash
+    args:
+    - -i
+    - '{iface}'
+    - -o
+    - '{case_dir}/wps-scan.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/wps-scan.txt'
+    type: tool
+- id: ap_summary
+  name: AP summary notification
+  type: notify
+  message: AP scan complete — check {case_dir}/ap-scan-01.csv for targets
+- id: ask_target
+  type: prompt
+  message: Select target BSSID for handshake capture? (enter BSSID or 'skip')
+  then:
+  - id: capture_handshake
+    name: Capture WPA handshake
+    tool: airodump-ng
+    args:
+    - --bssid
+    - ''
+    - --channel
+    - '{channel}'
+    - --write
+    - '{case_dir}/handshake'
+    - '{iface}'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/handshake-01.cap'
+    type: tool
+  - id: deauth_client
+    name: Deauth to force reconnection
+    tool: aireplay-ng
+    args:
+    - --deauth
+    - '5'
+    - -a
+    - ''
+    - '{iface}'
     timeout: 15
+    type: tool
+  name: Ask Target
+- id: ask_crack
+  type: prompt
+  message: Crack captured handshake with rockyou?
+  then:
+  - id: crack_wpa
+    name: Crack WPA handshake
+    tool: aircrack-ng
+    args:
+    - -w
+    - /usr/share/wordlists/rockyou.txt
+    - '{case_dir}/handshake-01.cap'
+    timeout: 600
+    type: tool
+  name: Ask Crack
+- id: rogue_check
+  name: Check for duplicate BSSIDs (Evil Twin)
+  tool: bettercap
+  args:
+  - -eval
+  - wifi.recon on; sleep 5; wifi.show
+  timeout: 20
+  type: tool
+- id: wireless_report
+  name: Generate wireless report
+  type: report
+  format: markdown
+  title: Wireless Audit Report — {iface}
+  output: '{case_dir}/wireless-report.md'
+  sections:
+  - heading: Interface
+    body: '- Interface: {iface}
 
-  - id: mon_iface
-    name: "Detect monitor interface"
-    type: set
-    var: mon_iface
-    value: "{iface}mon"
-
-  # ---- Phase 2: AP scan ----
-  - id: scan_aps
-    name: "Scan access points"
-    type: parallel
-    steps:
-      - id: airodump_scan
-        name: "Airodump-ng AP scan"
-        tool: airodump-ng
-        args: ["--band", "{band}", "--write", "{case_dir}/ap-scan",
-               "--output-format", "csv", "{iface}"]
-        timeout: 30
-        artifacts: ["{case_dir}/ap-scan-01.csv"]
-
-      - id: wash_scan
-        name: "WPS scan"
-        tool: wash
-        args: ["-i", "{iface}", "-o", "{case_dir}/wps-scan.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/wps-scan.txt"]
-
-  # ---- Phase 3: Parse APs and offer selection ----
-  - id: ap_summary
-    name: "AP summary notification"
-    type: notify
-    message: "AP scan complete — check {case_dir}/ap-scan-01.csv for targets"
-
-  - id: ask_target
-    type: prompt
-    message: "Select target BSSID for handshake capture? (enter BSSID or 'skip')"
-    then:
-      - id: capture_handshake
-        name: "Capture WPA handshake"
-        tool: airodump-ng
-        args: ["--bssid", "", "--channel", "{channel}",
-               "--write", "{case_dir}/handshake", "{iface}"]
-        timeout: 60
-        artifacts: ["{case_dir}/handshake-01.cap"]
-
-      - id: deauth_client
-        name: "Deauth to force reconnection"
-        tool: aireplay-ng
-        args: ["--deauth", "5", "-a", "", "{iface}"]
-        timeout: 15
-
-  # ---- Phase 4: Crack handshake ----
-  - id: ask_crack
-    type: prompt
-    message: "Crack captured handshake with rockyou?"
-    then:
-      - id: crack_wpa
-        name: "Crack WPA handshake"
-        tool: aircrack-ng
-        args: ["-w", "/usr/share/wordlists/rockyou.txt",
-               "{case_dir}/handshake-01.cap"]
-        timeout: 600
-
-  # ---- Phase 5: Rogue AP detection (conditional) ----
-  - id: rogue_check
-    name: "Check for duplicate BSSIDs (Evil Twin)"
-    tool: bettercap
-    args: ["-eval", "wifi.recon on; sleep 5; wifi.show"]
-    timeout: 20
-
-  # ---- Phase 6: Report ----
-  - id: wireless_report
-    name: "Generate wireless report"
-    type: report
-    format: markdown
-    title: "Wireless Audit Report — {iface}"
-    output: "{case_dir}/wireless-report.md"
-    sections:
-      - heading: "Interface"
-        body: "- Interface: {iface}\n- Band: {band}"
-
+      - Band: {band}'
 postflight:
-  - id: cleanup_mon
-    name: "Disable monitor mode"
-    tool: airmon-ng
-    args: ["stop", "{iface}"]
-    timeout: 10
-
-  - id: done
-    type: notify
-    level: success
-    message: "Wireless audit complete — {case_dir}"
+- id: cleanup_mon
+  name: Disable monitor mode
+  tool: airmon-ng
+  args:
+  - stop
+  - '{iface}'
+  timeout: 10
+  type: tool
+- id: done
+  type: notify
+  level: success
+  message: Wireless audit complete — {case_dir}
+  name: Done

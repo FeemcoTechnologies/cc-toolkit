@@ -273,8 +273,8 @@ class TUIApp:
                     desc = str(d.get("description", d.get("info", "")))[:80]
                     if desc:
                         frags.append(("class:dim", f"     {desc}\n"))
-                except Exception:
-                    pass
+                except Exception as _e:
+                    print(f"[TUI] {_e}", flush=True)
         frags.append(("class:help", "\n  ↑↓ · Enter run · Esc back"))
         return frags
 
@@ -714,13 +714,14 @@ class TUIApp:
     def _msg(self, title, text):
         try:
             message_dialog(title=title, text=text).run()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[TUI] {_e}", flush=True)
 
     def _confirm(self, title, text):
         try:
             return yes_no_dialog(title=title, text=text).run()
-        except Exception:
+        except Exception as _e:
+            print(f"[TUI] {_e}", flush=True)
             return False
 
     # ------------------------------------------------------------------

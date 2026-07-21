@@ -36,7 +36,7 @@ mcp = FastMCP("CC Toolkit")
 _TIMEOUT = int(os.environ.get("CC_MCP_TIMEOUT", "300"))
 _POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 _TOOLS_DIR = os.environ.get("CC_TOOLS_DIR", str(TOOLS_DIR))
-atexit.register(lambda: _POOL.shutdown(wait=False))
+atexit.register(_POOL.shutdown)
 
 
 def _run(fn, *args, **kwargs):
@@ -45,7 +45,23 @@ def _run(fn, *args, **kwargs):
     try:
         return fut.result(timeout=_TIMEOUT)
     except concurrent.futures.TimeoutError:
-        return f"Error: Timed out after {_TIMEOUT}s (increase CC_MCP_TIMEOUT env var)"
+        return {"error": f"Timed out after {_TIMEOUT}s (increase CC_MCP_TIMEOUT env var)"}
+
+
+def _path_is_inside(child: Path, parent: Path) -> bool:
+    """Check if child path is inside parent directory (cross-platform)."""
+    try:
+        child = child.resolve()
+        parent = parent.resolve()
+        return os.path.commonpath([str(child), str(parent)]) == str(parent)
+    except (ValueError, OSError):
+        return False
+
+
+def _require(val: str, name: str = "value") -> None:
+    """Validate that a string argument is non-empty. Raises ValueError if not."""
+    if not val or not val.strip():
+        raise ValueError(f"'{name}' must not be empty")
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +594,7 @@ def forensics_kape_collect(target: str, targets: str = "!BasicCollection",
     Parameters:
       target: Target hostname, IP, or URL (str)
       targets: Comma-separated target list (str) [default: '!BasicCollection']
-      module: Metasploit module path (str) [default: '']
+      module: KAPE module name (str) [default: '']
       binary_path: Path to the binary file (str) [default: 'kape']
     Related: forensics_yara_scan, forensics_semgrep_scan
     """
@@ -652,6 +668,8 @@ def util_wsgidav_serve(directory: str, host: str = "0.0.0.0",
     fn = lambda: wsgidav_serve(directory, host=host, port=port,
                                 auth=auth, username=username, password=password)
     proc = _run(fn)
+    if isinstance(proc, dict) and proc.get("error"):
+        return proc["error"]
     return f"WebDAV server started on http://{host}:{port} serving {directory} (PID: {proc.pid})"
 
 
@@ -773,7 +791,7 @@ def ref_cves(keyword: str = "") -> str:
 _playbook_jobs: dict = {}
 _PB_LOCK = threading.Lock()
 
-def _pb_run_background(name: str, target: str, case_id: str, job_id: str):
+def _pb_run_background(name: str, target: str, case_id: str, job_id: str, vars_override: dict = None):
     """Run a playbook in background and store results."""
     from modules.playbook_engine import RunbookEngine
     from modules.case_manager import CaseManager
@@ -784,7 +802,7 @@ def _pb_run_background(name: str, target: str, case_id: str, job_id: str):
             _playbook_jobs[job_id] = {"status": "running", "progress": 0}
         results = engine.run_file(
             name, targets=[target] if target else [],
-            case_id=case_id, verbose=False,
+            case_id=case_id, vars_override=vars_override or {}, verbose=False,
         )
         # Save to case as note
         try:
@@ -799,8 +817,8 @@ def _pb_run_background(name: str, target: str, case_id: str, job_id: str):
                     status = "OK" if rc == 0 else f"FAIL (rc={rc})"
                     lines.append(f"- {sid}: {status}")
                 cm.add_note(case_id, "\n".join(lines), tags=["runbook", "mcp"])
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[runbook] Failed to save runbook log: {_e}", flush=True)
         with _PB_LOCK:
             _playbook_jobs[job_id] = {
                 "status": "completed",
@@ -820,6 +838,7 @@ def _pb_run_background(name: str, target: str, case_id: str, job_id: str):
 @mcp.tool()
 def playbook_list() -> str:
     """List all available YAML playbooks/runbooks for automated pentest workflows."""
+    import yaml
     from modules.playbook_engine import RunbookEngine
     engine = RunbookEngine()
     books = engine.list_runbooks()
@@ -828,21 +847,28 @@ def playbook_list() -> str:
     lines = [f"{'Name':<30} Description"]
     lines.append("-" * 80)
     for b in sorted(books, key=lambda x: x.name):
-        desc = (b.description or "")[:60]
+        try:
+            data = yaml.safe_load(b.read_text()) or {}
+            desc = (data.get("description") or "")[:60]
+        except Exception:
+            desc = ""
         lines.append(f"{b.name:<30} {desc}")
     return "\n".join(lines)
 
 
 @mcp.tool()
-def playbook_launch(name: str, target: str = "", case_id: str = "") -> str:
+def playbook_launch(name: str, target: str = "", case_id: str = "", vars_json: str = "") -> str:
     """Launch a playbook asynchronously. Returns a job_id for status polling.
     Phase: Runbook Orchestration
     Parameters:
       name: Name (str)
       target: Target hostname, IP, or URL (str) [default: '']
       case_id: Case ID to scope results (str) [default: '']
+      vars_json: JSON object to override playbook variables (str) [default: '']
     Related: playbook_list, playbook_status, playbook_log
     Use playbook_status(job_id) to check progress, playbook_log(case_id) to get results."""
+    import json as _json
+    vars_override = _json.loads(vars_json) if vars_json else {}
     job_id = uuid.uuid4().hex[:8]
     resolved_case_id = case_id or f"mcp-{name.replace('.yaml','')}-{datetime.datetime.now(datetime.timezone.utc):%Y%m%d_%H%M%S}"
 
@@ -853,13 +879,13 @@ def playbook_launch(name: str, target: str = "", case_id: str = "") -> str:
         cm.create(resolved_case_id,
                   description=f"MCP-runbook: {name} against {target or '(no target)'}",
                   targets=[target] if target else [])
-    except Exception:
-        pass  # case already exists
+    except Exception as _e:
+        print(f"[runbook] Case may already exist (expected): {_e}", flush=True)
 
     with _PB_LOCK:
         _playbook_jobs[job_id] = {"status": "queued", "progress": 0, "case_id": resolved_case_id}
     t = threading.Thread(target=_pb_run_background,
-                         args=(name, target, resolved_case_id, job_id), daemon=True)
+                         args=(name, target, resolved_case_id, job_id, vars_override), daemon=True)
     t.start()
     return f"Launched playbook '{name}' as job {job_id} in case {resolved_case_id}"
 
@@ -900,6 +926,189 @@ def playbook_log(case_id: str) -> str:
         return log_path.read_text()
     except Exception as e:
         return f"Error reading log: {e}"
+
+
+@mcp.tool()
+def runbook_list(search: str = "") -> str:
+    """
+    List all available runbook templates with step counts and descriptions.
+    Phase: Runbook Orchestration
+    Parameters:
+      search: Filter by name keyword (str) [default: '']
+    Related: runbook_get_steps, runbook_get, runbook_set, playbook_list, playbook_launch
+    """
+    from modules.playbook_engine import RunbookEngine
+    engine = RunbookEngine()
+    books = engine.list_runbooks()
+    if search:
+        books = [b for b in books if search.lower() in b.name.lower()]
+    if not books:
+        return "No runbooks found."
+    lines = [f"{'Name':<35} {'Steps':>5}  Description"]
+    lines.append("-" * 90)
+    for b in sorted(books, key=lambda x: x.name):
+        try:
+            import yaml
+            data = yaml.safe_load(b.read_text()) or {}
+            steps = len(data.get("steps", []))
+            desc = (data.get("description") or "")[:55]
+        except Exception:
+            steps = 0
+            desc = ""
+        lines.append(f"{b.name:<35} {steps:>5}  {desc}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def runbook_get_steps(name: str) -> str:
+    """
+    Get the detailed steps for a named runbook template.
+    Phase: Runbook Orchestration
+    Parameters:
+      name: Runbook filename (e.g. 'quick-recon.yaml') (str)
+    Related: runbook_list, runbook_get, runbook_set, playbook_launch
+    """
+    from modules.playbook_engine import RunbookEngine
+    engine = RunbookEngine()
+    books = engine.list_runbooks()
+    matches = [b for b in books if b.name == name]
+    if not matches:
+        return f"Error: runbook '{name}' not found. Use runbook_list() to see available runbooks."
+    import yaml
+    data = yaml.safe_load(matches[0].read_text()) or {}
+    import json as _json
+    return _json.dumps(data, indent=2, default=str)
+
+
+@mcp.tool()
+def runbook_get(case_id: str) -> str:
+    """
+    Get the current runbook/playbook configuration for a specific case.
+    Phase: Runbook Orchestration
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: runbook_set, runbook_list, runbook_get_steps, playbook_log
+    """
+    from modules.case_manager import CaseManager
+    from pathlib import Path
+    cm = CaseManager()
+    runbook_path = cm._case_path(case_id) / "playbook.json"
+    if not runbook_path.exists():
+        return f"Error: no runbook defined for case '{case_id}'"
+    import json as _json
+    return _json.dumps(_json.loads(runbook_path.read_text()), indent=2)
+
+
+@mcp.tool()
+def runbook_set(case_id: str, steps_json: str) -> str:
+    """
+    Set/replace the runbook for a case with new steps.
+    Phase: Runbook Orchestration
+    Parameters:
+      case_id: Case ID to scope results (str)
+      steps_json: JSON array of step objects (str)
+    Related: runbook_get, runbook_list, runbook_get_steps
+    """
+    from modules.case_manager import CaseManager
+    import json as _json
+    cm = CaseManager()
+    runbook_path = cm._case_path(case_id) / "playbook.json"
+    try:
+        steps = _json.loads(steps_json)
+        if isinstance(steps, list):
+            data = {"steps": steps}
+        elif isinstance(steps, dict):
+            data = steps
+        else:
+            return "Error: steps_json must be a JSON array of steps or a dict with steps key"
+    except json.JSONDecodeError as e:
+        return f"Error: invalid JSON - {e}"
+    runbook_path.write_text(_json.dumps(data, indent=2, default=str))
+    return f"Runbook updated for case '{case_id}' with {len(data.get('steps', []))} step(s)"
+
+
+# ---------------------------------------------------------------------------
+# Burp Suite Pro — built-in REST API (Burp 2025+)
+# Format: http://<host>:<port>/<API-KEY>/v0.1/<endpoint>
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def burp_health() -> str:
+    """Check Burp Suite REST API connectivity and version.
+    Phase: Burp Integration
+    Parameters:
+      (none)
+    Related: burp_scan_start, burp_scan_status, burp_issues_list
+    Use this first to verify Burp is reachable."""
+    from modules.burp_client import BurpClient
+    from modules.constants import BURP_API_URL, BURP_API_KEY
+    bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
+    h = bc.health()
+    v = bc.versions()
+    return f"Health: {h.get('status')}\nVersions: {v}" if v.get("burpVersion") else f"Health: {h}"
+
+
+@mcp.tool()
+def burp_scan_start(urls: str) -> str:
+    """Start a new Burp Suite scan. Returns scan ID for status polling.
+    Phase: Burp Integration
+    Parameters:
+      urls: Comma-separated target URLs (str)
+    Related: burp_scan_status, burp_issues_list
+    """
+    from modules.burp_client import BurpClient
+    from modules.constants import BURP_API_URL, BURP_API_KEY
+    bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
+    url_list = [u.strip() for u in urls.split(",") if u.strip()]
+    r = bc.scan_start(url_list)
+    if "error" in r:
+        return f"Error: {r['error']}"
+    return f"Scan started. ID: {r.get('scan_id')}"
+
+
+@mcp.tool()
+def burp_scan_status(scan_id: str) -> str:
+    """Get the status and progress of a Burp scan.
+    Phase: Burp Integration
+    Parameters:
+      scan_id: Scan ID returned from burp_scan_start (str)
+    Related: burp_scan_start, burp_issues_list
+    """
+    from modules.burp_client import BurpClient
+    from modules.constants import BURP_API_URL, BURP_API_KEY
+    bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
+    r = bc.scan_status(scan_id)
+    import json as _json
+    return _json.dumps(r, indent=2, default=str)
+
+
+@mcp.tool()
+def burp_issues_list(scan_id: str, severity: str = "") -> str:
+    """List security issues found by a Burp scan.
+    Phase: Burp Integration
+    Parameters:
+      scan_id: Scan ID (str)
+      severity: Filter by severity — high/medium/low/info (str) [default: '']
+    Related: burp_scan_start, burp_scan_status
+    """
+    from modules.burp_client import BurpClient
+    from modules.constants import BURP_API_URL, BURP_API_KEY
+    bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
+    issues = bc.issues_list(scan_id, severity=severity)
+    if not issues:
+        return "No issues found."
+    if isinstance(issues, list) and len(issues) > 0 and "error" in issues[0]:
+        return f"Error: {issues[0]['error']}"
+    lines = [f"{'Severity':<10} {'Name':<50} {'Host':<30}"]
+    lines.append("-" * 92)
+    for i in issues:
+        if not isinstance(i, dict):
+            continue
+        sev = i.get("severity", i.get("severity_name", "?"))
+        name = i.get("name", i.get("issue_name", i.get("title", "")))[:50]
+        host = i.get("host", i.get("url", ""))[:30]
+        lines.append(f"{sev:<10} {name:<50} {host:<30}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1132,14 +1341,15 @@ def rules_import(rule_format: str, content: str, target_dir: str = "") -> str:
 
 
 @mcp.tool()
-def rules_scan_target(rule_format: str, rule_id: str, target: str) -> str:
+def rules_scan_target(rule_format: str, rule_id: str, target: str, language: str = "") -> str:
     """
-    Scan a target with a specific rule (nuclei/yara/semgrep). For nuclei provide a URL, for yara provide a file/directory path, for semgrep provide a source code path.
+    Scan a target with a specific rule (nuclei/yara/semgrep/codeql). For nuclei provide a URL, for yara provide a file/directory path, for semgrep/codeql provide a source code directory.
     Phase: Rule Management
     Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
+      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei, codeql) (str)
       rule_id: Unique rule identifier (str)
       target: Target hostname, IP, or URL (str)
+      language: Source language for CodeQL scan (python, javascript, java, go, cpp, csharp, ruby, rust, swift). Auto-detected from file extensions if omitted. Required when target directory contains mixed languages. (str) [default: '']
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1160,6 +1370,9 @@ def rules_scan_target(rule_format: str, rule_id: str, target: str) -> str:
     elif rule_format == "semgrep":
         from modules.tool_wrappers import semgrep_scan
         result = _run(semgrep_scan, filepath, target)
+    elif rule_format == "codeql":
+        from modules.tool_wrappers import codeql_scan
+        result = _run(codeql_scan, filepath, target, language=language)
     else:
         return f"Scan not supported for format: {rule_format}"
 
@@ -1169,10 +1382,10 @@ def rules_scan_target(rule_format: str, rule_id: str, target: str) -> str:
 @mcp.tool()
 def rules_scan_all(rule_format: str, target: str) -> str:
     """
-    Scan a target with ALL rules of a given format (nuclei/yara/semgrep). Uses the custom rules directory for the format.
+    Scan a target with ALL rules of a given format (nuclei/yara/semgrep). For codeql, use rules_scan_target per-query.
     Phase: Rule Management
     Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
+      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei, codeql) (str)
       target: Target hostname, IP, or URL (str)
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target
     """
@@ -1200,6 +1413,8 @@ def rules_scan_all(rule_format: str, target: str) -> str:
         from modules.tool_wrappers import semgrep_scan
         result = _run(semgrep_scan, str(root), target)
         return _fmt(result, fmt="semgrep")
+    elif rule_format == "codeql":
+        return "CodeQL batch scan not supported. Use rules_scan_target for single-query scanning."
     else:
         return f"Scan not supported for format: {rule_format}"
 
@@ -1333,10 +1548,14 @@ def case_goal_list(case_id: str) -> str:
     Related: case_list, case_create, case_goal_add, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
     from modules.case_manager import CaseManager
-    goals = _run(CaseManager().goal_list, case_id)
-    if not goals:
+    result = _run(CaseManager().goal_list, case_id)
+    if isinstance(result, dict) and "error" in result:
+        return result["error"]
+    if isinstance(result, dict):
+        result = result.get("goals", [])
+    if not result:
         return "No goals defined for this case."
-    return "\n".join(f"  [{i}] {g}" for i, g in enumerate(goals))
+    return "\n".join(f"  [{i}] {g}" for i, g in enumerate(result))
 
 
 # ---------------------------------------------------------------------------
@@ -1529,6 +1748,51 @@ def case_close(case_id: str) -> str:
 
 
 @mcp.tool()
+def case_archive(case_id: str) -> str:
+    """
+    Compress a closed case to a tar.gz archive and remove the live directory.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: case_unarchive, case_delete, case_list, case_create, case_info, case_close
+    """
+    from modules.case_manager import CaseManager
+    result = _run(CaseManager().archive_case, case_id)
+    return (f"Case '{case_id}' archived: {result['archived_size']} bytes "
+            f"(was {result['original_size']}, saved {result['savings_pct']}%)")
+
+
+@mcp.tool()
+def case_unarchive(case_id: str) -> str:
+    """
+    Extract a tar.gz archive back to a live case directory.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: case_archive, case_delete, case_list, case_create, case_info, case_close
+    """
+    from modules.case_manager import CaseManager
+    result = _run(CaseManager().unarchive_case, case_id)
+    return f"Case '{case_id}' unarchived successfully."
+
+
+@mcp.tool()
+def case_delete(case_id: str) -> str:
+    """
+    Permanently delete a case directory and all its data.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: case_archive, case_unarchive, case_list, case_create, case_info, case_close
+    """
+    from modules.case_manager import CaseManager
+    success = _run(CaseManager().delete, case_id)
+    if success:
+        return f"Case '{case_id}' permanently deleted."
+    return f"Error: Case '{case_id}' not found."
+
+
+@mcp.tool()
 def case_evidence_add(case_id: str, filepath: str, category: str = "evidence",
                       description: str = "") -> str:
     """
@@ -1537,10 +1801,12 @@ def case_evidence_add(case_id: str, filepath: str, category: str = "evidence",
     Parameters:
       case_id: Case ID to scope results (str)
       filepath: Path to file on disk (str)
-      category: Rule category filter (str) [default: 'evidence']
-      description: Case or task description (str) [default: '']
+      category: Evidence category (str) [default: 'evidence']
+      description: Evidence description (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
+    _require(case_id, "case_id")
+    _require(filepath, "filepath")
     from modules.case_manager import CaseManager
     src = Path(filepath)
     if not src.exists():
@@ -1611,6 +1877,48 @@ def case_scope_check(case_id: str, target: str) -> str:
 
 
 @mcp.tool()
+def case_scope_remove(case_id: str, target: str) -> str:
+    """
+    Remove a target from case scope (in-scope or out-of-scope).
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      target: Target hostname, IP, or URL (str)
+    Related: case_scope_add, case_scope_check, case_scope_list, case_info, case_list, case_create
+    """
+    from modules.case_manager import CaseManager
+    _run(CaseManager().scope_remove, case_id, target)
+    return f"Target '{target}' removed from scope for '{case_id}'"
+
+
+@mcp.tool()
+def case_scope_list(case_id: str) -> str:
+    """
+    List all in-scope and out-of-scope targets for a case.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: case_scope_add, case_scope_check, case_scope_remove, case_info, case_list, case_create
+    """
+    from modules.case_manager import CaseManager
+    scope = _run(CaseManager().scope_list, case_id)
+    lines = [f"Scope for '{case_id}':"]
+    in_scope = scope.get("in_scope", [])
+    out_scope = scope.get("out_of_scope", [])
+    if in_scope:
+        lines.append("  In scope:")
+        for t in in_scope:
+            lines.append(f"    {t}")
+    if out_scope:
+        lines.append("  Out of scope:")
+        for t in out_scope:
+            lines.append(f"    {t}")
+    if not in_scope and not out_scope:
+        lines.append("  (no scope restrictions defined)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def case_task_add(case_id: str, description: str, priority: str = "medium") -> str:
     """
     Add a task to the case checklist.
@@ -1668,17 +1976,21 @@ def case_finding_add(case_id: str, title: str, severity: str = "medium",
                      description: str = "", remediation: str = "",
                      source: str = "", cve: str = "", cwe: str = "",
                      impact: str = "", poc: str = "",
-                     references: str = "") -> str:
+                     references: str = "",
+                     command_output: str = "",
+                     cvss_score: float = None, cvss_vector: str = "",
+                     tags: str = "") -> str:
     """Add a structured finding to a case (severity: info/low/medium/high/critical).
 
-    Supports optional CVE/CWE references, impact description, PoC, and
+    Supports optional CVE/CWE references, impact description, PoC, CVSS score/vector,
+    tag labels (comma-separated, e.g. 'cwe:79,mitre-attack:T1078.001'), and
     comma-separated reference URLs.
     Phase: Case Management
     Parameters:
       case_id: Case ID to scope results (str)
       title: Title (str)
-      severity: Filter by severity (str) [default: 'medium']
-      description: Case or task description (str) [default: '']
+      severity: Severity of the finding (str) [default: 'medium']
+      description: Finding description (str) [default: '']
       remediation: Remediation steps (str) [default: '']
       source: Source of finding (str) [default: '']
       cve: CVE identifier (str) [default: '']
@@ -1686,21 +1998,33 @@ def case_finding_add(case_id: str, title: str, severity: str = "medium",
       impact: Impact description (str) [default: '']
       poc: Proof of concept text (str) [default: '']
       references: Reference URLs (comma-separated) (str) [default: '']
+      command_output: Actual command output / evidence text (str) [default: '']
+      cvss_score: CVSS score (0-10) (float) [default: null]
+      cvss_vector: CVSS vector string (str) [default: '']
+      tags: Comma-separated tags (e.g. 'cwe:79,mitre-attack:T1078.001') (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
     from modules.findings_db import FindingsDB
     from modules.constants import CASES_DIR
     ref_list = [r.strip() for r in references.split(",") if r.strip()] if references else []
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     db = FindingsDB(Path(CASES_DIR) / case_id)
     finding = _run(db.add, title, severity=severity, description=description,
                    remediation=remediation, source=source,
                    cve=cve, cwe=cwe, impact=impact, poc=poc,
-                   references=ref_list)
+                   references=ref_list,
+                   command_output=command_output,
+                   cvss_score=cvss_score, cvss_vector=cvss_vector,
+                   tags=tag_list)
     parts = [f"Finding {finding['id']} added: {finding['title']} [{finding['severity']}]"]
     if finding.get('cve'):
         parts.append(f"  CVE: {finding['cve']}")
     if finding.get('cwe'):
         parts.append(f"  CWE: {finding['cwe']}")
+    if finding.get('cvss_score') is not None:
+        parts.append(f"  CVSS: {finding['cvss_score']} ({finding.get('cvss_vector', '')})")
+    if finding.get('tags'):
+        parts.append(f"  Tags: {', '.join(finding['tags'])}")
     return "\n".join(parts)
 
 
@@ -1709,21 +2033,29 @@ def case_finding_update(case_id: str, finding_id: str,
                         severity: str = "", status: str = "",
                         description: str = "", remediation: str = "",
                         cve: str = "", cwe: str = "", impact: str = "",
-                        poc: str = "") -> str:
+                        poc: str = "",
+                        command_output: str = "",
+                        cvss_score: float = None, cvss_vector: str = "",
+                        tags: str = "") -> str:
     """
     Update an existing finding's fields. Empty strings are skipped.
+    Supports CVSS score/vector and tag labels.
     Phase: Case Management
     Parameters:
       case_id: Case ID to scope results (str)
       finding_id: Finding identifier (str)
-      severity: Filter by severity (str) [default: '']
+      severity: New severity value (str) [default: '']
       status: Status value (str) [default: '']
-      description: Case or task description (str) [default: '']
+      description: New description (str) [default: '']
       remediation: Remediation steps (str) [default: '']
       cve: CVE identifier (str) [default: '']
       cwe: CWE identifier (str) [default: '']
       impact: Impact description (str) [default: '']
       poc: Proof of concept text (str) [default: '']
+      command_output: Actual command output / evidence text (str) [default: '']
+      cvss_score: CVSS score (0-10) (float) [default: null]
+      cvss_vector: CVSS vector string (str) [default: '']
+      tags: Comma-separated tags (e.g. 'cwe:79,mitre-attack:T1078.001') (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
     from modules.findings_db import FindingsDB
@@ -1732,13 +2064,109 @@ def case_finding_update(case_id: str, finding_id: str,
     kwargs = {}
     for k, v in [("severity", severity), ("status", status),
                  ("description", description), ("remediation", remediation),
-                 ("cve", cve), ("cwe", cwe), ("impact", impact), ("poc", poc)]:
-        if v:
+                 ("cve", cve), ("cwe", cwe), ("impact", impact), ("poc", poc),
+                 ("command_output", command_output),
+                 ("cvss_score", cvss_score), ("cvss_vector", cvss_vector)]:
+        if v is not None and v != "":
             kwargs[k] = v
+    if tags:
+        kwargs["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
     result = _run(db.update, finding_id, **kwargs)
     if not result:
         return f"Finding '{finding_id}' not found in case '{case_id}'"
     return f"Finding {finding_id} updated"
+
+
+@mcp.tool()
+def case_finding_add_tag(case_id: str, finding_id: str, tag: str) -> str:
+    """Add a tag (e.g. 'cwe:79', 'mitre-attack:T1078.001') to a finding.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      finding_id: Finding identifier (str)
+      tag: Tag to add (e.g. 'cwe:79', 'owasp-web:A01:2021') (str)
+    Related: case_finding_remove_tag, case_finding_update, findings_list
+    """
+    from modules.findings_db import FindingsDB
+    from modules.constants import CASES_DIR
+    db = FindingsDB(Path(CASES_DIR) / case_id)
+    result = _run(db.add_tag, finding_id, tag)
+    if not result:
+        return f"Finding '{finding_id}' not found in case '{case_id}'"
+    return f"Tag '{tag}' added to {finding_id}"
+
+
+@mcp.tool()
+def case_finding_remove_tag(case_id: str, finding_id: str, tag: str) -> str:
+    """Remove a tag from a finding.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      finding_id: Finding identifier (str)
+      tag: Tag to remove (e.g. 'cwe:79') (str)
+    Related: case_finding_add_tag, case_finding_update, findings_list
+    """
+    from modules.findings_db import FindingsDB
+    from modules.constants import CASES_DIR
+    db = FindingsDB(Path(CASES_DIR) / case_id)
+    result = _run(db.remove_tag, finding_id, tag)
+    if not result:
+        return f"Finding '{finding_id}' not found in case '{case_id}'"
+    return f"Tag '{tag}' removed from {finding_id}"
+
+
+@mcp.tool()
+def case_tags_list(case_id: str) -> str:
+    """List all tags used across findings in a case with usage counts.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: findings_list, case_finding_add_tag, case_finding_detail
+    """
+    from modules.findings_db import FindingsDB
+    from modules.constants import CASES_DIR
+    db = FindingsDB(Path(CASES_DIR) / case_id)
+    tags = _run(db.tags)
+    if not tags:
+        return "No tags found in this case."
+    parts = [f"Tags in {case_id}:"]
+    for t, c in sorted(tags.items(), key=lambda x: -x[1]):
+        parts.append(f"  {t} ({c}x)")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def tags_search(query: str, namespace: str = "") -> str:
+    """Search the built-in tag reference database (CWE, MITRE ATT&CK, OWASP, CAPEC, D3FEND).
+    Phase: Reference Data Lookup
+    Parameters:
+      query: Search text (e.g. 'xss', 'injection', 'T1078') (str)
+      namespace: Filter by namespace (cwe, mitre-attack, owasp-web, owasp-ai, capec, d3fend) (str) [default: '']
+    Related: tags_resolve, case_finding_add_tag
+    """
+    from modules.tag_refs import search as _search
+    results = _search(query, namespace)
+    if not results:
+        return f"No tags found matching '{query}'"
+    parts = [f"Tags matching '{query}' ({len(results)}):"]
+    for r in results:
+        parts.append(f"  {r['tag']} — {r['title']} ({r['display']})")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def tags_resolve(tag: str) -> str:
+    """Resolve a single tag string (like 'cwe:79') to its human-readable name and namespace.
+    Phase: Reference Data Lookup
+    Parameters:
+      tag: Tag string to resolve (e.g. 'cwe:79', 'mitre-attack:T1078.001') (str)
+    Related: tags_search, case_finding_add_tag
+    """
+    from modules.tag_refs import resolve as _resolve
+    r = _resolve(tag)
+    if r.get("namespace") == "custom":
+        return f"'{tag}' — not found in reference data (treated as custom)"
+    return f"{r['tag']} — {r['title']} ({r['display']})"
 
 
 @mcp.tool()
@@ -1793,6 +2221,107 @@ def case_finding_unlink_evidence(case_id: str, finding_id: str,
         return f"None of the specified evidence is linked to {finding_id}"
     _run(db.update, finding_id, evidence_refs=sorted(existing - set(removed)))
     return f"Unlinked {len(removed)} evidence file(s) from {finding_id}: {', '.join(removed)}"
+
+
+@mcp.tool()
+def evidence_list(case_id: str) -> str:
+    """
+    List all evidence files for a case.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: evidence_upload, evidence_download_url, evidence_delete, case_finding_link_evidence
+    """
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = _run(cm.info, case_id)
+    if not info:
+        return "Case not found"
+    ev = _run(cm.get_evidence, case_id)
+    if not ev:
+        return "No evidence files."
+    lines = [f"Evidence ({len(ev)}):"]
+    for e in ev:
+        lines.append(f"  {e.get('filename','?'):<40} {e.get('category','?'):<15} {e.get('sha256',''):<20} {e.get('size',0):>8}B  {e.get('timestamp','')[:19]}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def evidence_upload(case_id: str, filepath: str,
+                    category: str = "evidence",
+                    description: str = "") -> str:
+    """
+    Upload a file from disk as evidence for a case. File is copied into the case directory and hashed.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      filepath: Absolute path to file on disk (str)
+      category: Evidence category (str) [default: 'evidence']
+      description: Description of the evidence (str) [default: '']
+    Related: evidence_list, evidence_download_url, evidence_delete, case_finding_link_evidence
+    """
+    from modules.case_manager import CaseManager
+    from pathlib import Path
+    p = Path(filepath)
+    if not p.is_file():
+        return f"File not found: {filepath}"
+    cm = CaseManager()
+    rec = _run(cm.add_evidence, case_id, str(p), category, description)
+    if not rec:
+        return f"Failed to add evidence (check case '{case_id}' exists)"
+    return (f"Evidence added: {rec.get('filename','')}\n"
+            f"  SHA256: {rec.get('sha256','')}\n"
+            f"  Size: {rec.get('size',0)}B\n"
+            f"  Category: {rec.get('category','')}\n"
+            f"  URL: /case/{case_id}/{rec.get('category','evidence')}/{rec.get('filename','')}")
+
+
+@mcp.tool()
+def evidence_download_url(case_id: str, filename: str) -> str:
+    """
+    Get the download URL for an evidence file.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      filename: Evidence filename (str)
+    Related: evidence_list, evidence_upload, evidence_delete
+    """
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    ev = _run(cm.get_evidence, case_id)
+    if not ev:
+        return "No evidence found"
+    match = [e for e in ev if e.get("filename") == filename]
+    if not match:
+        return f"Evidence '{filename}' not found in case {case_id}"
+    e = match[0]
+    return (f"Evidence: {e.get('filename','')}\n"
+            f"  Download URL: /case/{case_id}/{e.get('category','evidence')}/{e.get('filename','')}\n"
+            f"  SHA256: {e.get('sha256','')}\n"
+            f"  Size: {e.get('size',0)}B\n"
+            f"  Category: {e.get('category','')}\n"
+            f"  Timestamp: {e.get('timestamp','')}")
+
+
+@mcp.tool()
+def evidence_delete(case_id: str, filename: str) -> str:
+    """
+    Delete an evidence record from a case manifest by filename.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      filename: Evidence filename to delete (str)
+    Related: evidence_list, evidence_upload, evidence_download_url
+    """
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = _run(cm.info, case_id)
+    if not info:
+        return "Case not found"
+    deleted = _run(cm.delete_evidence, case_id, filename)
+    if deleted:
+        return f"Evidence '{filename}' deleted from case {case_id}"
+    return f"Evidence '{filename}' not found"
 
 
 @mcp.tool()
@@ -1948,6 +2477,35 @@ def case_report_obsidian(case_id: str, write_sections: bool = False,
     for ext, path in results.items():
         lines.append(f"  .{ext} → {path}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def case_report_generate(case_id: str, formats: str = "md") -> str:
+    """
+    Generate a report for a case in the given format(s). Uses Obsidian report generator.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      formats: Comma-separated formats (md,html,docx,pdf) (str) [default: 'md']
+    Related: case_report_engagement, case_report_obsidian, case_info, case_list, case_create
+    """
+    from modules.report_generator import generate_obsidian_report
+    from modules.constants import CASES_DIR
+    from modules.case_manager import CaseManager
+    case_dir = Path(CASES_DIR) / case_id
+    if not case_dir.exists():
+        return f"Case '{case_id}' not found"
+    fmt_list = [f.strip() for f in formats.split(",") if f.strip()]
+    try:
+        results = _run(generate_obsidian_report, case_dir, write_sections=True,
+                       formats=fmt_list)
+        lines = [f"Report generated for case '{case_id}':"]
+        for ext, path in results.items():
+            if path:
+                lines.append(f"  .{ext} → {path}")
+        return "\n".join(lines) if len(lines) > 1 else "Report generated (no output paths returned)"
+    except Exception as e:
+        return f"Error generating report: {str(e)}"
 
 
 @mcp.tool()
@@ -2657,6 +3215,62 @@ def nmap_parse(target: str) -> str:
     return json.dumps(r, indent=2)[:3000]
 
 
+_VALID_NMAP_SUBCOMMANDS = [
+    "init-tcp", "init-udp", "full-tcp", "full-ack",
+    "service-version", "versions-tcp", "versions-udp",
+    "vuln", "pipeline", "parse", "custom",
+]
+
+@mcp.tool()
+def case_nmap_scan(case_id: str, subcommand: str, target: str,
+                   ports: str = "", timeout: int = 7200) -> str:
+    """
+    Run an nmap scan and attach results to a case (scans/ + evidence).
+    Phase: Nmap Scanning
+    Parameters:
+      case_id: Case ID to scope results (str)
+      subcommand: Subcommand (init-tcp, init-udp, full-tcp, full-ack, service-version, versions-tcp, versions-udp, vuln, pipeline, parse, custom) (str)
+      target: Target hostname, IP, or URL (str)
+      ports: Ports or port range (str) [default: '']
+      timeout: Scan timeout in seconds (str) [default: 7200]
+    Related: nmap_initial_tcp, nmap_full_tcp, nmap_pipeline, nmap_parse, case_evidence_list
+    """
+    if subcommand not in _VALID_NMAP_SUBCOMMANDS:
+        return (f"Error: Unknown subcommand '{subcommand}'. "
+                f"Valid: {', '.join(_VALID_NMAP_SUBCOMMANDS)}. "
+                "(Note: use 'init-tcp' not 'initial-tcp', 'init-udp' not 'initial-udp')")
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = _run(cm.info, case_id)
+    if info is None:
+        return f"Error: Case '{case_id}' not found"
+    import subprocess as _sp
+    import sys as _sys
+    script = str(Path(__file__).resolve().parent / "kali-command-center.py")
+    cmd = [
+        _sys.executable or "python3", script, "nmap",
+        subcommand, "--target", target, "--case-id", case_id,
+    ]
+    if ports:
+        cmd.extend(["--ports", ports])
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
+        output = r.stdout[-3000:] if len(r.stdout) > 3000 else r.stdout
+        err = r.stderr[-500:] if r.stderr else ""
+        refreshed = _run(cm.info, case_id)
+        ev_count = len(refreshed.get("evidence", [])) if refreshed else 0
+        status = "ok" if r.returncode == 0 else "error"
+        lines = [f"Nmap scan ({status}): exit={r.returncode}"]
+        if output:
+            lines.append(f"Output:\n{output}")
+        if err:
+            lines.append(f"Stderr:\n{err}")
+        lines.append(f"Evidence count: {ev_count}")
+        return "\n".join(lines)
+    except _sp.TimeoutExpired:
+        return f"Error: Scan timed out after {timeout}s. Increase the timeout parameter if needed."
+
+
 # ---------------------------------------------------------------------------
 # Browser forensics — LevelDB / IndexedDB
 # ---------------------------------------------------------------------------
@@ -3158,7 +3772,9 @@ def loot_add_credential(source: str, target: str, username: str,
                         hash_type: str = "", domain: str = "",
                         protocol: str = "", port: int = 0) -> str:
     """
-    Store a credential in the loot database.
+    Store a captured/compromised credential in the loot database (plaintext).
+    Use this for credentials found via dumping, cracking, phishing, or tool output.
+    For managed/known credentials of an inventory asset use credentials_create.
     Phase: Loot Database
     Parameters:
       source: Source of finding (str)
@@ -3170,30 +3786,43 @@ def loot_add_credential(source: str, target: str, username: str,
       domain: Target domain (e.g., "example.local") (str) [default: '']
       protocol: Network protocol (str) [default: '']
       port: Port number (int) [default: 0]
-    Related: loot_search
+    Related: loot_search, loot_list_credentials, loot_delete_credential, credentials_create, credentials_list
     """
     from modules.tool_wrappers import LootDB
-    db = LootDB()
-    cid = db.add_credential(source=source, target=target, username=username,
-                            password=password, hash=hash, hash_type=hash_type,
-                            domain=domain, protocol=protocol, port=port)
-    db.close()
+    def _store():
+        db = LootDB()
+        try:
+            return db.add_credential(source=source, target=target, username=username,
+                                    password=password, hash=hash, hash_type=hash_type,
+                                    domain=domain, protocol=protocol, port=port)
+        finally:
+            db.close()
+    cid = _run(_store)
+    if isinstance(cid, dict) and cid.get("error"):
+        return cid["error"]
     return f"Credential stored (id={cid})"
 
 
 @mcp.tool()
 def loot_search(query: str) -> str:
     """
-    Search the loot database for credentials, tokens, sessions.
+    Search the loot database for captured credentials, tokens, sessions.
+    Does not search the asset inventory — use credentials_list for that.
     Phase: Loot Database
     Parameters:
       query: Query (str)
-    Related: loot_add_credential
+    Related: loot_add_credential, loot_list_credentials, loot_list_tokens, loot_list_sessions, credentials_list
     """
     from modules.tool_wrappers import LootDB
-    db = LootDB()
-    results = db.search(query)
-    db.close()
+    def _search():
+        db = LootDB()
+        try:
+            return db.search(query)
+        finally:
+            db.close()
+    results = _run(_search)
+    if isinstance(results, dict) and results.get("error"):
+        return results["error"]
     creds = results.get("credentials", [])
     tokens = results.get("tokens", [])
     sessions = results.get("sessions", [])
@@ -3206,6 +3835,241 @@ def loot_search(query: str) -> str:
         lines.append(f"    [{t.get('token_type','?')}] {t.get('token_value','')[:60]}")
     lines.append(f"  Sessions: {len(sessions)}")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def loot_list_credentials(limit: int = 50) -> str:
+    """
+    List recent credentials from the loot database (captured/compromised creds).
+    For managed/known credentials of inventory assets use credentials_list.
+    Phase: Loot Database
+    Parameters:
+      limit: Maximum records to return (int) [default: 50]
+    Related: loot_add_credential, loot_delete_credential, loot_search, credentials_list
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _list():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            return db.list_credentials(limit=limit)
+        finally:
+            db.close()
+    creds = _run(_list)
+    if isinstance(creds, dict) and creds.get("error"):
+        return creds["error"]
+    if not creds:
+        return "No credentials found."
+    lines = [f"Credentials ({len(creds)}):"]
+    for c in creds:
+        lines.append(f"  #{c['id']:<6} {c.get('username','?'):<20} {c.get('password',''):<20} @ {c.get('target','?'):<30} [{c.get('protocol','')}{':'+str(c['port']) if c.get('port') else ''}] {c.get('source','')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def loot_delete_credential(cred_id: int) -> str:
+    """
+    Delete a credential from the loot database by ID.
+    Phase: Loot Database
+    Parameters:
+      cred_id: Credential ID to delete (int)
+    Related: loot_list_credentials, loot_add_credential, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _del():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            cur = db._conn.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
+            db._conn.commit()
+            return cur.rowcount
+        finally:
+            db.close()
+    cnt = _run(_del)
+    if isinstance(cnt, dict) and cnt.get("error"):
+        return cnt["error"]
+    if cnt == 0:
+        return f"Credential {cred_id} not found."
+    return f"Credential {cred_id} deleted."
+
+
+@mcp.tool()
+def loot_list_tokens(limit: int = 50) -> str:
+    """
+    List tokens from the loot database.
+    Phase: Loot Database
+    Parameters:
+      limit: Maximum records to return (int) [default: 50]
+    Related: loot_add_token, loot_delete_token, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _list():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            rows = db._conn.execute(
+                "SELECT * FROM tokens ORDER BY discovered DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(zip(["id","source","token_type","token_value","target","expires","notes","discovered"], r)) for r in rows]
+        finally:
+            db.close()
+    tokens = _run(_list)
+    if isinstance(tokens, dict) and tokens.get("error"):
+        return tokens["error"]
+    if not tokens:
+        return "No tokens found."
+    lines = [f"Tokens ({len(tokens)}):"]
+    for t in tokens:
+        tv = t.get('token_value', '')
+        lines.append(f"  #{t['id']:<6} [{t.get('token_type','?'):<10}] {tv[:60]:<60} \u2192 {t.get('target','?'):<20} ({t.get('source','')})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def loot_add_token(source: str, token_type: str, token_value: str,
+                   target: str = "", expires: str = "",
+                   notes: str = "") -> str:
+    """
+    Store a token in the loot database.
+    Phase: Loot Database
+    Parameters:
+      source: Source of finding (str)
+      token_type: Token type (JWT, API, session) (str)
+      token_value: The token string (str)
+      target: Target hostname, IP, or URL (str) [default: '']
+      expires: Expiration date (YYYY-MM-DD) (str) [default: '']
+      notes: Notes (str) [default: '']
+    Related: loot_list_tokens, loot_delete_token, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _store():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            return db.add_token(source=source, token_type=token_type,
+                               token_value=token_value, target=target,
+                               expires=expires, notes=notes)
+        finally:
+            db.close()
+    tid = _run(_store)
+    if isinstance(tid, dict) and tid.get("error"):
+        return tid["error"]
+    return f"Token stored (id={tid})"
+
+
+@mcp.tool()
+def loot_delete_token(token_id: int) -> str:
+    """
+    Delete a token from the loot database by ID.
+    Phase: Loot Database
+    Parameters:
+      token_id: Token ID to delete (int)
+    Related: loot_list_tokens, loot_add_token, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _del():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            cur = db._conn.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+            db._conn.commit()
+            return cur.rowcount
+        finally:
+            db.close()
+    cnt = _run(_del)
+    if isinstance(cnt, dict) and cnt.get("error"):
+        return cnt["error"]
+    if cnt == 0:
+        return f"Token {token_id} not found."
+    return f"Token {token_id} deleted."
+
+
+@mcp.tool()
+def loot_list_sessions(limit: int = 50) -> str:
+    """
+    List sessions from the loot database.
+    Phase: Loot Database
+    Parameters:
+      limit: Maximum records to return (int) [default: 50]
+    Related: loot_add_session, loot_delete_session, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _list():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            rows = db._conn.execute(
+                "SELECT * FROM sessions ORDER BY discovered DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(zip(["id","source","session_id","target","protocol","data","discovered"], r)) for r in rows]
+        finally:
+            db.close()
+    sessions = _run(_list)
+    if isinstance(sessions, dict) and sessions.get("error"):
+        return sessions["error"]
+    if not sessions:
+        return "No sessions found."
+    lines = [f"Sessions ({len(sessions)}):"]
+    for s in sessions:
+        lines.append(f"  #{s['id']:<6} {s.get('session_id',''):<30} \u2192 {s.get('target','?'):<20} [{s.get('protocol','?'):<10}] ({s.get('source','')})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def loot_add_session(source: str, session_id: str, target: str = "",
+                     protocol: str = "", data: str = "") -> str:
+    """
+    Store a session in the loot database.
+    Phase: Loot Database
+    Parameters:
+      source: Source of finding (str)
+      session_id: Session identifier (str)
+      target: Target hostname, IP, or URL (str) [default: '']
+      protocol: Network protocol (str) [default: '']
+      data: Session data / cookies (str) [default: '']
+    Related: loot_list_sessions, loot_delete_session, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _store():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            return db.add_session(source=source, session_id=session_id,
+                                 target=target, protocol=protocol,
+                                 data=data)
+        finally:
+            db.close()
+    sid = _run(_store)
+    if isinstance(sid, dict) and sid.get("error"):
+        return sid["error"]
+    return f"Session stored (id={sid})"
+
+
+@mcp.tool()
+def loot_delete_session(sid: int) -> str:
+    """
+    Delete a session from the loot database by ID.
+    Phase: Loot Database
+    Parameters:
+      sid: Session ID to delete (int)
+    Related: loot_list_sessions, loot_add_session, loot_search
+    """
+    from modules.tool_wrappers import LootDB
+    from modules.constants import CC_DIR
+    def _del():
+        db = LootDB(CC_DIR / "loot.db")
+        try:
+            cur = db._conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+            db._conn.commit()
+            return cur.rowcount
+        finally:
+            db.close()
+    cnt = _run(_del)
+    if isinstance(cnt, dict) and cnt.get("error"):
+        return cnt["error"]
+    if cnt == 0:
+        return f"Session {sid} not found."
+    return f"Session {sid} deleted."
 
 
 # ---------------------------------------------------------------------------
@@ -3542,14 +4406,15 @@ def case_evidence_upload(case_id: str, filepath: str, category: str = "evidence"
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def findings_list(severity: str = "", search: str = "",
-                  case_id: str = "") -> str:
+                  case_id: str = "", tag: str = "") -> str:
     """
-    List findings across all cases, optionally filtered by severity, search text, or case.
+    List findings across all cases, optionally filtered by severity, search text, case, or tag.
     Phase: Case Management
     Parameters:
       severity: Filter by severity (critical/high/medium/low/info) (str) [default: '']
       search: Free text search in title/cve/description (str) [default: '']
       case_id: Limit to a specific case ID (str) [default: '']
+      tag: Filter by tag (e.g. 'cwe:79' or 'mitre-attack:T1078') (str) [default: '']
     Related: findings_stats, case_finding_add, case_finding_detail, case_finding_update, case_findings_bulk_update, case_findings_bulk_delete
     """
     from modules.case_manager import CaseManager
@@ -3582,9 +4447,13 @@ def findings_list(severity: str = "", search: str = "",
             if search_lower:
                 txt = (f.get("title","") + " " + f.get("cve","") + " " + f.get("description","") + " " + f.get("id","")).lower()
                 if search_lower not in txt:
+                    ftag_text = " ".join(f.get("tags", [])).lower()
+                    if search_lower not in ftag_text:
+                        continue
+            if tag:
+                ftags = f.get("tags", [])
+                if tag not in ftags:
                     continue
-            f["_case_id"] = cid
-            f["_case_title"] = ctitle
             results.append(f)
 
     if not results:
@@ -3612,6 +4481,7 @@ def findings_stats() -> str:
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     status_counts = {}
     total = 0
+    tag_counts = {}
     for c in cases:
         cid = c.get("case_id", "")
         db = FindingsDB(cm._case_path(cid))
@@ -3626,9 +4496,14 @@ def findings_stats() -> str:
                 severity_counts[sev] += 1
             st = f.get("status", "unvalidated")
             status_counts[st] = status_counts.get(st, 0) + 1
+            for t in f.get("tags", []):
+                tag_counts[t] = tag_counts.get(t, 0) + 1
     lines = [f"Findings Stats ({total} total):"]
     lines.append("  By severity: " + ", ".join(f"{k}={v}" for k, v in sorted(severity_counts.items()) if v))
     lines.append("  By status: " + ", ".join(f"{k}={v}" for k, v in sorted(status_counts.items())))
+    top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:10]
+    if top_tags:
+        lines.append("  Top tags: " + ", ".join(f"{k}({v})" for k, v in top_tags))
     return "\n".join(lines)
 
 
@@ -3653,10 +4528,13 @@ def case_finding_detail(case_id: str, finding_id: str) -> str:
     if not finding:
         return "Finding not found"
     lines = [f"Finding: {finding.get('title','')}"]
-    for k in ("id", "severity", "status", "cve", "cwe", "source", "created", "updated"):
+    for k in ("id", "severity", "status", "cve", "cwe", "cvss_score", "cvss_vector", "source", "created", "updated"):
         v = finding.get(k, "")
-        if v:
+        if v is not None and v != "":
             lines.append(f"  {k}: {v}")
+    tags = finding.get("tags", [])
+    if tags:
+        lines.append(f"  tags: {', '.join(tags)}")
     for k in ("description", "remediation", "impact", "poc"):
         v = (finding.get(k, "") or "")[:500]
         if v:
@@ -3698,7 +4576,8 @@ def case_findings_bulk_update(case_id: str, finding_ids: str,
                               status: str = "", severity: str = "",
                               title: str = "", description: str = "",
                               remediation: str = "", impact: str = "",
-                              poc: str = "") -> str:
+                              poc: str = "",
+                              tags: str = "") -> str:
     """
     Bulk update multiple findings in a case. Provide comma-separated finding_ids.
     Only non-empty fields are updated.
@@ -3713,6 +4592,7 @@ def case_findings_bulk_update(case_id: str, finding_ids: str,
       remediation: New remediation (str) [default: '']
       impact: New impact (str) [default: '']
       poc: New PoC (str) [default: '']
+      tags: Comma-separated tags to set on all findings (str) [default: '']
     Related: case_finding_update, case_findings_bulk_delete, findings_list
     """
     from modules.case_manager import CaseManager
@@ -3727,6 +4607,8 @@ def case_findings_bulk_update(case_id: str, finding_ids: str,
     changes = {k: v for k, v in {"status": status, "severity": severity, "title": title,
                                   "description": description, "remediation": remediation,
                                   "impact": impact, "poc": poc}.items() if v}
+    if tags:
+        changes["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
     if not changes:
         return "Error: No fields to update"
     db = FindingsDB(cm._case_path(case_id))
@@ -3792,9 +4674,13 @@ def case_finding_create(case_id: str, title: str,
                         source: str = "manual",
                         cve: str = "", cwe: str = "",
                         impact: str = "", poc: str = "",
-                        status: str = "") -> str:
+                        status: str = "",
+                        command_output: str = "",
+                        cvss_score: float = None, cvss_vector: str = "",
+                        tags: str = "") -> str:
     """
     Create a new finding in a case. Returns the created finding summary.
+    Supports CVSS score/vector and tag labels.
     Phase: Case Management
     Parameters:
       case_id: Case to add the finding to (str)
@@ -3808,6 +4694,10 @@ def case_finding_create(case_id: str, title: str,
       impact: Business/technical impact (str) [default: '']
       poc: Proof of concept (str) [default: '']
       status: Initial status (unvalidated/validated/remediated/closed_other) (str) [default: '']
+      command_output: Actual command output / evidence text (str) [default: '']
+      cvss_score: CVSS score (0-10) (float) [default: null]
+      cvss_vector: CVSS vector string (str) [default: '']
+      tags: Comma-separated tags (e.g. 'cwe:79,mitre-attack:T1078.001') (str) [default: '']
     Related: case_finding_detail, case_finding_update, case_finding_delete, findings_list
     """
     from modules.case_manager import CaseManager
@@ -3817,16 +4707,285 @@ def case_finding_create(case_id: str, title: str,
     if not info:
         return "Case not found"
     db = FindingsDB(cm._case_path(case_id))
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     finding = _run(db.add, title=title, severity=severity, description=description,
                    remediation=remediation, source=source, cve=cve, cwe=cwe,
-                   impact=impact, poc=poc)
+                   impact=impact, poc=poc,
+                   command_output=command_output,
+                   cvss_score=cvss_score, cvss_vector=cvss_vector,
+                   tags=tag_list)
     if status and status != "unvalidated":
         _run(db.update, finding["id"], status=status)
     return f"Finding created: {finding.get('id','')} ({severity}) — {title[:60]}"
 
 
 # ---------------------------------------------------------------------------
-# Prompts Library
+# @mcp.prompt() — Pre-canned prompt templates for AI clients
+# ---------------------------------------------------------------------------
+
+@mcp.prompt(name="analyze_finding", title="Analyze a Finding",
+            description="Given a case and finding ID, returns a structured analysis prompt to assess the vulnerability.")
+def analyze_finding(case_id: str, finding_id: str) -> list[dict]:
+    return [
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": f"cc://cases/{case_id}/findings", "text": ""}
+        }},
+        {"role": "user", "content": f"""You are analyzing finding **{finding_id}** from case **{case_id}**.
+
+Please provide:
+1. **Vulnerability Assessment** — What is the root cause? What is the real-world impact?
+2. **Exploitability** — How easy is it to exploit? What prerequisites are needed?
+3. **Business Impact** — What data/systems are at risk? Compliance implications?
+4. **Recommended Remediation** — Specific steps to fix the vulnerability.
+5. **References** — CWE/CVE links, similar vulnerabilities, mitigation patterns.
+
+Be specific and actionable. Reference CVSS vector if available."""}
+    ]
+
+
+@mcp.prompt(name="generate_finding", title="Generate a Finding from Output",
+            description="Given raw command output and target info, returns a prompt to create a structured finding.")
+def generate_finding(command_output: str, target: str = "", source: str = "") -> list[dict]:
+    source_line = f" from **{source}**" if source else ""
+    target_line = f"\n**Target:** {target}\n" if target else "\n"
+    return [
+        {"role": "user", "content": f"""You are a penetration tester documenting a finding.
+
+Raw output captured{source_line}:{target_line}
+```
+{command_output[:4000]}
+```
+
+Please produce a structured finding with:
+- **Title** (concise, descriptive)
+- **Severity** (critical/high/medium/low/info)
+- **Description** (what was found, why it matters)
+- **Impact** (business/technical consequences)
+- **Remediation** (specific fix steps)
+- **CVSS vector** (if applicable)
+- **Tags** (e.g. cwe:79, mitre-attack:T1078)
+
+Output as JSON with keys: title, severity, description, impact, remediation, cvss_vector, tags."""}
+    ]
+
+
+@mcp.prompt(name="pentest_plan", title="Pentest Methodology Plan",
+            description="Given a case type and target, generates a step-by-step pentest methodology plan.")
+def pentest_plan(case_type: str, target: str = "") -> list[dict]:
+    target_line = f" against **{target}**" if target else ""
+    return [
+        {"role": "user", "content": f"""You are planning a {case_type} penetration test{target_line}.
+
+Please produce a step-by-step methodology plan covering:
+
+1. **Reconnaissance** — Passive and active information gathering
+2. **Enumeration** — Service/port scanning, banner grabbing, technology fingerprinting
+3. **Vulnerability Assessment** — Scanning, manual checks, configuration review
+4. **Exploitation** — Prioritized attack paths
+5. **Post-Exploitation** — Privilege escalation, lateral movement, persistence
+6. **Reporting** — Findings documentation, evidence gathering
+
+Tailor each phase to the **{case_type}** assessment type. Include specific tools and techniques relevant to this scenario."""}
+    ]
+
+
+@mcp.prompt(name="report_section", title="Write a Report Section",
+            description="Given a case ID and section name, returns a prompt to draft that section of the pentest report.")
+def report_section(case_id: str, section: str) -> list[dict]:
+    return [
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": f"cc://cases/{case_id}", "text": ""}
+        }},
+        {"role": "user", "content": f"""You are writing the **{section}** section of a penetration test report for case **{case_id}**.
+
+Use the case data above and produce professional report text that is:
+- Clear and concise for both technical and non-technical readers
+- Specific to the findings and scope of this engagement
+- Actionable with concrete observations
+
+The section "{section}" should include relevant findings, evidence, and recommendations."""}
+    ]
+
+
+@mcp.prompt(name="remediate_finding", title="Suggest Remediation",
+            description="Given a finding ID, returns a remediation-focused prompt.")
+def remediate_finding(case_id: str, finding_id: str) -> list[dict]:
+    return [
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": f"cc://cases/{case_id}/findings", "text": ""}
+        }},
+        {"role": "user", "content": f"""You are a remediation specialist reviewing finding **{finding_id}** from case **{case_id}**.
+
+Please provide:
+
+1. **Root Cause Analysis** — What configuration, code, or design flaw caused this?
+2. **Remediation Steps** — Detailed, step-by-step fix instructions. Include specific commands, code changes, or configuration modifications.
+3. **Verification** — How to confirm the fix is effective.
+4. **Alternative Mitigations** — If full remediation isn't immediately possible, what compensating controls can reduce risk?
+5. **Timeline Estimate** — Estimated effort (hours/days) to implement the fix.
+
+Focus on practical, implementable solutions."""}
+    ]
+
+
+@mcp.prompt(name="summarize_case", title="Summarize Case for Executive Report",
+            description="Returns a prompt to generate an executive summary of a case's findings and impact.")
+def summarize_case(case_id: str) -> list[dict]:
+    return [
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": f"cc://cases/{case_id}", "text": ""}
+        }},
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": f"cc://cases/{case_id}/findings", "text": ""}
+        }},
+        {"role": "user", "content": f"""You are writing an executive summary for case **{case_id}**.
+
+Based on the case data and findings provided, produce:
+
+1. **Executive Summary** — 2-3 paragraphs describing the engagement scope, key findings, and overall security posture (non-technical).
+2. **Key Observations** — Bullet points of the most critical issues found.
+3. **Risk Overview** — Summary of risk levels and affected areas.
+4. **Top Recommendations** — 3-5 prioritized action items for leadership.
+
+Write for a C-suite audience: clear, impactful, non-technical where possible."""}
+    ]
+
+
+@mcp.prompt(name="review_scope", title="Review Scope and Attack Paths",
+            description="Given a case ID, returns a prompt to review in-scope targets and suggest attack paths.")
+def review_scope(case_id: str) -> list[dict]:
+    return [
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": f"cc://cases/{case_id}/scope", "text": ""}
+        }},
+        {"role": "user", "content": f"""You are reviewing the scope for case **{case_id}**.
+
+Based on the in-scope and out-of-scope targets above, please:
+
+1. **Attack Surface Analysis** — Identify the most promising entry points
+2. **Attack Path Suggestions** — Propose 3-5 specific attack paths an adversary might use
+3. **Lateral Movement Vectors** — How an attacker might pivot between targets
+4. **High-Value Targets** — Which assets are most critical to protect
+5. **Scope Edge Cases** — Any ambiguous scope items that need clarification
+
+Consider the relationships between targets and common misconfigurations for each service/application type."""}
+    ]
+
+
+@mcp.prompt(name="crack_hashes", title="Hash Cracking Strategy",
+            description="Given hash types and optional sample hashes, suggests a cracking strategy.")
+def crack_hashes(hash_types: str, hashes: str = "") -> list[dict]:
+    hash_sample = f"\nSample hashes:\n```\n{hashes[:2000]}\n```\n" if hashes else "\n"
+    return [
+        {"role": "user", "content": f"""You are assisting with hash cracking during a penetration test.
+
+Hash types identified: **{hash_types}**{hash_sample}
+
+Please provide:
+
+1. **Hash Identification** — Confirm each hash type and its hashcat mode number
+2. **Wordlist Strategy** — Recommended wordlists and rule files for each type
+3. **Attack Mode Plan** — Dictionary → Rule-based → Mask → Brute-force progression
+4. **Time Estimates** — Approximate cracking time for each hash type given common hardware
+5. **Alternative Approaches** — If cracking fails, what other methods can obtain the plaintext?
+6. **Prioritization** — Which hashes to crack first based on type and likelihood of success
+
+Output a clear step-by-step plan."""}
+    ]
+
+
+@mcp.prompt(name="analyze_network", title="Analyze Network Scan Results",
+            description="Given target and port data, analyzes network scan findings for vulnerabilities.")
+def analyze_network(target: str, ports: str = "") -> list[dict]:
+    ports_line = f"\nOpen ports/services:\n```\n{ports[:2000]}\n```\n" if ports else "\n"
+    return [
+        {"role": "user", "content": f"""You are analyzing network scan results for target **{target}**.{ports_line}
+
+Please provide:
+
+1. **Attack Surface Summary** — What services and versions are exposed?
+2. **High-Risk Services** — Which services are most likely to be vulnerable?
+3. **Known Vulnerabilities** — CVEs or common misconfigurations for each service
+4. **Exploitation Priority** — Rank services by likelihood of successful exploitation
+5. **Recommended Next Steps** — Specific enumeration or exploitation actions to take
+
+Be specific about versions, known CVEs, and relevant exploit techniques (e.g., EternalBlue, Log4Shell, etc.)."""}
+    ]
+
+
+@mcp.prompt(name="write_rules", title="Generate Detection Rules",
+            description="Given a threat description and target format, generates detection rules.")
+def write_rules(description: str, rule_format: str = "sigma") -> list[dict]:
+    return [
+        {"role": "user", "content": f"""You are a detection engineer creating **{rule_format}** rules.
+
+Threat description:
+```
+{description}
+```
+
+Please generate:
+
+1. **Rule Title** — Clear, descriptive name
+2. **Log Sources Needed** — What logs are required (e.g., Windows Event ID 4688, Sysmon EID 1)
+3. **Detection Logic** — The actual {rule_format} rule with proper syntax
+4. **False Positives** — Known scenarios that could trigger false alarms
+5. **Testing Steps** — How to validate the rule works
+
+Output the complete {rule_format} rule in a code block, plus explanatory notes."""}
+    ]
+
+
+@mcp.prompt(name="investigate_loot", title="Investigate Looted Credentials",
+            description="Given loot credentials, suggests reuse testing and lateral movement opportunities.")
+def investigate_loot(source: str, target: str = "") -> list[dict]:
+    target_line = f" from **{target}**" if target else ""
+    return [
+        {"role": "user", "content": {
+            "type": "resource",
+            "resource": {"uri": "cc://loot/credentials", "text": ""}
+        }},
+        {"role": "user", "content": f"""You are investigating looted credentials{source}{target_line}.
+
+Based on the available loot database entries, please analyze:
+
+1. **Credential Reuse Potential** — What services/systems could these credentials be tested against?
+2. **Lateral Movement Opportunities** — Can any credentials grant access to other systems?
+3. **Privilege Escalation Paths** — Any privileged accounts found?
+4. **Pattern Analysis** — Common themes (default passwords, company name patterns, password policy indicators)
+5. **Testing Priority** — Which credentials to test first for maximum impact
+
+Focus on practical password reuse and lateral movement scenarios."""}
+    ]
+
+
+@mcp.prompt(name="evidence_request", title="Request Evidence Collection",
+            description="Given a case and finding type, suggests what evidence to collect for that finding.")
+def evidence_request(case_id: str, finding_type: str = "") -> list[dict]:
+    type_line = f" for **{finding_type}**" if finding_type else ""
+    return [
+        {"role": "user", "content": f"""You are guiding evidence collection for case **{case_id}**{type_line}.
+
+Please suggest:
+
+1. **Required Evidence** — What screenshots, logs, or output is needed to prove each finding
+2. **Collection Commands** — Specific commands to run (nmap, curl, sqlmap, etc.) to capture evidence
+3. **Documentation Standards** — How to label and organize evidence files
+4. **Chain of Custody** — How to maintain integrity (hashes, timestamps)
+5. **Minimum Viable Evidence** — What's the smallest amount of evidence needed to validate each finding
+
+Be practical — suggest commands that produce clear, court-admissible evidence."""}
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Prompts Library (YAML-backed tools)
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def prompts_list() -> str:
@@ -4056,7 +5215,7 @@ def case_files_list(case_id: str, path: str = "") -> str:
         return "Case not found"
     case_dir = cm._case_path(case_id)
     target = (case_dir / path).resolve()
-    if not str(target).startswith(str(case_dir.resolve()) + "\\") and target != case_dir:
+    if not _path_is_inside(target, case_dir) and target != case_dir:
         return "Access denied"
     if not target.exists():
         return f"Path not found: {path}"
@@ -4097,7 +5256,7 @@ def case_files_preview(case_id: str, file_path: str, max_chars: int = 2000) -> s
         return "Case not found"
     case_dir = cm._case_path(case_id)
     target = (case_dir / file_path).resolve()
-    if not str(target).startswith(str(case_dir.resolve()) + "\\"):
+    if not _path_is_inside(target, case_dir):
         return "Access denied"
     if not target.exists() or not target.is_file():
         return "File not found"
@@ -4108,6 +5267,96 @@ def case_files_preview(case_id: str, file_path: str, max_chars: int = 2000) -> s
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n... (truncated, full size: {len(text):,} chars)"
     return f"--- {target.name} ({target.stat().st_size:,} bytes) ---\n{text}"
+
+
+@mcp.tool()
+def case_files_upload(case_id: str, source_path: str, subdir: str = "") -> str:
+    """
+    Upload a local file to a case's directory (not evidence — use case_evidence_upload for evidence).
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      source_path: Local path to the file to upload (str)
+      subdir: Subdirectory within the case (e.g. 'scans', 'loot') (str) [default: '']
+    Related: case_files_list, case_files_preview, case_files_delete, case_files_tree, case_evidence_upload
+    """
+    from modules.case_manager import CaseManager
+    from pathlib import Path
+    cm = CaseManager()
+    info = _run(cm.info, case_id)
+    if info is None:
+        return f"Error: Case '{case_id}' not found"
+    src = Path(source_path)
+    if not src.exists():
+        return f"Error: Source file not found: {source_path}"
+    case_dir = cm._case_path(case_id)
+    target_dir = (case_dir / subdir).resolve()
+    if not _path_is_inside(target_dir, case_dir) and target_dir != case_dir:
+        return "Error: Access denied (path traversal)"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / src.name
+    import shutil
+    shutil.copy2(str(src), str(dest))
+    return f"Uploaded '{src.name}' to case '{case_id}'/{subdir} ({dest.stat().st_size:,} bytes)"
+
+
+@mcp.tool()
+def case_files_delete(case_id: str, file_path: str) -> str:
+    """
+    Delete a file from a case directory (not evidence — use the evidence API for that).
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+      file_path: Relative path within the case to delete (str)
+    Related: case_files_list, case_files_preview, case_files_upload, case_files_tree
+    """
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = _run(cm.info, case_id)
+    if info is None:
+        return f"Error: Case '{case_id}' not found"
+    case_dir = cm._case_path(case_id)
+    target = (case_dir / file_path).resolve()
+    if not _path_is_inside(target, case_dir):
+        return "Error: Access denied (path traversal)"
+    if not target.exists():
+        return f"Error: File not found: {file_path}"
+    if target.is_dir():
+        return "Error: Cannot delete directories via this endpoint"
+    sz = target.stat().st_size
+    target.unlink()
+    return f"Deleted '{file_path}' ({sz:,} bytes) from case '{case_id}'"
+
+
+@mcp.tool()
+def case_files_tree(case_id: str) -> str:
+    """
+    Return the full directory tree for a case.
+    Phase: Case Management
+    Parameters:
+      case_id: Case ID to scope results (str)
+    Related: case_files_list, case_files_preview, case_files_upload, case_files_delete
+    """
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = _run(cm.info, case_id)
+    if info is None:
+        return f"Error: Case '{case_id}' not found"
+    case_dir = cm._case_path(case_id)
+    if not case_dir.exists():
+        return f"Case directory for '{case_id}' is empty or does not exist."
+    lines = [f"File tree for case '{case_id}':"]
+    def _walk(d, prefix=""):
+        entries = sorted(d.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        for i, entry in enumerate(entries):
+            is_last = i == len(entries) - 1
+            connector = "└── " if is_last else "├── "
+            lines.append(prefix + connector + entry.name + ("/" if entry.is_dir() else ""))
+            if entry.is_dir():
+                ext = "    " if is_last else "│   "
+                _walk(entry, prefix + ext)
+    _walk(case_dir)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -4475,11 +5724,12 @@ def customers_delete(customer_id: str) -> str:
 @mcp.tool()
 def credentials_list(asset_id: str = "") -> str:
     """
-    List credentials in the asset inventory, optionally filtered by asset.
+    List managed credentials in the asset inventory, optionally filtered by asset.
+    For captured/compromised credentials (hashes, dumped passwords) use loot_list_credentials.
     Phase: Utility / Infrastructure
     Parameters:
       asset_id: Filter by asset (str) [default: '']
-    Related: credentials_create, credentials_get, credentials_delete, assets_list
+    Related: credentials_create, credentials_get, credentials_delete, assets_list, loot_list_credentials
     """
     from modules.asset_tracker import AssetTracker
     creds = _run(AssetTracker().list_credentials, asset_id=asset_id)
@@ -4496,7 +5746,9 @@ def credentials_create(asset_id: str, kind: str, username: str,
                        secret: str, service: str = "",
                        url: str = "", notes: str = "") -> str:
     """
-    Store a credential for an asset.
+    Store a managed credential for an inventory asset (encrypted at rest).
+    Use this for known/preshared credentials tied to an asset.
+    For captured/compromised credentials (hashes, dumped passwords) use loot_add_credential.
     Phase: Utility / Infrastructure
     Parameters:
       asset_id: Asset to associate credential with (str)
@@ -4506,7 +5758,7 @@ def credentials_create(asset_id: str, kind: str, username: str,
       service: Service name (str) [default: '']
       url: URL (str) [default: '']
       notes: Notes (str) [default: '']
-    Related: credentials_list, credentials_get, credentials_delete, assets_list
+    Related: credentials_list, credentials_get, credentials_delete, assets_list, loot_add_credential
     """
     from modules.asset_tracker import AssetTracker
     try:
@@ -4521,12 +5773,12 @@ def credentials_create(asset_id: str, kind: str, username: str,
 @mcp.tool()
 def credentials_get(cred_id: str, decrypt: bool = False) -> str:
     """
-    Get credential details (optionally decrypt the secret).
+    Get managed credential details from the asset inventory (optionally decrypt).
     Phase: Utility / Infrastructure
     Parameters:
       cred_id: Credential ID (str)
       decrypt: Set to True to decrypt and show the secret (bool) [default: false]
-    Related: credentials_list, credentials_create, credentials_delete
+    Related: credentials_list, credentials_create, credentials_delete, loot_search
     """
     from modules.asset_tracker import AssetTracker
     c = _run(AssetTracker().get_credential, cred_id, decrypt=decrypt)
@@ -4549,11 +5801,11 @@ def credentials_get(cred_id: str, decrypt: bool = False) -> str:
 @mcp.tool()
 def credentials_delete(cred_id: str) -> str:
     """
-    Delete a credential.
+    Delete a managed credential from the asset inventory.
     Phase: Utility / Infrastructure
     Parameters:
       cred_id: Credential ID to delete (str)
-    Related: credentials_list, credentials_create, credentials_get
+    Related: credentials_list, credentials_create, credentials_get, loot_delete_credential
     """
     from modules.asset_tracker import AssetTracker
     try:
@@ -4712,6 +5964,113 @@ def wifi_monitor_interfaces() -> str:
         return "Could not detect wireless interfaces."
 
 
+@mcp.tool()
+def wifi_monitor_start(iface: str = "wlan0", band: str = "abg",
+                       target_bssid: str = "", target_essid: str = "",
+                       session_id: str = "") -> str:
+    """
+    Start a WiFi monitor session for packet capture.
+    Phase: Wireless Pentesting
+    Parameters:
+      iface: Network interface for monitor mode (str) [default: 'wlan0']
+      band: Frequency band (abg) (str) [default: 'abg']
+      target_bssid: Target BSSID/MAC address (str) [default: '']
+      target_essid: Target network name (ESSID) (str) [default: '']
+      session_id: Session ID (auto-generated if empty) (str) [default: '']
+    Related: wifi_monitor_stop, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_data, wifi_monitor_parse_pcap, wifi_scan
+    """
+    from modules.wifi_monitor import get_monitor_manager
+    import time
+    mgr = get_monitor_manager()
+    sid = session_id or f"wifi-{int(time.time())}"
+    r = _run(mgr.start_session, sid, iface, band, target_bssid, target_essid)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    return f"WiFi monitor session '{sid}' started on {iface}"
+
+
+@mcp.tool()
+def wifi_monitor_stop(session_id: str = "", force: bool = False) -> str:
+    """
+    Stop a WiFi monitor session.
+    Phase: Wireless Pentesting
+    Parameters:
+      session_id: Session ID (stops active session if empty) (str) [default: '']
+      force: Force kill the session (bool) [default: False]
+    Related: wifi_monitor_start, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_data, wifi_monitor_parse_pcap
+    """
+    from modules.wifi_monitor import get_monitor_manager
+    mgr = get_monitor_manager()
+    if session_id:
+        sess = _run(mgr.get_session, session_id)
+        if not sess:
+            return f"Session '{session_id}' not found"
+        r = _run(sess.force_kill if force else sess.stop)
+    else:
+        active = _run(mgr.get_active_session)
+        if not active:
+            return "No active session to stop"
+        r = _run(active.force_kill if force else active.stop)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error stopping: {r['error']}"
+    sid = session_id or (getattr(active, 'id', None) if 'active' in dir() else '')
+    return f"WiFi monitor session stopped{' (force)' if force else ''}"
+
+
+@mcp.tool()
+def wifi_monitor_parse_pcap(session_id: str = "") -> str:
+    """
+    Parse captured PCAP data from a WiFi monitor session now.
+    Phase: Wireless Pentesting
+    Parameters:
+      session_id: Session ID (uses active session if empty) (str) [default: '']
+    Related: wifi_monitor_start, wifi_monitor_stop, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_data
+    """
+    from modules.wifi_monitor import get_monitor_manager
+    mgr = get_monitor_manager()
+    if session_id:
+        sess = _run(mgr.get_session, session_id)
+    else:
+        sess = _run(mgr.get_active_session)
+    if not sess:
+        return "No session found"
+    r = _run(sess.parse_pcap_now)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error parsing pcap: {r['error']}"
+    return f"PCAP parsed for session '{session_id or 'active'}': {json.dumps(r, default=str)[:500]}"
+
+
+@mcp.tool()
+def wifi_monitor_cleanup_orphans() -> str:
+    """
+    Find and clean up leftover monitor-mode interfaces not in use by any active session.
+    Phase: Wireless Pentesting
+    Parameters:
+      (none)
+    Related: wifi_monitor_start, wifi_monitor_stop, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_interfaces
+    """
+    import subprocess as _sp
+    from modules.wifi_monitor import get_monitor_manager
+    mgr = get_monitor_manager()
+    active = _run(mgr.get_active_session)
+    active_in_use = {active.mon_iface, active.iface} if active else set()
+    cleaned = []
+    try:
+        r = _sp.run(["iwconfig"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if "Mode:Monitor" in line:
+                iface = line.split()[0]
+                if iface in active_in_use:
+                    continue
+                _sp.run(["airmon-ng", "stop", iface], capture_output=True, timeout=5)
+                cleaned.append(iface)
+        if cleaned:
+            return f"Cleaned up orphaned monitor interfaces: {', '.join(cleaned)}"
+        return "No orphaned monitor interfaces found."
+    except Exception as e:
+        return f"Error cleaning up: {str(e)}"
+
+
 # ---------------------------------------------------------------------------
 # DNS Monitor
 # ---------------------------------------------------------------------------
@@ -4814,6 +6173,287 @@ def dns_history(domain: str, limit: int = 100) -> str:
 
 
 
+# ---------------------------------------------------------------------------
+# MCP Resources — read-only data sources discoverable by AI clients
+# ---------------------------------------------------------------------------
+
+@mcp.resource("cc://cases/list", title="Case List", description="All cases with status, type, creation date")
+def resource_cases_list() -> str:
+    """List all pentest/forensic cases."""
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    cases = cm.list_cases()
+    if not cases:
+        return "No cases found."
+    lines = [f"{'Case ID':<20} {'Client':<20} {'Type':<22} {'Status':<12} Created"]
+    lines.append("-" * 100)
+    for c in sorted(cases, key=lambda x: x.get("created", ""), reverse=True):
+        lines.append(f"{c.get('case_id','?'):<20} {c.get('client','?'):<20} "
+                     f"{c.get('type','?'):<22} {c.get('status','?'):<12} "
+                     f"{c.get('created','?')[:19]}")
+    return "\n".join(lines)
+
+
+@mcp.resource("cc://cases/{case_id}", title="Case Detail",
+             description="Full case info including findings summary, scope count, tasks, and file sizes")
+def resource_case_detail(case_id: str) -> str:
+    """Get detailed case information including evidence, findings, tasks, and scope."""
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = cm.info(case_id)
+    if not info:
+        return f"Case '{case_id}' not found."
+    import json as _json
+    return _json.dumps(info, indent=2, default=str)
+
+
+@mcp.resource("cc://cases/{case_id}/findings", title="Case Findings",
+             description="All structured findings for a case")
+def resource_case_findings(case_id: str) -> str:
+    """Get all findings for a case."""
+    from modules.constants import CASES_DIR
+    from modules.findings_db import FindingsDB
+    case_dir = CASES_DIR / case_id
+    if not case_dir.is_dir():
+        return f"Case '{case_id}' not found."
+    db = FindingsDB(case_dir)
+    data = db._read()
+    findings = data.get("findings", [])
+    if not findings:
+        return "No findings for this case."
+    import json as _json
+    return _json.dumps(findings, indent=2, default=str)
+
+
+@mcp.resource("cc://cases/{case_id}/notes", title="Case Notes",
+             description="All case notes with timestamps and tags")
+def resource_case_notes(case_id: str) -> str:
+    """Get all notes for a case."""
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    notes = cm.get_notes(case_id)
+    if not notes:
+        return "No notes for this case."
+    import json as _json
+    return _json.dumps(notes, indent=2, default=str)
+
+
+@mcp.resource("cc://cases/{case_id}/scope", title="Case Scope",
+             description="In-scope and out-of-scope targets")
+def resource_case_scope(case_id: str) -> str:
+    """Get scope (in-scope and out-of-scope targets) for a case."""
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = cm.info(case_id)
+    if not info:
+        return f"Case '{case_id}' not found."
+    scope = info.get("scope", {})
+    if not scope:
+        return "No scope defined for this case."
+    import json as _json
+    return _json.dumps(scope, indent=2, default=str)
+
+
+@mcp.resource("cc://cases/{case_id}/tasks", title="Case Tasks",
+             description="Task checklist with completion status and priority")
+def resource_case_tasks(case_id: str) -> str:
+    """Get all tasks for a case."""
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    info = cm.info(case_id)
+    if not info:
+        return f"Case '{case_id}' not found."
+    tasks = info.get("tasks", info.get("_tasks", []))
+    if not tasks:
+        return "No tasks for this case."
+    import json as _json
+    return _json.dumps(tasks, indent=2, default=str)
+
+
+@mcp.resource("cc://cases/{case_id}/runbook/log", title="Runbook Execution Log",
+             description="Runbook/playbook execution results including step outputs and exit codes")
+def resource_case_runbook_log(case_id: str) -> str:
+    """Get the runbook execution log for a case."""
+    from modules.case_manager import CaseManager
+    cm = CaseManager()
+    log_path = cm._case_path(case_id) / "runbook-log.json"
+    if not log_path.exists():
+        return "No runbook log found for this case."
+    import json as _json
+    return _json.dumps(_json.loads(log_path.read_text()), indent=2, default=str)
+
+
+@mcp.resource("cc://flashcards", title="Flashcard Deck List",
+             description="All available flashcard decks with card counts")
+def resource_flashcards_list() -> str:
+    """List all available flashcard decks with card counts."""
+    from modules.constants import CC_DIR
+    import yaml
+    decks_dir = CC_DIR / "flashcards"
+    if not decks_dir.is_dir():
+        return "No flashcard decks found."
+    decks = []
+    for f in sorted(decks_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text()) or {}
+            decks.append({"id": f.stem, "title": data.get("title", f.stem),
+                          "description": data.get("description", ""),
+                          "card_count": len(data.get("cards", []))})
+        except Exception:
+            pass
+    if not decks:
+        return "No flashcard decks found."
+    import json as _json
+    return _json.dumps(decks, indent=2)
+
+
+@mcp.resource("cc://flashcards/{name}", title="Flashcard Deck Detail",
+             description="Full flashcard deck with all questions and answers")
+def resource_flashcards_deck(name: str) -> str:
+    """Get a specific flashcard deck by name."""
+    from modules.constants import CC_DIR
+    import yaml
+    path = CC_DIR / "flashcards" / f"{name}.yaml"
+    if not path.is_file():
+        return f"Deck '{name}' not found."
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+        import json as _json
+        return _json.dumps(data, indent=2)
+    except Exception as e:
+        return f"Error reading deck: {e}"
+
+
+@mcp.resource("cc://playbooks", title="Playbook List",
+             description="All available YAML playbooks/runbooks for automated pentest workflows")
+def resource_playbooks_list() -> str:
+    """List all available YAML playbooks/runbooks."""
+    import yaml
+    from modules.playbook_engine import RunbookEngine
+    engine = RunbookEngine()
+    books = engine.list_runbooks()
+    if not books:
+        return "No playbooks found."
+    results = []
+    for b in sorted(books, key=lambda x: x.name):
+        try:
+            data = yaml.safe_load(b.read_text()) or {}
+            results.append({"name": b.name, "description": (data.get("description") or "")[:120],
+                            "step_count": len(data.get("steps", []))})
+        except Exception:
+            results.append({"name": b.name, "description": "", "step_count": 0})
+    import json as _json
+    return _json.dumps(results, indent=2)
+
+
+@mcp.resource("cc://prompts", title="Prompt Template List",
+             description="All available AI prompt templates for pentest methodology")
+def resource_prompts_list() -> str:
+    """List all available prompt templates."""
+    import yaml
+    from modules.constants import CC_DIR
+    prompts_dir = CC_DIR / "prompts"
+    if not prompts_dir.is_dir():
+        return "No prompts found."
+    results = []
+    for f in sorted(prompts_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text()) or {}
+            results.append({"id": f.stem, "title": data.get("title", f.stem),
+                            "description": data.get("description", "")[:120]})
+        except Exception:
+            results.append({"id": f.stem, "title": f.stem, "description": ""})
+    if not results:
+        return "No prompts found."
+    import json as _json
+    return _json.dumps(results, indent=2)
+
+
+@mcp.resource("cc://findings/stats", title="Findings Statistics",
+             description="Aggregated findings statistics across all cases")
+def resource_findings_stats() -> str:
+    """Get aggregated findings statistics across all cases."""
+    from modules.constants import CASES_DIR
+    from modules.findings_db import FindingsDB
+    total = 0
+    by_severity = {}
+    by_case = {}
+    if not CASES_DIR.is_dir():
+        return "No cases directory found."
+    for case_dir in sorted(CASES_DIR.iterdir()):
+        if case_dir.is_dir():
+            db = FindingsDB(case_dir)
+            data = db._read()
+            findings = data.get("findings", [])
+            if findings:
+                cid = case_dir.name
+                by_case[cid] = len(findings)
+                total += len(findings)
+                for f in findings:
+                    s = f.get("severity", "unknown")
+                    by_severity[s] = by_severity.get(s, 0) + 1
+    import json as _json
+    return _json.dumps({
+        "total_findings": total,
+        "by_severity": by_severity,
+        "by_case": by_case,
+    }, indent=2)
+
+
+@mcp.resource("cc://loot/credentials", title="Loot Credentials",
+             description="All captured credentials stored in the loot database")
+def resource_loot_credentials() -> str:
+    """List all credentials in the loot database."""
+    from modules.constants import CC_DIR
+    from modules.tool_wrappers import LootDB
+    import json as _json
+    db = LootDB(CC_DIR / "loot.db")
+    creds = db.list_credentials()
+    if not creds:
+        return "No credentials in loot database."
+    return _json.dumps(creds, indent=2, default=str)
+
+
+@mcp.resource("cc://loot/tokens", title="Loot Tokens",
+             description="All captured tokens in the loot database")
+def resource_loot_tokens() -> str:
+    """List all tokens in the loot database."""
+    from modules.constants import CC_DIR
+    from modules.tool_wrappers import LootDB
+    import json as _json
+    db = LootDB(CC_DIR / "loot.db")
+    try:
+        rows = db._conn.execute(
+            "SELECT * FROM tokens ORDER BY discovered DESC"
+        ).fetchall()
+        results = [dict(zip(["id","source","token_type","token_value","target","expires","notes","discovered"], r)) for r in rows]
+    finally:
+        db.close()
+    if not results:
+        return "No tokens in loot database."
+    return _json.dumps(results, indent=2, default=str)
+
+
+@mcp.resource("cc://loot/sessions", title="Loot Sessions",
+             description="All captured sessions in the loot database")
+def resource_loot_sessions() -> str:
+    """List all sessions in the loot database."""
+    from modules.constants import CC_DIR
+    from modules.tool_wrappers import LootDB
+    import json as _json
+    db = LootDB(CC_DIR / "loot.db")
+    try:
+        rows = db._conn.execute(
+            "SELECT * FROM sessions ORDER BY discovered DESC"
+        ).fetchall()
+        results = [dict(zip(["id","source","session_id","target","protocol","data","discovered"], r)) for r in rows]
+    finally:
+        db.close()
+    if not results:
+        return "No sessions in loot database."
+    return _json.dumps(results, indent=2, default=str)
+
+
 def _fmt(r: dict, fmt: str = "default") -> str:
     if r.get("error"):
         return f"Error: {r['error']}"
@@ -4821,6 +6461,19 @@ def _fmt(r: dict, fmt: str = "default") -> str:
         cnt = r.get("finding_count", 0)
         out = r.get("output_file", "")
         return f"Nuclei scan complete: {cnt} findings\nOutput: {out}"
+    if fmt == "codeql":
+        cnt = r.get("finding_count", 0)
+        lang = r.get("language", "?")
+        query = r.get("query", "?")
+        lines = [f"CodeQL scan ({lang}): {cnt} findings in {query}"]
+        sarif = r.get("sarif", {})
+        for run in sarif.get("runs", [])[:1]:
+            for res in run.get("results", [])[:20]:
+                loc = res.get("locations", [{}])[0].get("physicalLocation", {})
+                art = loc.get("artifactLocation", {}).get("uri", "?")
+                msg = res.get("message", {}).get("text", "")
+                lines.append(f"  {art}: {msg[:120]}")
+        return "\n".join(lines)
     if fmt == "yara":
         matches = r.get("matches", [])
         total = r.get("total", 0)

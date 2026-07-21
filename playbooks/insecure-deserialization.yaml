@@ -1,6 +1,6 @@
 name: "Insecure Deserialization"
 description: "Detect and exploit insecure deserialization across PHP, Java, Python, .NET, and Ruby (YAML, pickle, Marshal)"
-version: "1.0"
+version: "2.0"
 
 vars:
   callback: ""
@@ -112,7 +112,7 @@ steps:
                "|", "base64", "-w0"]
         timeout: 60
 
-  # ---- Phase 4: Python picke/marshal ----
+  # ---- Phase 4: Python pickle/marshal ----
   - id: python_tests
     name: "Python deserialization probes"
     type: parallel
@@ -174,7 +174,7 @@ steps:
                "{target}", "-o", "{case_dir}/deser-dotnet-soap.txt"]
         timeout: 30
 
-  # ---- Phase 6: Ruby YAML / Marshal ----
+  # ---- Phase 6: Ruby YAML/Marshal ----
   - id: ruby_tests
     name: "Ruby deserialization probes"
     type: conditional
@@ -205,9 +205,34 @@ steps:
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "Deserialization assessment note"
+    name: "Deserialization assessment report"
+    type: report
+    format: markdown
+    title: "Insecure Deserialization Report — {target}"
+    output: "{case_dir}/deserialization-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Discovery"
+        body: "- Technology: {case_dir}/whatweb-deser.txt\n- Param fuzz: {case_dir}/ffuf-deser.json\n- Cookies: {case_dir}/deser-cookies.txt"
+      - heading: "PHP Deserialization"
+        body: "- Basic: {case_dir}/deser-php-basic.txt\n- GC bypass: {case_dir}/deser-php-gc.txt\n- RCE probe: {case_dir}/deser-php-rce.txt"
+      - heading: "Java (ysoserial)"
+        body: "- CC1: {case_dir}/deser-java-cc1.txt\n- CC2: {case_dir}/deser-java-cc2.txt\n- JDK7u21: {case_dir}/deser-java-jdk7.txt\n- Spring1: {case_dir}/deser-java-spring1.txt"
+      - heading: "Python"
+        body: "- Pickle: {case_dir}/deser-python-pickle.txt\n- YAML: {case_dir}/deser-python-yaml.txt\n- Marshal: {case_dir}/deser-python-marshal.txt"
+      - heading: ".NET"
+        body: "- XML: {case_dir}/deser-dotnet-xml.txt\n- SOAP: {case_dir}/deser-dotnet-soap.txt"
+      - heading: "Ruby"
+        body: "- YAML: {case_dir}/deser-ruby-yaml.txt\n- Marshal: {case_dir}/deser-ruby-marshal.txt"
+      - heading: "Outbound Callbacks"
+        body: "- Monitor {callback} for connections from successful RCE"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      Insecure deserialization assessment complete for {target}.
-      Check {case_dir}/ for PHP, Java (ysoserial), Python, .NET, and Ruby probe results.
-      Monitor {callback} for outbound connections from successful RCE.
+    message: "Deserialization assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Insecure deserialization scan finished for {target}. Results in {case_dir}"

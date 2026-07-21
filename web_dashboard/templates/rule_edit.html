@@ -7,6 +7,14 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/rules" class="hover:text-gray-300">Rules</a>
+  <span>/</span>
+  <span class="text-gray-400">Edit Rule</span>
+</nav>
 <div class="flex items-center justify-between mb-6">
     <div class="flex items-center gap-3">
         <i data-lucide="edit" class="w-6 h-6 text-indigo-400"></i>
@@ -33,6 +41,7 @@
         <option value="yara" {{ 'selected' if format_name == 'yara' else '' }}>YARA</option>
         <option value="suricata" {{ 'selected' if format_name == 'suricata' else '' }}>Suricata</option>
         <option value="nuclei" {{ 'selected' if format_name == 'nuclei' else '' }}>Nuclei</option>
+        <option value="codeql" {{ 'selected' if format_name == 'codeql' else '' }}>CodeQL</option>
     </select>
 </div>
 {% endif %}

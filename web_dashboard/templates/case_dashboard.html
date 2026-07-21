@@ -4,6 +4,18 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 {% endblock %}
 {% block content %}
+{% set active_section = 'overview' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Overview</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+
+<div class="min-w-0 flex-1">
 <div class="flex items-center justify-between mb-4">
     <div class="flex items-center gap-3">
         <i data-lucide="{{ icon }}" class="w-6 h-6" style="color: {{ color }}"></i>
@@ -19,15 +31,6 @@
         </span>
     </div>
     <div class="flex gap-2">
-        <a href="/case/{{ case.case_id }}/edit" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm flex items-center gap-1"><i data-lucide="edit" class="w-3.5 h-3.5"></i> Edit</a>
-        <a href="/case/{{ case.case_id }}/notes" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Notes</a>
-        <a href="/case/{{ case.case_id }}/evidence" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Evidence</a>
-        <a href="/case/{{ case.case_id }}/files" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Files</a>
-        <a href="/case/{{ case.case_id }}/topology" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Topology</a>
-        <a href="/case/{{ case.case_id }}/board" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Board</a>
-        <a href="/case/{{ case.case_id }}/gantt" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Timeline</a>
-        <a href="/case/{{ case.case_id }}/runbook" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Runbook</a>
-        <a href="/case/{{ case.case_id }}/report" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Report</a>
         {% if case.get('status') == 'closed' %}
         <button data-action="archive" data-case-id="{{ case.case_id }}" class="case-action-btn bg-yellow-700 hover:bg-yellow-600 px-3 py-1.5 rounded text-sm">Archive</button>
         <button data-action="delete" data-case-id="{{ case.case_id }}" class="case-action-btn bg-red-800 hover:bg-red-700 px-3 py-1.5 rounded text-sm">Delete</button>
@@ -245,6 +248,14 @@
                 </div>
             </div>
             <div>
+                <label class="text-xs text-gray-500 block mb-1">Affected Host(s)</label>
+                <input id="af-affected_hosts" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="IP, hostname, or URL">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Impact</label>
+                <textarea id="af-impact" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[60px]" placeholder="Security impact description"></textarea>
+            </div>
+            <div>
                 <label class="text-xs text-gray-500 block mb-1">Remediation</label>
                 <textarea id="af-remediation" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[60px]"></textarea>
             </div>
@@ -264,11 +275,13 @@
 
 <!-- Description -->
 {% if case.description %}
-<div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-6">
     <h2 class="text-sm font-semibold text-gray-400 mb-2">Description</h2>
     <p class="text-sm text-gray-300">{{ case.description }}</p>
 </div>
 {% endif %}
+</div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -334,6 +347,8 @@ async function submitFinding() {
         description: document.getElementById('af-description').value.trim(),
         cve: document.getElementById('af-cve').value.trim(),
         cwe: document.getElementById('af-cwe').value.trim(),
+        affected_hosts: document.getElementById('af-affected_hosts').value.trim(),
+        impact: document.getElementById('af-impact').value.trim(),
         remediation: document.getElementById('af-remediation').value.trim(),
     };
     var btn = document.querySelector('#add-finding-modal .bg-yellow-700');
@@ -383,7 +398,8 @@ async function removeScope(target) {
 
 // Scan
 async function runScan() {
-    var btn = document.querySelector('#scan-ui button') || event.target;
+    var btn = document.querySelector('#scan-ui button');
+    if (!btn) return;
     var target = document.getElementById('scan-target').value.trim();
     var subcommand = document.getElementById('scan-type').value;
     var output = document.getElementById('scan-output');
@@ -480,11 +496,12 @@ fetch('/api/case/{{ case.case_id }}/board/data')
             data.columns[key].items.forEach(function(f) {
                 var sc = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#22c55e', info:'#6b7280' };
                 var color = sc[f.severity] || '#6b7280';
-                html += '<a href="/case/{{ case.case_id }}/finding/' + f.id + '" class="flex items-center gap-2 text-xs py-1 px-2 rounded hover:bg-gray-800 transition-colors">' +
-                    '<span class="w-2 h-2 rounded-full shrink-0" style="background:' + color + '"></span>' +
-                    '<span class="truncate text-gray-300 flex-1">' + escapeHtml(f.title) + '</span>' +
-                    '<span class="text-gray-500 shrink-0">' + f.id + '</span>' +
-                    '</a>';
+    html += '<a href="/case/{{ case.case_id }}/finding/' + f.id + '" class="flex items-center gap-2 text-xs py-1 px-2 rounded hover:bg-gray-800 transition-colors">' +
+        '<span class="w-2 h-2 rounded-full shrink-0" style="background:' + color + '"></span>' +
+        '<span class="truncate text-gray-300 flex-1">' + escapeHtml(f.title) + '</span>' +
+        (f.tags && f.tags.length ? '<span class="text-[10px] text-indigo-400 shrink-0">' + f.tags.slice(0, 2).join(',') + (f.tags.length > 2 ? '+' : '') + '</span>' : '') +
+        '<span class="text-gray-500 shrink-0">' + f.id + '</span>' +
+        '</a>';
             });
         });
         if (!html) {

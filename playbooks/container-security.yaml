@@ -1,252 +1,353 @@
-# v2 runbook — Container and Kubernetes security audit
-name: "Container & Kubernetes Security Audit"
-description: "Audit Docker and Kubernetes security posture: CIS benchmarks, image scanning, RBAC review, network policies, secret exposure"
-version: "2.0"
-
+name: Container & Kubernetes Security Audit
+description: 'Audit Docker and Kubernetes security posture: CIS benchmarks, image
+  scanning, RBAC review, network policies, secret exposure'
+version: '2.0'
 vars:
-  kube_config: ""
-  docker_host: ""
-
+  kube_config: ''
+  docker_host: ''
 steps:
-  - id: preamble
-    type: log
-    message: "Container security audit — target: {target} (case: {case_id})"
-
-  # Docker-specific checks
-  - id: docker_checks
-    name: "Docker daemon security"
+- id: preamble
+  type: log
+  message: 'Container security audit — target: {target} (case: {case_id})'
+  name: Preamble
+- id: docker_checks
+  name: Docker daemon security
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: docker_version
+    name: Docker version
+    tool: docker
+    args:
+    - version
+    - -o
+    - '{case_dir}/docker_version.txt'
+    timeout: 30
+    type: tool
+  - id: docker_info
+    name: Docker daemon info
+    tool: docker
+    args:
+    - info
+    - -o
+    - '{case_dir}/docker_info.txt'
+    timeout: 30
+    type: tool
+  - id: running_containers
+    name: Running containers
+    tool: docker
+    args:
+    - ps
+    - -o
+    - '{case_dir}/running_containers.txt'
+    timeout: 30
+    type: tool
+  - id: all_containers
+    name: All containers
+    tool: docker
+    args:
+    - ps
+    - -a
+    - -o
+    - '{case_dir}/all_containers.txt'
+    timeout: 30
+    type: tool
+  - id: docker_images
+    name: List images
+    tool: docker
+    args:
+    - images
+    - -o
+    - '{case_dir}/docker_images.txt'
+    timeout: 30
+    type: tool
+  - id: networks
+    name: Docker networks
+    tool: docker
+    args:
+    - network
+    - ls
+    - -o
+    - '{case_dir}/docker_networks.txt'
+    timeout: 30
+    type: tool
+- id: docker_security
+  name: Docker security posture
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: privileged
+    name: Privileged containers
+    tool: docker
+    args:
+    - ps
+    - --filter
+    - privileged=true
+    - -o
+    - '{case_dir}/privileged_containers.txt'
+    timeout: 30
+    type: tool
+  - id: exposed_ports
+    name: Exposed ports
+    tool: docker
+    args:
+    - ps
+    - --format
+    - '"{{.Names}}: {{.Ports}}"'
+    - -o
+    - '{case_dir}/exposed_ports.txt'
+    timeout: 30
+    type: tool
+  - id: mounts_check
+    name: Volume mounts
+    tool: docker
+    args:
+    - inspect
+    - $(docker ps -q)
+    - '--format=''{{.Name}}: {{.Mounts}}'''
+    - -o
+    - '{case_dir}/mounts.txt'
+    timeout: 60
+    type: tool
+  - id: running_root
+    name: Containers running as root
+    tool: docker
+    args:
+    - ps
+    - --filter
+    - status=running
+    - --format
+    - '"{{.Names}}: {{.ID}}"'
+    - '|'
+    - xargs
+    - docker
+    - inspect
+    - --format
+    - '''{{.Name}}: User={{.Config.User}}'''
+    - -o
+    - '{case_dir}/root_containers.txt'
+    timeout: 60
+    type: tool
+- id: image_scan
+  name: Image vulnerability scanning
+  type: parallel
+  steps:
+  - id: docker_scan
+    name: Docker scan (trivy)
+    tool: trivy
+    args:
+    - image
+    - --severity=CRITICAL,HIGH
+    - $(docker images -q)
+    - -o
+    - '{case_dir}/trivy_scan.txt'
+    timeout: 600
+    artifacts:
+    - '{case_dir}/trivy_scan.txt'
+    type: tool
+  - id: dockle
+    name: Dockle (CIS benchmark)
+    tool: dockle
+    args:
+    - --exit-code
+    - '0'
+    - $(docker images -q | head -1)
+    - -o
+    - '{case_dir}/dockle_report.txt'
+    timeout: 120
+    type: tool
+- id: ask_k8s
+  type: prompt
+  message: Check Kubernetes cluster? (requires kubeconfig)
+  then:
+  - id: k8s_info
+    name: Kubernetes info
     type: parallel
     max_workers: 6
     steps:
-      - id: docker_version
-        name: "Docker version"
-        tool: docker
-        args: ["version", "-o", "{case_dir}/docker_version.txt"]
-        timeout: 30
-
-      - id: docker_info
-        name: "Docker daemon info"
-        tool: docker
-        args: ["info", "-o", "{case_dir}/docker_info.txt"]
-        timeout: 30
-
-      - id: running_containers
-        name: "Running containers"
-        tool: docker
-        args: ["ps", "-o", "{case_dir}/running_containers.txt"]
-        timeout: 30
-
-      - id: all_containers
-        name: "All containers"
-        tool: docker
-        args: ["ps", "-a", "-o", "{case_dir}/all_containers.txt"]
-        timeout: 30
-
-      - id: docker_images
-        name: "List images"
-        tool: docker
-        args: ["images", "-o", "{case_dir}/docker_images.txt"]
-        timeout: 30
-
-      - id: networks
-        name: "Docker networks"
-        tool: docker
-        args: ["network", "ls", "-o", "{case_dir}/docker_networks.txt"]
-        timeout: 30
-
-  # Docker security audit
-  - id: docker_security
-    name: "Docker security posture"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: privileged
-        name: "Privileged containers"
-        tool: docker
-        args: ["ps", "--filter", "privileged=true",
-               "-o", "{case_dir}/privileged_containers.txt"]
-        timeout: 30
-
-      - id: exposed_ports
-        name: "Exposed ports"
-        tool: docker
-        args: ["ps", "--format",
-               "\"{{.Names}}: {{.Ports}}\"",
-               "-o", "{case_dir}/exposed_ports.txt"]
-        timeout: 30
-
-      - id: mounts_check
-        name: "Volume mounts"
-        tool: docker
-        args: ["inspect",
-               "$(docker ps -q)",
-               "--format='{{.Name}}: {{.Mounts}}'",
-               "-o", "{case_dir}/mounts.txt"]
-        timeout: 60
-
-      - id: running_root
-        name: "Containers running as root"
-        tool: docker
-        args: ["ps", "--filter", "status=running",
-               "--format", "\"{{.Names}}: {{.ID}}\"",
-               "|", "xargs", "docker", "inspect",
-               "--format", "'{{.Name}}: User={{.Config.User}}'",
-               "-o", "{case_dir}/root_containers.txt"]
-        timeout: 60
-
-  # Image vulnerability scanning
-  - id: image_scan
-    name: "Image vulnerability scanning"
+    - id: k8s_version
+      name: K8s version
+      tool: kubectl
+      args:
+      - version
+      - --short
+      - -o
+      - '{case_dir}/k8s_version.txt'
+      timeout: 30
+      type: tool
+    - id: k8s_nodes
+      name: Cluster nodes
+      tool: kubectl
+      args:
+      - get
+      - nodes
+      - -o
+      - '{case_dir}/k8s_nodes.txt'
+      timeout: 30
+      type: tool
+    - id: k8s_namespaces
+      name: Namespaces
+      tool: kubectl
+      args:
+      - get
+      - namespaces
+      - -o
+      - '{case_dir}/k8s_namespaces.txt'
+      timeout: 30
+      type: tool
+    - id: k8s_pods
+      name: All pods (all namespaces)
+      tool: kubectl
+      args:
+      - get
+      - pods
+      - --all-namespaces
+      - -o
+      - '{case_dir}/k8s_pods.txt'
+      timeout: 60
+      type: tool
+    - id: k8s_services
+      name: Services
+      tool: kubectl
+      args:
+      - get
+      - services
+      - --all-namespaces
+      - -o
+      - '{case_dir}/k8s_services.txt'
+      timeout: 60
+      type: tool
+  - id: k8s_rbac
+    name: RBAC review
     type: parallel
     steps:
-      - id: docker_scan
-        name: "Docker scan (trivy)"
-        tool: trivy
-        args: ["image", "--severity=CRITICAL,HIGH",
-               "$(docker images -q)",
-               "-o", "{case_dir}/trivy_scan.txt"]
-        timeout: 600
-        artifacts: ["{case_dir}/trivy_scan.txt"]
+    - id: cluster_roles
+      name: ClusterRoleBindings
+      tool: kubectl
+      args:
+      - get
+      - clusterrolebindings
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/cluster_roles.txt'
+      timeout: 60
+      type: tool
+    - id: role_bindings
+      name: RoleBindings (all namespaces)
+      tool: kubectl
+      args:
+      - get
+      - rolebindings
+      - --all-namespaces
+      - -o
+      - '{case_dir}/role_bindings.txt'
+      timeout: 60
+      type: tool
+    - id: sa_tokens
+      name: ServiceAccount token mounts
+      tool: kubectl
+      args:
+      - get
+      - pods
+      - --all-namespaces
+      - -o
+      - json
+      - '|'
+      - jq
+      - '''.items[] | select(.spec.automountServiceAccountToken != false) | .metadata.namespace
+        + "/" + .metadata.name'''
+      - -o
+      - '{case_dir}/sa_tokens.txt'
+      timeout: 60
+      type: tool
+  - id: k8s_network
+    name: Network policies
+    type: parallel
+    steps:
+    - id: network_policies
+      name: NetworkPolicies
+      tool: kubectl
+      args:
+      - get
+      - networkpolicies
+      - --all-namespaces
+      - -o
+      - '{case_dir}/network_policies.txt'
+      timeout: 60
+      type: tool
+  - id: k8s_secrets
+    name: Secrets review
+    type: parallel
+    steps:
+    - id: secrets_list
+      name: List secrets
+      tool: kubectl
+      args:
+      - get
+      - secrets
+      - --all-namespaces
+      - -o
+      - '{case_dir}/secrets_list.txt'
+      timeout: 60
+      type: tool
+  name: Ask K8S
+- id: ask_cis
+  type: prompt
+  message: Run CIS Docker benchmark? (requires docker-bench-security)
+  then:
+  - id: docker_bench
+    name: docker-bench-security
+    tool: docker
+    args:
+    - run
+    - --rm
+    - --net
+    - host
+    - --pid
+    - host
+    - -v
+    - /var/run/docker.sock:/var/run/docker.sock
+    - --label
+    - docker_bench_security
+    - docker/docker-bench-security
+    - -o
+    - '{case_dir}/docker_bench.txt'
+    timeout: 600
+    artifacts:
+    - '{case_dir}/docker_bench.txt'
+    type: tool
+  name: Ask Cis
+- id: report
+  name: Generate container security report
+  type: report
+  format: markdown
+  title: Container & K8s Security Report
+  output: '{case_dir}/container-security-report.md'
+  sections:
+  - heading: Summary
+    body: '- Case: {case_id}
 
-      - id: dockle
-        name: "Dockle (CIS benchmark)"
-        tool: dockle
-        args: ["--exit-code", "0",
-               "$(docker images -q | head -1)",
-               "-o", "{case_dir}/dockle_report.txt"]
-        timeout: 120
+      - Host: {target}'
+  - heading: Docker Findings
+    body: '- Running containers: {case_dir}/running_containers.txt
 
-  # Kubernetes checks (if KUBECONFIG set)
-  - id: ask_k8s
-    type: prompt
-    message: "Check Kubernetes cluster? (requires kubeconfig)"
-    then:
-      - id: k8s_info
-        name: "Kubernetes info"
-        type: parallel
-        max_workers: 6
-        steps:
-          - id: k8s_version
-            name: "K8s version"
-            tool: kubectl
-            args: ["version", "--short",
-                   "-o", "{case_dir}/k8s_version.txt"]
-            timeout: 30
+      - Privileged: {case_dir}/privileged_containers.txt
 
-          - id: k8s_nodes
-            name: "Cluster nodes"
-            tool: kubectl
-            args: ["get", "nodes",
-                   "-o", "{case_dir}/k8s_nodes.txt"]
-            timeout: 30
+      - Root containers: {case_dir}/root_containers.txt
 
-          - id: k8s_namespaces
-            name: "Namespaces"
-            tool: kubectl
-            args: ["get", "namespaces",
-                   "-o", "{case_dir}/k8s_namespaces.txt"]
-            timeout: 30
+      - Trivy scan: {case_dir}/trivy_scan.txt'
+  - heading: Kubernetes Findings
+    body: '- RBAC review: {case_dir}/cluster_roles.txt
 
-          - id: k8s_pods
-            name: "All pods (all namespaces)"
-            tool: kubectl
-            args: ["get", "pods", "--all-namespaces",
-                   "-o", "{case_dir}/k8s_pods.txt"]
-            timeout: 60
+      - Network policies: {case_dir}/network_policies.txt
 
-          - id: k8s_services
-            name: "Services"
-            tool: kubectl
-            args: ["get", "services", "--all-namespaces",
-                   "-o", "{case_dir}/k8s_services.txt"]
-            timeout: 60
-
-      - id: k8s_rbac
-        name: "RBAC review"
-        type: parallel
-        steps:
-          - id: cluster_roles
-            name: "ClusterRoleBindings"
-            tool: kubectl
-            args: ["get", "clusterrolebindings",
-                   "-o", "wide",
-                   "-o", "{case_dir}/cluster_roles.txt"]
-            timeout: 60
-
-          - id: role_bindings
-            name: "RoleBindings (all namespaces)"
-            tool: kubectl
-            args: ["get", "rolebindings", "--all-namespaces",
-                   "-o", "{case_dir}/role_bindings.txt"]
-            timeout: 60
-
-          - id: sa_tokens
-            name: "ServiceAccount token mounts"
-            tool: kubectl
-            args: ["get", "pods", "--all-namespaces",
-                   "-o", "json",
-                   "|", "jq",
-                   "'.items[] | select(.spec.automountServiceAccountToken != false) | .metadata.namespace + \"/\" + .metadata.name'",
-                   "-o", "{case_dir}/sa_tokens.txt"]
-            timeout: 60
-
-      - id: k8s_network
-        name: "Network policies"
-        type: parallel
-        steps:
-          - id: network_policies
-            name: "NetworkPolicies"
-            tool: kubectl
-            args: ["get", "networkpolicies", "--all-namespaces",
-                   "-o", "{case_dir}/network_policies.txt"]
-            timeout: 60
-
-      - id: k8s_secrets
-        name: "Secrets review"
-        type: parallel
-        steps:
-          - id: secrets_list
-            name: "List secrets"
-            tool: kubectl
-            args: ["get", "secrets", "--all-namespaces",
-                   "-o", "{case_dir}/secrets_list.txt"]
-            timeout: 60
-
-  # CIS Docker benchmark
-  - id: ask_cis
-    type: prompt
-    message: "Run CIS Docker benchmark? (requires docker-bench-security)"
-    then:
-      - id: docker_bench
-        name: "docker-bench-security"
-        tool: docker
-        args: ["run", "--rm", "--net", "host",
-               "--pid", "host",
-               "-v", "/var/run/docker.sock:/var/run/docker.sock",
-               "--label", "docker_bench_security",
-               "docker/docker-bench-security",
-               "-o", "{case_dir}/docker_bench.txt"]
-        timeout: 600
-        artifacts: ["{case_dir}/docker_bench.txt"]
-
-  - id: report
-    name: "Generate container security report"
-    type: report
-    format: markdown
-    title: "Container & K8s Security Report"
-    output: "{case_dir}/container-security-report.md"
-    sections:
-      - heading: "Summary"
-        body: "- Case: {case_id}\n- Host: {target}"
-      - heading: "Docker Findings"
-        body: "- Running containers: {case_dir}/running_containers.txt\n- Privileged: {case_dir}/privileged_containers.txt\n- Root containers: {case_dir}/root_containers.txt\n- Trivy scan: {case_dir}/trivy_scan.txt"
-      - heading: "Kubernetes Findings"
-        body: "- RBAC review: {case_dir}/cluster_roles.txt\n- Network policies: {case_dir}/network_policies.txt\n- Secrets: {case_dir}/secrets_list.txt"
-      - heading: "CIS Compliance"
-        body: "- Docker benchmark: {case_dir}/docker_bench.txt"
-
+      - Secrets: {case_dir}/secrets_list.txt'
+  - heading: CIS Compliance
+    body: '- Docker benchmark: {case_dir}/docker_bench.txt'
 postflight:
-  - id: done
-    type: notify
-    level: success
-    message: "Container security audit complete — {case_dir}"
+- id: done
+  type: notify
+  level: success
+  message: Container security audit complete — {case_dir}
+  name: Done

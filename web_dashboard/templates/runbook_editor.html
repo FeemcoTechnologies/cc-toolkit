@@ -8,54 +8,49 @@
 </style>
 {% endblock %}
 {% block content %}
-<div class="max-w-5xl mx-auto">
-    <div class="flex items-center justify-between mb-4">
-        <div class="flex items-center gap-4">
-            <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
-            <h1 class="text-lg font-semibold flex items-center gap-2">
-                <i data-lucide="book-open" class="w-5 h-5 text-indigo-400"></i>
-                Runbook Editor — {{ case.case_id }}
-            </h1>
-        </div>
-        <div class="flex items-center gap-2">
+{% set active_section = 'runbook' %}
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Runbook</span>
+</nav>
+<div class="min-w-0 flex-1">
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-lg font-semibold flex items-center gap-2">
+        <i data-lucide="book-open" class="w-5 h-5 text-indigo-400"></i>
+        Runbook Editor — {{ case.case_id }}
+    </h1>
+    <div class="flex items-center gap-2">
+        <button onclick="exportRunbook()" class="text-xs text-indigo-400 hover:text-indigo-300">Export JSON</button>
+        <span class="text-gray-700">|</span>
+        <button onclick="var t=document.getElementById('runbook-import');t.classList.toggle('hidden');if(!t.classList.contains('hidden'))t.focus();" class="text-xs text-indigo-400 hover:text-indigo-300">Import JSON</button>
+    </div>
+</div>
+<textarea id="runbook-import" rows="4" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-400 mb-3 hidden" placeholder='Paste JSON: {"steps":[...]}' onkeydown="if(event.key==='Enter'&&event.ctrlKey)importFromTextarea()"></textarea>
+
+<div class="flex flex-col lg:flex-row gap-4">
+    <!-- Left: Step list -->
+    <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-3">
             <button onclick="addStep()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm transition-colors">
                 <i data-lucide="plus" class="w-3.5 h-3.5 inline"></i> Add Step
             </button>
+            <span class="text-xs text-gray-500">Steps</span>
+        </div>
+        <div id="step-list" class="space-y-0">
+            <div class="text-gray-500 text-center py-12">Loading...</div>
         </div>
     </div>
 
-    <!-- Launch Runbook -->
-    <div class="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4 mb-4">
-        <h2 class="text-sm font-semibold text-indigo-300 mb-3 flex items-center gap-1">
-            <i data-lucide="play" class="w-4 h-4"></i> Launch Runbook
-        </h2>
-        <div class="flex gap-3 items-end flex-wrap">
-            <div>
-                <label class="text-xs text-gray-500 block mb-1">Target</label>
-                <input id="pb-target" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-64" placeholder="target.com or IP" value="">
-            </div>
-            <button onclick="runRunbook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Run Runbook</button>
-            <div class="text-xs text-gray-500 flex items-center gap-2 ml-auto">
-                <span>Import from:</span>
-                <select id="import-runbook" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-300">
-                    <option value="">— Select system runbook —</option>
-                </select>
-                <button onclick="importRunbook()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Import</button>
-            </div>
-        </div>
-        <div id="rb-status" class="mt-2 text-xs hidden"></div>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <!-- Step list -->
-        <div class="lg:col-span-2 space-y-0">
-            <div id="step-list" class="space-y-0">
-                <div class="text-gray-500 text-center py-12">Loading...</div>
-            </div>
-        </div>
-
-        <!-- Step editor -->
-        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+    <!-- Right sidebar: Editor + Launch -->
+    <div class="w-full lg:w-80 shrink-0 space-y-4">
+        <!-- Step Editor -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 sticky" style="top: 5rem;">
             <h2 class="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-1">
                 <i data-lucide="edit" class="w-4 h-4"></i> Step Editor
             </h2>
@@ -92,15 +87,30 @@
                     <button type="button" onclick="cancelEdit()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm transition-colors">Cancel</button>
                 </div>
             </form>
-            <hr class="border-gray-800 my-3">
-            <div class="text-xs text-gray-500">
-                <button onclick="exportRunbook()" class="text-indigo-400 hover:text-indigo-300">Export JSON</button>
-                <span class="mx-1">|</span>
-                <button onclick="importRunbook()" class="text-indigo-400 hover:text-indigo-300">Import JSON</button>
-            </div>
-            <textarea id="runbook-import" rows="4" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-400 mt-2 hidden" placeholder="Paste JSON here..."></textarea>
         </div>
+
+        <!-- Launch Runbook -->
+        <details class="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4" open>
+            <summary class="text-sm font-semibold text-indigo-300 cursor-pointer flex items-center gap-1 select-none">
+                <i data-lucide="play" class="w-4 h-4"></i> Launch Runbook
+            </summary>
+            <div class="mt-3 space-y-3">
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">Target</label>
+                    <input id="pb-target" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="target.com or IP">
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="runRunbook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium flex-1">Run Runbook</button>
+                    <select id="import-runbook" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-300 w-36">
+                        <option value="">Import from…</option>
+                    </select>
+                </div>
+                <div id="rb-status" class="text-xs hidden"></div>
+            </div>
+        </details>
     </div>
+</div>
+</div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -118,13 +128,16 @@
             .then(function(r) { return r.json(); })
             .then(function(list) {
                 var sel = document.getElementById('import-runbook');
-                sel.innerHTML = '<option value="">— Select system runbook —</option>';
+                sel.innerHTML = '<option value="">Import from…</option>';
                 list.forEach(function(rb) {
                     var opt = document.createElement('option');
                     opt.value = rb.filename;
                     opt.textContent = rb.name + ' (' + rb.step_count + ' steps)';
                     sel.appendChild(opt);
                 });
+                sel.onchange = function() {
+                    if (sel.value) importRunbookFrom(sel.value);
+                };
             })
             .catch(function() {});
     }
@@ -324,44 +337,31 @@
         ta.select();
     };
 
-    window.importRunbook = function() {
-        var sel = document.getElementById('import-runbook');
-        var filename = sel.value;
-        if (!filename) {
-            var ta = document.getElementById('runbook-import');
-            ta.classList.remove('hidden');
-            try {
-                var data = JSON.parse(ta.value);
-                if (data.steps) { steps = data.steps; savePlaybook(); }
-            } catch(e) { alert('Invalid JSON: ' + e.message); }
-        } else {
-            var btn = document.querySelector('button[onclick="importRunbook()"]');
-            btn.disabled = true;
-            btn.textContent = 'Loading...';
-            fetch('/api/runbook/' + encodeURIComponent(filename) + '/steps')
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (data.steps && data.steps.length) {
-                        if (!confirm('Import ' + data.steps.length + ' steps from "' + (data.name || filename) + '"? This will replace your current runbook.')) {
-                            btn.disabled = false;
-                            btn.textContent = 'Import';
-                            return;
-                        }
-                        steps = data.steps;
-                        savePlaybook();
-                    } else {
-                        alert('No importable steps found in this runbook');
-                    }
-                    btn.disabled = false;
-                    btn.textContent = 'Import';
-                })
-                .catch(function(err) {
-                    alert('Error: ' + err.message);
-                    btn.disabled = false;
-                    btn.textContent = 'Import';
-                });
-        }
-    };
+    function importRunbookFrom(filename) {
+        if (!filename) return;
+        var fd = document.getElementById('runbook-import');
+        fd.classList.remove('hidden');
+        fetch('/api/runbook/' + encodeURIComponent(filename) + '/steps')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.steps && data.steps.length) {
+                    if (!confirm('Import ' + data.steps.length + ' steps from "' + (data.name || filename) + '"? This will replace your current runbook.')) return;
+                    steps = data.steps;
+                    savePlaybook();
+                } else {
+                    alert('No importable steps found');
+                }
+            })
+            .catch(function(err) { alert('Error: ' + err.message); });
+    }
+
+    function importFromTextarea() {
+        var ta = document.getElementById('runbook-import');
+        try {
+            var data = JSON.parse(ta.value);
+            if (data.steps) { steps = data.steps; savePlaybook(); }
+        } catch(e) { alert('Invalid JSON: ' + e.message); }
+    }
 
     function escapeHtml(s) {
         if (!s) return '';

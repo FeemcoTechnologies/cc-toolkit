@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}CC / Burp Settings{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="settings" class="w-5 h-5 text-gray-400"></i> Burp Settings</h1>
+    <a href="/burp" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> Back</a>
+</div>
+
+<div class="max-w-lg space-y-4">
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="block text-xs text-gray-400 mb-1">REST API URL</label>
+        <input id="api-url" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm" value="{{ config.burp_api_url }}">
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="block text-xs text-gray-400 mb-1">API Key</label>
+        <input id="api-key" type="password" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm" value="{{ config.burp_api_key }}">
+        <p class="text-xs text-gray-500 mt-1">Restart required after changing API key.</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="block text-xs text-gray-400 mb-1">Proxy Listen URL</label>
+        <input id="proxy-url" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm" value="{{ config.burp_proxy_url }}">
+        <p class="text-xs text-gray-500 mt-1">Use as HTTP_PROXY for routing other tools through Burp.</p>
+    </div>
+    <button onclick="saveSettings()" class="bg-indigo-700 hover:bg-indigo-600 text-sm px-4 py-2 rounded">Save</button>
+    <p id="save-msg" class="text-xs hidden"></p>
+
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mt-6">
+        <h3 class="text-sm font-semibold mb-2">Proxy Routing</h3>
+        <p class="text-xs text-gray-400 mb-2">Set this environment variable to route tools through Burp:</p>
+        <pre class="bg-gray-950 rounded p-3 text-xs font-mono">set HTTP_PROXY={{ config.burp_proxy_url }}<br>set HTTPS_PROXY={{ config.burp_proxy_url }}</pre>
+        <p class="text-xs text-gray-500 mt-2">Works with: curl, ffuf, gobuster, nuclei, python requests (with environment), and most HTTP tools.</p>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadConfig() {
+    const c = await (await fetch('/api/burp/config')).json();
+    document.getElementById('api-url').value = c.api_url || '';
+    document.getElementById('api-key').value = c.api_key || '';
+    document.getElementById('proxy-url').value = c.proxy_url || '';
+}
+async function saveSettings() {
+    const body = {
+        api_url: document.getElementById('api-url').value.trim(),
+        api_key: document.getElementById('api-key').value.trim(),
+        proxy_url: document.getElementById('proxy-url').value.trim(),
+    };
+    const r = await (await fetch('/api/burp/config', {method:'POST', body:JSON.stringify(body)})).json();
+    const el = document.getElementById('save-msg');
+    el.textContent = r.status === 'ok' ? 'Saved successfully.' : 'Error: ' + (r.error || 'unknown');
+    el.className = 'text-xs mt-2 ' + (r.status === 'ok' ? 'text-green-400' : 'text-red-400');
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 3000);
+}
+loadConfig();
+</script>
+{% endblock %}

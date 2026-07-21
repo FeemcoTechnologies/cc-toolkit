@@ -1,0 +1,319 @@
+name: "Smart Contract Competition Audit"
+description: >
+  Structured methodology for smart contract audit competitions (Cantina,
+  Code4rena, Sherlock, Hats Finance). Covers: repo cloning and commit pinning,
+  compilation and build verification, multi-audit cross-reference (Spearbit,
+  TrustSecurity, Blackthorn) to identify OPEN vs FIXED findings, static
+  analysis (Slither, Mythril, Aderyn), manual code review with security
+  checklist (access control, reentrancy, oracle manipulation, flash loan
+  attacks, liquidation math, rounding errors, delegatecall, signature
+  replay, gas griefing), PoC development, and competition submission
+  preparation. Designed for EVM-based Solidity protocols.
+version: "2.0"
+target_required: true
+
+vars:
+  target_commit: ""
+  repo_url: ""
+  solidity_version: "0.8.x"
+  previous_audits_dir: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Smart contract competition audit starting — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Repository setup
+  - id: repo_setup
+    name: "Repository setup & compilation"
+    type: sequential
+    steps:
+      - id: clone_repo
+        name: "Clone repository at target commit"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            REPO="{repo_url}";
+            if [ -n "$REPO" ]; then
+              DIRNAME=$(basename "$REPO" .git);
+              git clone "$REPO" "{case_dir}/$DIRNAME" 2>&1;
+              if [ -n "{target_commit}" ]; then
+                cd "{case_dir}/$DIRNAME" && git checkout "{target_commit}" 2>&1;
+              fi;
+              echo "Cloned to {case_dir}/$DIRNAME" > {case_dir}/repo-info.txt;
+              cd "{case_dir}/$DIRNAME" && git log --oneline -5 >> {case_dir}/repo-info.txt 2>&1;
+            else
+              echo "No repo URL provided — using {target} as local path" > {case_dir}/repo-info.txt;
+            fi
+        timeout: 120
+        artifacts:
+          - "{case_dir}/repo-info.txt"
+
+      - id: install_deps
+        name: "Install dependencies & compile"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            REPO_DIR=$(ls -d {case_dir}/*/ 2>/dev/null | head -1);
+            if [ -d "$REPO_DIR" ]; then
+              cd "$REPO_DIR";
+              if [ -f "package.json" ]; then
+                npm install 2>&1 | tail -5;
+              fi;
+              if [ -f "yarn.lock" ]; then
+                yarn install 2>&1 | tail -5;
+              fi;
+              if [ -f "foundry.toml" ]; then
+                forge build 2>&1 | tail -10 > {case_dir}/compile-output.txt;
+              elif [ -f "hardhat.config.js" ] || [ -f "hardhat.config.ts" ]; then
+                npx hardhat compile 2>&1 | tail -10 > {case_dir}/compile-output.txt;
+              elif [ -f "truffle-config.js" ]; then
+                npx truffle compile 2>&1 | tail -10 > {case_dir}/compile-output.txt;
+              else
+                echo "No standard build config found" > {case_dir}/compile-output.txt;
+              fi;
+            fi
+        timeout: 300
+        artifacts:
+          - "{case_dir}/compile-output.txt"
+
+      - id: slither_analyze
+        name: "Slither static analysis"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            REPO_DIR=$(ls -d {case_dir}/*/ 2>/dev/null | head -1);
+            if [ -d "$REPO_DIR" ] && command -v slither &>/dev/null; then
+              slither "$REPO_DIR/src/" --json "{case_dir}/slither-results.json" 2>&1 | tail -20;
+              slither "$REPO_DIR/src/" --print human-summary 2>&1 > "{case_dir}/slither-summary.txt";
+            else
+              echo "Slither not available or no src dir" > {case_dir}/slither-summary.txt;
+            fi
+        timeout: 300
+        artifacts:
+          - "{case_dir}/slither-results.json"
+          - "{case_dir}/slither-summary.txt"
+
+      - id: mythril_analyze
+        name: "Mythril security analysis (timeboxed)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if command -v mythril &>/dev/null; then
+              myth analyze "{case_dir}/compile-output.txt" --solc-json {} -t 300 2>&1 | head -100 > {case_dir}/mythril-results.txt;
+            else
+              echo "Mythril not available" > {case_dir}/mythril-results.txt;
+            fi
+        timeout: 360
+        artifacts:
+          - "{case_dir}/mythril-results.txt"
+
+  # Phase 2: Audit cross-reference
+  - id: audit_crossref
+    name: "Previous audit cross-reference"
+    type: sequential
+    steps:
+      - id: list_contracts
+        name: "List all Solidity source files"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            REPO_DIR=$(ls -d {case_dir}/*/ 2>/dev/null | head -1);
+            if [ -d "$REPO_DIR" ]; then
+              find "$REPO_DIR/src/" -name '*.sol' 2>/dev/null | sort > {case_dir}/contract-files.txt;
+              find "$REPO_DIR/contracts/" -name '*.sol' 2>/dev/null | sort >> {case_dir}/contract-files.txt;
+              echo "Total .sol files: $(wc -l < {case_dir}/contract-files.txt)" > {case_dir}/contract-summary.txt;
+              wc -l $(cat {case_dir}/contract-files.txt) 2>/dev/null | tail -1 >> {case_dir}/contract-summary.txt;
+            else
+              echo "No repo found" > {case_dir}/contract-files.txt;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/contract-files.txt"
+          - "{case_dir}/contract-summary.txt"
+
+      - id: audit_diff_checklist
+        name: "Generate audit checklist from common patterns"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Audit Cross-Reference Checklist ===" > {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "1. ACCESS CONTROL" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] onlyOwner / modifier checks on all critical functions" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] initialize() with initializer modifier (not delegatecall-based)" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Selfdestruct protection" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Ownership transfer / renounce" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "2. REENTRANCY" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] CEI pattern on all external functions" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Reentrancy guards on withdraw/callback functions" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Cross-function reentrancy (view declared as non-view)" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Read-only reentrancy" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "3. MATH & ROUNDING" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Division before multiplication" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Rounding direction (against protocol vs user)" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Fee precision loss" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Overflow/underflow (pre-0.8 unchecked)" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "4. ORACLE" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Zero price allowed" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Stale price tolerance" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Manipulable TWAP window" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Oracle reverting blocks liquidation" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "5. LIQUIDATION" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Dust positions unprofitable to liquidate" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Liquidation bonus exceeds collateral" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Near-maturity liquidation edge cases" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Post-maturity liquidation mode" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "6. DELEGATECALL & PROXIES" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] delegatecall to user-controlled address" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Storage collision in upgradeable contracts" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] UUPS vs transparent proxy security" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "7. SIGNATURES & AUTH" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] EIP-712 typed signatures" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Nonce reuse / replay across chains" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Signature malleability (s > secp256k1n/2)" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "8. FLASH LOANS" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Flash loan callback reentrancy" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Flash loan price manipulation" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Donation/skimming attacks" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "9. GAS & ECONOMICS" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Gas griefing in multi-call/batch functions" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Front-running setters" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] MEV extraction vectors" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Rate limiting / max supply" >> {case_dir}/audit-checklist.txt;
+            echo "" >> {case_dir}/audit-checklist.txt;
+            echo "10. EXTERNAL INTEGRATIONS" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] SafeERC20 / return value check" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Tokens with hooks (ERC777/ERC1155)" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Fee-on-transfer tokens" >> {case_dir}/audit-checklist.txt;
+            echo "   [ ] Permit/approve race conditions" >> {case_dir}/audit-checklist.txt
+        timeout: 10
+        artifacts:
+          - "{case_dir}/audit-checklist.txt"
+
+      - id: code_search_vuln_patterns
+        name: "Search for known vuln patterns in code"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            REPO_DIR=$(ls -d {case_dir}/*/ 2>/dev/null | head -1);
+            if [ -d "$REPO_DIR" ]; then
+              echo "=== delegatecall ===" > {case_dir}/vuln-patterns.txt;
+              grep -rn 'delegatecall' "$REPO_DIR/src/" 2>/dev/null | head -20 >> {case_dir}/vuln-patterns.txt;
+              echo "" >> {case_dir}/vuln-patterns.txt;
+              echo "=== selfdestruct ===" >> {case_dir}/vuln-patterns.txt;
+              grep -rn 'selfdestruct' "$REPO_DIR/src/" 2>/dev/null | head -20 >> {case_dir}/vuln-patterns.txt;
+              echo "" >> {case_dir}/vuln-patterns.txt;
+              echo "=== tx.origin ===" >> {case_dir}/vuln-patterns.txt;
+              grep -rn 'tx\.origin' "$REPO_DIR/src/" 2>/dev/null | head -20 >> {case_dir}/vuln-patterns.txt;
+              echo "" >> {case_dir}/vuln-patterns.txt;
+              echo "=== unchecked blocks ===" >> {case_dir}/vuln-patterns.txt;
+              grep -rn 'unchecked' "$REPO_DIR/src/" 2>/dev/null | head -20 >> {case_dir}/vuln-patterns.txt;
+              echo "" >> {case_dir}/vuln-patterns.txt;
+              echo "=== block.timestamp ===" >> {case_dir}/vuln-patterns.txt;
+              grep -rn 'block\.timestamp' "$REPO_DIR/src/" 2>/dev/null | head -30 >> {case_dir}/vuln-patterns.txt;
+              echo "" >> {case_dir}/vuln-patterns.txt;
+              echo "=== .call{value: ===" >> {case_dir}/vuln-patterns.txt;
+              grep -rn '\.call{' "$REPO_DIR/src/" 2>/dev/null | head -20 >> {case_dir}/vuln-patterns.txt;
+              echo "" >> {case_dir}/vuln-patterns.txt;
+              echo "=== transfer/send (gas changes) ===" >> {case_dir}/vuln-patterns.txt;
+              grep -rn '\.transfer\|\.send(' "$REPO_DIR/src/" 2>/dev/null | head -20 >> {case_dir}/vuln-patterns.txt;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/vuln-patterns.txt"
+
+  # Phase 3: Competition submission prep
+  - id: submission_prep
+    name: "Competition submission preparation"
+    type: sequential
+    steps:
+      - id: organize_findings
+        name: "Initialize findings for submission"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Competition Submission Sheet ===" > {case_dir}/submission-sheet.txt;
+            echo "Target: {target}" >> {case_dir}/submission-sheet.txt;
+            echo "Commit: {target_commit}" >> {case_dir}/submission-sheet.txt;
+            echo "Repo: {repo_url}" >> {case_dir}/submission-sheet.txt;
+            echo "" >> {case_dir}/submission-sheet.txt;
+            echo "--- Template for each finding ---" >> {case_dir}/submission-sheet.txt;
+            echo "Title:" >> {case_dir}/submission-sheet.txt;
+            echo "Severity: [High/Medium/Low/Gas/Informational]" >> {case_dir}/submission-sheet.txt;
+            echo "Impact:" >> {case_dir}/submission-sheet.txt;
+            echo "Description:" >> {case_dir}/submission-sheet.txt;
+            echo "Proof of Concept:" >> {case_dir}/submission-sheet.txt;
+            echo "Recommended Fix:" >> {case_dir}/submission-sheet.txt;
+            echo "References:" >> {case_dir}/submission-sheet.txt;
+            echo "---" >> {case_dir}/submission-sheet.txt
+        timeout: 10
+        artifacts:
+          - "{case_dir}/submission-sheet.txt"
+
+      - id: scope_data_summary
+        name: "Summarize scope & competition data"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Scope Summary ===" > {case_dir}/scope-summary.txt;
+            echo "Source files:" >> {case_dir}/scope-summary.txt;
+            cat {case_dir}/contract-files.txt 2>/dev/null >> {case_dir}/scope-summary.txt;
+            echo "" >> {case_dir}/scope-summary.txt;
+            echo "=== Lines of Code ===" >> {case_dir}/scope-summary.txt;
+            cat {case_dir}/contract-summary.txt 2>/dev/null >> {case_dir}/scope-summary.txt;
+            echo "" >> {case_dir}/scope-summary.txt;
+            echo "=== Slither Summary ===" >> {case_dir}/scope-summary.txt;
+            cat {case_dir}/slither-summary.txt 2>/dev/null >> {case_dir}/scope-summary.txt;
+            echo "" >> {case_dir}/scope-summary.txt;
+            echo "=== Vuln Pattern Matches ===" >> {case_dir}/scope-summary.txt;
+            cat {case_dir}/vuln-patterns.txt 2>/dev/null >> {case_dir}/scope-summary.txt
+        timeout: 10
+        artifacts:
+          - "{case_dir}/scope-summary.txt"
+
+  # Phase 4: Report
+  - id: report
+    name: "Smart contract audit report"
+    type: report
+    format: markdown
+    title: "Smart Contract Competition Audit — {target}"
+    output: "{case_dir}/smart-contract-audit-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- Target protocol: {target}\n- Repository: {repo_url}\n- Commit: {target_commit}"
+      - heading: "Repository & Compilation"
+        body: "- Repo info: {case_dir}/repo-info.txt\n- Contract files: {case_dir}/contract-files.txt\n- Lines of code: {case_dir}/contract-summary.txt\n- Compile output: {case_dir}/compile-output.txt"
+      - heading: "Static Analysis"
+        body: "- Slither results: {case_dir}/slither-results.json\n- Slither summary: {case_dir}/slither-summary.txt\n- Mythril results: {case_dir}/mythril-results.txt"
+      - heading: "Manual Review"
+        body: "- Audit checklist: {case_dir}/audit-checklist.txt\n- Vuln patterns: {case_dir}/vuln-patterns.txt"
+      - heading: "Competition Submissions"
+        body: "- Submission sheet: {case_dir}/submission-sheet.txt\n- Scope summary: {case_dir}/scope-summary.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Smart contract competition audit complete — report at {case_dir}/smart-contract-audit-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Smart contract competition audit finished for {target}. Results in {case_dir}"

@@ -1,9 +1,10 @@
 name: "JWT Attacks"
 description: "JWT security assessment: alg confusion, kid injection, weak signing key, token tampering, and null signature attacks"
-version: "1.0"
+version: "2.0"
 
 vars:
   jwt_token: ""
+  wordlist: "/wordlists/rockyou.txt"
 
 preflight:
   - id: setup
@@ -173,7 +174,7 @@ steps:
       - id: jwt_crack
         name: "Crack HMAC secret"
         tool: jwt_tool
-        args: ["-C", "-d", "/wordlists/rockyou.txt",
+        args: ["-C", "-d", "{wordlist}",
                "-t", "{target}", "-rh", "Authorization: Bearer {jwt_token}",
                "-o", "{case_dir}/jwt-cracked.txt"]
         timeout: 600
@@ -203,9 +204,30 @@ steps:
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "JWT assessment note"
+    name: "JWT assessment report"
+    type: report
+    format: markdown
+    title: "JWT Security Report — {target}"
+    output: "{case_dir}/jwt-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Token Analysis"
+        body: "- Capture: {case_dir}/jwt-capture.txt\n- Decoded: {case_dir}/jwt-decoded.txt\n- Scan: {case_dir}/jwt-scan.txt"
+      - heading: "Algorithm Attacks"
+        body: "- alg none: {case_dir}/jwt-alg-none.txt\n- alg None: {case_dir}/jwt-alg-None.txt\n- alg nOnE: {case_dir}/jwt-alg-none-mixed.txt\n- RS→HS256: {case_dir}/jwt-hs256.txt\n- RS→HS384: {case_dir}/jwt-hs384.txt"
+      - heading: "Payload Tampering"
+        body: "- Admin escalate: {case_dir}/jwt-tamper-admin.txt\n- Sub change: {case_dir}/jwt-tamper-sub.txt\n- iat/exp: {case_dir}/jwt-tamper-iat.txt\n- Claims inject: {case_dir}/jwt-tamper-extra.txt"
+      - heading: "Key Attacks"
+        body: "- JWK inject: {case_dir}/jwt-jwk-inject.txt\n- kid path traversal: {case_dir}/jwt-kid-inject.txt\n- kid SQLi: {case_dir}/jwt-kid-sqli.txt"
+      - heading: "Cracking & Timing"
+        body: "- HMAC crack: {case_dir}/jwt-cracked.txt\n- nbf bypass: {case_dir}/jwt-nbf.txt\n- exp bypass: {case_dir}/jwt-exp.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      JWT assessment complete for {target}.
-      Results in {case_dir}/jwt-*.txt. Check for successful tamper responses,
-      alg none bypass, JWK/kid injections, and weak key cracks.
+    message: "JWT assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "JWT attacks scan finished for {target}. Results in {case_dir}"

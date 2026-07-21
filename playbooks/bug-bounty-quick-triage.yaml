@@ -1,0 +1,321 @@
+name: "Bug Bounty Quick Triage"
+description: >
+  Fast initial triage for bug bounty programs. Designed to go from case
+  creation to prioritized findings in under 15 minutes per target. Covers:
+  program scope parsing, subdomain discovery (passive + active), technology
+  detection, low-hanging fruit scanning (exposed assets, .env, admin panels,
+  CORS, security headers), web archive URL gathering, and targeted nuclei
+  scanning for high-impact CVEs
+version: "2.0"
+target_required: true
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+  dns_wordlist: "/wordlists/dns-top-10000.txt"
+  subfinder_config: ""
+  bb_program: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Bug bounty quick triage starting — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Program scope & target validation
+  - id: scope_checks
+    name: "Program scope & target validation"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: resolve_target
+        name: "Resolve target domain/IP"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== DNS resolution ===" > {case_dir}/target-info.txt;
+            echo "Target: {target}" >> {case_dir}/target-info.txt;
+            echo "A records:" >> {case_dir}/target-info.txt;
+            dig +short A {target} 2>&1 >> {case_dir}/target-info.txt;
+            echo "AAAA records:" >> {case_dir}/target-info.txt;
+            dig +short AAAA {target} 2>&1 >> {case_dir}/target-info.txt;
+            echo "CNAME:" >> {case_dir}/target-info.txt;
+            dig +short CNAME {target} 2>&1 >> {case_dir}/target-info.txt;
+            echo "MX records:" >> {case_dir}/target-info.txt;
+            dig +short MX {target} 2>&1 >> {case_dir}/target-info.txt;
+            echo "NS records:" >> {case_dir}/target-info.txt;
+            dig +short NS {target} 2>&1 >> {case_dir}/target-info.txt;
+            echo "TXT records:" >> {case_dir}/target-info.txt;
+            dig +short TXT {target} 2>&1 >> {case_dir}/target-info.txt;
+            echo "" >> {case_dir}/target-info.txt;
+            echo "=== HTTP status ===" >> {case_dir}/target-info.txt;
+            curl -skI "https://{target}" -o /dev/null -w "HTTPS: %{http_code} (%{remote_ip})\n" >> {case_dir}/target-info.txt 2>&1;
+            curl -skI "http://{target}" -o /dev/null -w "HTTP: %{http_code} (%{remote_ip})\n" >> {case_dir}/target-info.txt 2>&1
+        timeout: 30
+        artifacts:
+          - "{case_dir}/target-info.txt"
+
+      - id: waf_detect
+        name: "WAF detection"
+        tool: wafw00f
+        args:
+          - "https://{target}"
+        timeout: 30
+        save: "{case_dir}/waf-detect.txt"
+
+      - id: tech_fingerprint
+        name: "Technology stack detection"
+        tool: whatweb
+        args:
+          - "-a3"
+          - "{target}"
+          - "--log-verbose"
+          - "{case_dir}/whatweb.txt"
+        timeout: 60
+        artifacts:
+          - "{case_dir}/whatweb.txt"
+
+  # Phase 2: Subdomain discovery (if target is a domain)
+  - id: subdomain_discovery
+    name: "Subdomain discovery (passive)"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: subfinder_passive
+        name: "Passive subdomain enumeration"
+        tool: subfinder
+        args:
+          - "-d"
+          - "{target}"
+          - "-silent"
+          - "-o"
+          - "{case_dir}/subdomains-passive.txt"
+          - "-all"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/subdomains-passive.txt"
+
+      - id: crtsh_query
+        name: "Certificate Transparency log query"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== crt.sh query for {target} ===" > {case_dir}/subdomains-crtsh.txt;
+            RAW=$(curl -sk --max-time 15 -H 'User-Agent: Mozilla/5.0' "https://crt.sh/?q=%25.{target}&output=json" 2>/dev/null);
+            if echo "$RAW" | python3 -c "import json,sys; json.loads(sys.stdin.read()); print('valid')" 2>/dev/null | grep -q valid; then
+              echo "$RAW" | python3 -c "import json,sys; [print(d) for d in sorted(set(d.strip().lower() for e in json.load(sys.stdin) for d in e.get('name_value','').split('\n') if d.strip().lower().endswith(sys.argv[1])))]" "{target}" >> {case_dir}/subdomains-crtsh.txt 2>&1;
+            else
+              echo "(no response from crt.sh)" >> {case_dir}/subdomains-crtsh.txt;
+              echo "Trying alternative: certspotter..." >> {case_dir}/subdomains-crtsh.txt;
+              curl -sk --max-time 15 "https://api.certspotter.com/v1/issuances?domain={target}&include_subdomains=true&expand=dns_names" 2>/dev/null | python3 -c "import json,sys; [print(d) for d in sorted(set(d.strip().lower() for e in json.load(sys.stdin) for d in e.get('dns_names',[]) if d.strip().lower().endswith(sys.argv[1])))]" "{target}" >> {case_dir}/subdomains-crtsh.txt 2>&1;
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/subdomains-crtsh.txt"
+
+  # Phase 3: URL discovery from web archives
+  - id: url_discovery
+    name: "Web archive URL discovery"
+    type: sequential
+    steps:
+      - id: gau_urls
+        name: "Gather URLs from web archives"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== GAU URLs for {target} ===" > {case_dir}/gau-urls.txt;
+            if command -v gau &>/dev/null; then
+              gau {target} --blacklist png,jpg,gif,jpeg,swf,woff,svg,pdf,css,ico 2>&1 | sort -u >> {case_dir}/gau-urls.txt;
+            fi;
+            echo "" >> {case_dir}/gau-urls.txt;
+            echo "=== Wayback URLs ===" >> {case_dir}/gau-urls.txt;
+            if command -v waybackurls &>/dev/null; then
+              waybackurls {target} 2>&1 | sort -u >> {case_dir}/gau-urls.txt;
+            fi
+        timeout: 120
+        artifacts:
+          - "{case_dir}/gau-urls.txt"
+
+      - id: extract_params
+        name: "Extract unique parameters from discovered URLs"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Unique parameters from URLs ===" > {case_dir}/url-params.txt;
+            if [ -s {case_dir}/gau-urls.txt ]; then
+              grep -oE '[\?&][a-zA-Z0-9_]+=' {case_dir}/gau-urls.txt | sort -u | sed 's/[?&]//;s/=$//' >> {case_dir}/url-params.txt;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/url-params.txt"
+
+  # Phase 4: Low-hanging fruit scanning
+  - id: low_hanging_fruit
+    name: "Low-hanging fruit vulnerability checks"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: env_file_check
+        name: "Check for exposed .env and config files"
+        tool: ffuf
+        args:
+          - "-u"
+          - "https://{target}/FUZZ"
+          - "-w"
+          - "{wordlist}"
+          - "-e"
+          - ".env,.env.local,.env.production,.env.development,.env.staging,.git/config,.gitignore,config.json,config.js,config.php,config.xml,wp-config.php,admin.php,phpinfo.php,info.php,test.php,backup.sql,dump.sql,robots.txt,sitemap.xml,crossdomain.xml,clientaccesspolicy.xml"
+          - "-mc"
+          - "200"
+          - "-ac"
+          - "-t"
+          - "30"
+          - "-o"
+          - "{case_dir}/ffuf-low-hanging.json"
+          - "-of"
+          - "json"
+        timeout: 180
+        artifacts:
+          - "{case_dir}/ffuf-low-hanging.json"
+
+      - id: cors_check
+        name: "CORS misconfiguration check"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== CORS origin reflection ===" > {case_dir}/cors-check.txt;
+            for origin in "https://evil.com" "null" "https://{target}.evil.com" "https://evil{target}"; do
+              echo "Origin: $origin" >> {case_dir}/cors-check.txt;
+              curl -skI "https://{target}" -H "Origin: $origin" 2>&1 | grep -iE "(access-control|origin)" >> {case_dir}/cors-check.txt;
+              echo "" >> {case_dir}/cors-check.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/cors-check.txt"
+
+      - id: security_headers
+        name: "Security headers assessment"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Security headers ===" > {case_dir}/security-headers.txt;
+            curl -skI "https://{target}" >> {case_dir}/security-headers.txt 2>&1;
+            echo "" >> {case_dir}/security-headers.txt;
+            echo "=== Missing/weak headers ===" >> {case_dir}/security-headers.txt;
+            curl -skI "https://{target}" 2>&1 | python3 -c "import sys;h=sys.stdin.read().lower();[print(f'MISSING: {k} ({v})') for k,v in {'strict-transport-security':'HSTS','content-security-policy':'CSP','x-frame-options':'XFO','x-content-type-options':'XCTO','referrer-policy':'Referrer','permissions-policy':'Permissions'}.items() if k not in h]" >> {case_dir}/security-headers.txt
+        timeout: 15
+        artifacts:
+          - "{case_dir}/security-headers.txt"
+
+      - id: admin_panel_fuzz
+        name: "Admin panel / hidden directory discovery"
+        tool: ffuf
+        args:
+          - "-u"
+          - "https://{target}/FUZZ"
+          - "-w"
+          - "{wordlist}"
+          - "-mc"
+          - "200,204,301,302,307,401,403"
+          - "-ac"
+          - "-t"
+          - "40"
+          - "-o"
+          - "{case_dir}/ffuf-panels.json"
+          - "-of"
+          - "json"
+        timeout: 180
+        artifacts:
+          - "{case_dir}/ffuf-panels.json"
+
+      - id: takeaway_check
+        name: "Subdomain takeover check on discovered subdomains"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Subdomain takeover ===" > {case_dir}/takeover-check.txt;
+            cat {case_dir}/subdomains-passive.txt {case_dir}/subdomains-crtsh.txt 2>/dev/null | grep -E '^[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$' | sort -u | head -50 | while read sub; do
+              echo "Checking: $sub" >> {case_dir}/takeover-check.txt;
+              cname=$(dig +short CNAME "$sub" 2>/dev/null | head -1);
+              if [ -n "$cname" ]; then
+                echo "  CNAME: $cname" >> {case_dir}/takeover-check.txt;
+                echo "$cname" | grep -qiE "(awsdns|cloudfront|s3\.|azure|azureedge|trafficmanager|cdn\.|heroku|github\.io|surge\.|netlify|unbounce|squarespace|pantheon|acquia|flywheel|wpengine|kinsta)" && echo "  -> POTENTIAL TAKEOVER" >> {case_dir}/takeover-check.txt;
+              fi;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/takeover-check.txt"
+
+  # Phase 5: Targeted vulnerability scanning
+  - id: vuln_scanning
+    name: "Targeted vulnerability scanning"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: nuclei_critical
+        name: "Nuclei scan — critical/high severity CVEs only"
+        tool: nuclei
+        args:
+          - "-u"
+          - "https://{target}"
+          - "-severity"
+          - "critical,high"
+          - "-jsonl"
+          - "-o"
+          - "{case_dir}/nuclei-critical.json"
+          - "-c"
+          - "25"
+          - "-rl"
+          - "150"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/nuclei-critical.json"
+
+      - id: nuclei_tech
+        name: "Nuclei — technology-specific templates"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            TECH=$(grep -iE "(HTTPServer|CMS|Framework|Platform|JavaScript)" {case_dir}/whatweb.txt 2>/dev/null | head -10 | tr -d '[]');
+            echo "Detected technologies: $TECH" > {case_dir}/nuclei-tech.txt;
+            echo "" >> {case_dir}/nuclei-tech.txt;
+            nuclei -u "https://{target}" -tags "tech" -jsonl -o {case_dir}/nuclei-tech.json -c 25 -rl 150 2>&1 | tail -5 >> {case_dir}/nuclei-tech.txt
+        timeout: 300
+        artifacts:
+          - "{case_dir}/nuclei-tech.json"
+          - "{case_dir}/nuclei-tech.txt"
+
+  # Phase 6: Triage report
+  - id: report
+    name: "Generate bug bounty triage report"
+    type: report
+    format: markdown
+    title: "Bug Bounty Quick Triage — {target}"
+    output: "{case_dir}/bb-triage-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- Target: {target}\n- Program: {bb_program}\n- DNS/Resolution: {case_dir}/target-info.txt\n- WAF: {case_dir}/waf-detect.txt\n- Technology: {case_dir}/whatweb.txt"
+      - heading: "Attack Surface"
+        body: "- Passive subdomains: {case_dir}/subdomains-passive.txt\n- crt.sh subdomains: {case_dir}/subdomains-crtsh.txt\n- Discovered URLs: {case_dir}/gau-urls.txt\n- URL parameters: {case_dir}/url-params.txt"
+      - heading: "Low-Hanging Fruit"
+        body: "- Exposed files: {case_dir}/ffuf-low-hanging.json\n- CORS: {case_dir}/cors-check.txt\n- Security headers: {case_dir}/security-headers.txt\n- Admin panels: {case_dir}/ffuf-panels.json\n- Subdomain takeover: {case_dir}/takeover-check.txt"
+      - heading: "Vulnerability Scan Results"
+        body: "- Critical/High CVEs: {case_dir}/nuclei-critical.json\n- Technology-specific: {case_dir}/nuclei-tech.json"
+      - heading: "Priority Actions"
+        body: "Review each section above. Start with critical/high findings, then subdomain takeover, then CORS/security headers issues."
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Bug bounty quick triage complete — report at {case_dir}/bb-triage-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Bug bounty quick triage finished for {target}. Start with critical findings."

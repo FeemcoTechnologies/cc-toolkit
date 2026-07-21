@@ -1,0 +1,2346 @@
+name: OpenShift Container Platform Security Assessment
+description: 'Comprehensive OCP 4.x security audit: external recon, SCC deep-dive,
+  OAuth/identity provider review, Routes/Ingress, ImageStreams/BuildConfigs, MachineConfig,
+  Operators, OVN-Kubernetes, internal registry, PSA pod security, Security Profiles
+  Operator, escalation paths, peirates/kubescape/popeye scanners, and provider-specific
+  checks (ROSA/ARO/GCP)'
+version: '3.0'
+vars:
+  oc_ca_path: ''
+  oc_token: ''
+target_required: true
+preflight:
+- id: setup
+  type: log
+  message: 'OpenShift security assessment — cluster: {target} (case: {case_id})'
+  name: Setup
+steps:
+- id: external_recon
+  name: External OpenShift service discovery & fingerprinting
+  type: parallel
+  max_workers: 8
+  steps:
+  - id: api_version
+    name: API server version & health
+    tool: curl
+    args:
+    - -sk
+    - https://api.{target}:6443/version
+    - -o
+    - '{case_dir}/api_version.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/api_version.txt'
+    type: tool
+  - id: api_healthz
+    name: API server health endpoints
+    tool: curl
+    args:
+    - -sk
+    - https://api.{target}:6443/healthz
+    - -o
+    - '{case_dir}/api_healthz.txt'
+    timeout: 30
+    type: tool
+  - id: api_openapi
+    name: API OpenAPI v2 schema
+    tool: curl
+    args:
+    - -sk
+    - https://api.{target}:6443/openapi/v2
+    - -o
+    - '{case_dir}/api_openapi.json'
+    timeout: 60
+    type: tool
+  - id: api_anonymous
+    name: Anonymous API access test
+    tool: curl
+    args:
+    - -sk
+    - https://api.{target}:6443/api/v1/namespaces
+    - -o
+    - '{case_dir}/api_anonymous.txt'
+    timeout: 30
+    type: tool
+  - id: ignition_master
+    name: Ignition config — master (port 22623)
+    tool: curl
+    args:
+    - -sk
+    - https://api.{target}:22623/config/master
+    - -o
+    - '{case_dir}/ignition_master.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/ignition_master.json'
+    type: tool
+  - id: ignition_worker
+    name: Ignition config — worker (port 22623)
+    tool: curl
+    args:
+    - -sk
+    - https://api.{target}:22623/config/worker
+    - -o
+    - '{case_dir}/ignition_worker.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/ignition_worker.json'
+    type: tool
+  - id: oauth_well_known
+    name: OAuth well-known endpoint
+    tool: curl
+    args:
+    - -sk
+    - https://oauth-openshift.apps.{target}/.well-known/oauth-authorization-server
+    - -o
+    - '{case_dir}/oauth_well_known.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/oauth_well_known.json'
+    type: tool
+  - id: console_access
+    name: Web console accessibility
+    tool: curl
+    args:
+    - -sk
+    - https://console-openshift-console.apps.{target}
+    - -o
+    - '{case_dir}/console_response.txt'
+    timeout: 30
+    type: tool
+  - id: registry_route
+    name: Internal registry route
+    tool: curl
+    args:
+    - -sk
+    - https://image-registry-openshift-image-registry.apps.{target}/v2/_catalog
+    - -o
+    - '{case_dir}/registry_catalog.txt'
+    timeout: 30
+    type: tool
+  - id: cluster_monitoring
+    name: Cluster monitoring routes (Prometheus/Grafana/AlertManager)
+    tool: curl
+    args:
+    - -sk
+    - -m
+    - '5'
+    - https://grafana-openshift-monitoring.apps.{target}
+    - -o
+    - '{case_dir}/monitoring_routes.txt'
+    timeout: 30
+    type: tool
+  - id: tls_info
+    name: TLS certificate details — API server
+    tool: bash
+    args:
+    - -c
+    - openssl s_client -connect api.{target}:6443 -servername api.{target} < /dev/null
+      2>&1 | openssl x509 -text -noout 2>/dev/null
+    - -o
+    - '{case_dir}/tls_api.txt'
+    timeout: 30
+    type: tool
+  - id: tls_router
+    name: TLS certificate details — Router
+    tool: bash
+    args:
+    - -c
+    - openssl s_client -connect $(dig +short {target} | head -1):443 -servername console-openshift-console.apps.{target}
+      < /dev/null 2>&1 | openssl x509 -text -noout 2>/dev/null
+    - -o
+    - '{case_dir}/tls_router.txt'
+    timeout: 30
+    type: tool
+- id: prompt_login
+  type: prompt
+  message: Enter an `oc` login command or press Enter to skip (if `oc` already logged
+    in or no credentials)
+  then:
+  - id: cluster_discovery
+    name: Cluster metadata & resource enumeration
+    type: parallel
+    max_workers: 10
+    steps:
+    - id: oc_version
+      name: OC & OCP version
+      tool: oc
+      args:
+      - version
+      - -o
+      - '{case_dir}/oc_version.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/oc_version.txt'
+      type: tool
+    - id: oc_cluster_info
+      name: Cluster info (API server, DNS, console URL)
+      tool: oc
+      args:
+      - cluster-info
+      - -o
+      - '{case_dir}/cluster_info.txt'
+      timeout: 30
+      type: tool
+    - id: oc_nodes
+      name: Node list & roles
+      tool: oc
+      args:
+      - get
+      - nodes
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/nodes.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/nodes.txt'
+      type: tool
+    - id: oc_node_taints
+      name: Node taints & tolerations
+      tool: oc
+      args:
+      - get
+      - nodes
+      - -o
+      - json
+      - '|'
+      - jq
+      - '''.items[] | {name: .metadata.name, taints: .spec.taints, labels: .metadata.labels}'''
+      - -o
+      - '{case_dir}/node_taints.json'
+      timeout: 30
+      type: tool
+    - id: oc_projects
+      name: All projects (namespaces)
+      tool: oc
+      args:
+      - get
+      - projects
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/projects.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/projects.txt'
+      type: tool
+    - id: oc_project_details
+      name: Project annotations & labels
+      tool: oc
+      args:
+      - get
+      - projects
+      - -o
+      - json
+      - '|'
+      - jq
+      - '''.items[] | {name: .metadata.name, labels: .metadata.labels, annotations:
+        .metadata.annotations}'''
+      - -o
+      - '{case_dir}/project_details.json'
+      timeout: 30
+      type: tool
+    - id: oc_routes
+      name: All routes (all projects)
+      tool: oc
+      args:
+      - get
+      - routes
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/routes.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/routes.txt'
+      type: tool
+    - id: oc_route_tls
+      name: Routes with TLS termination details
+      tool: oc
+      args:
+      - get
+      - routes
+      - --all-namespaces
+      - -o
+      - json
+      - '|'
+      - jq
+      - '''.items[] | select(.spec.tls != null) | {ns: .metadata.namespace, name:
+        .metadata.name, host: .spec.host, tls: .spec.tls}'''
+      - -o
+      - '{case_dir}/route_tls.json'
+      timeout: 60
+      type: tool
+    - id: oc_scc_list
+      name: SecurityContextConstraints — full list
+      tool: oc
+      args:
+      - get
+      - scc
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/scc_list.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/scc_list.txt'
+      type: tool
+    - id: oc_scc_details
+      name: SCC details (privileged users/groups)
+      tool: oc
+      args:
+      - get
+      - scc
+      - -o
+      - json
+      - '|'
+      - jq
+      - '''.items[] | {name: .metadata.name, users: .users, groups: .groups, priority:
+        .priority, allowPrivilegedContainer: .allowPrivilegedContainer, allowedCapabilities:
+        .allowedCapabilities, defaultAddCapabilities: .defaultAddCapabilities, requiredDropCapabilities:
+        .requiredDropCapabilities, runAsUser: .runAsUser.type, seLinuxContext: .seLinuxContext.type,
+        fsGroup: .fsGroup.type, volumes: .volumes}'''
+      - -o
+      - '{case_dir}/scc_details.json'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/scc_details.json'
+      type: tool
+    - id: oc_imagestreams
+      name: ImageStreams across all projects
+      tool: oc
+      args:
+      - get
+      - is
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/imagestreams.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/imagestreams.txt'
+      type: tool
+    - id: oc_buildconfigs
+      name: BuildConfigs across all projects
+      tool: oc
+      args:
+      - get
+      - bc
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/buildconfigs.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/buildconfigs.txt'
+      type: tool
+    - id: oc_buildconfig_secrets
+      name: BuildConfigs with embedded secrets or env vars
+      tool: oc
+      args:
+      - get
+      - bc
+      - --all-namespaces
+      - -o
+      - json
+      - '|'
+      - jq
+      - '''.items[] | select(.spec.strategy.jenkinsPipelineStrategy?.env? or .spec.strategy.sourceStrategy?.env?
+        or .spec.strategy.dockerStrategy?.env?) | {ns: .metadata.namespace, name:
+        .metadata.name, env: (.spec.strategy.jenkinsPipelineStrategy?.env // .spec.strategy.dockerStrategy?.env
+        // .spec.strategy.sourceStrategy?.env)}'''
+      - -o
+      - '{case_dir}/buildconfig_env.json'
+      timeout: 60
+      type: tool
+    - id: oc_operators
+      name: Installed Operators (ClusterServiceVersions)
+      tool: oc
+      args:
+      - get
+      - csv
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/operators.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/operators.txt'
+      type: tool
+    - id: oc_crds
+      name: CustomResourceDefinitions (notable)
+      tool: oc
+      args:
+      - get
+      - crd
+      - -o
+      - name
+      - '|'
+      - grep
+      - -iE
+      - '''(keycloak|vault|istio|knative|strimzi|prometheus|grafana|argocd|tekton|sealedsecret|externalsecret|vault|compliance|certificate)
+        '''
+      - -o
+      - '{case_dir}/notable_crds.txt'
+      timeout: 30
+      type: tool
+    - id: oc_network_operator
+      name: Network operator & cluster network config
+      tool: oc
+      args:
+      - get
+      - network.config.openshift.io/cluster
+      - -o
+      - yaml
+      - -o
+      - '{case_dir}/cluster_network.yaml'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/cluster_network.yaml'
+      type: tool
+    - id: oc_network_policies
+      name: All NetworkPolicies
+      tool: oc
+      args:
+      - get
+      - netpol
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/network_policies.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/network_policies.txt'
+      type: tool
+    - id: oc_netpol_missing
+      name: Projects without NetworkPolicies
+      tool: bash
+      args:
+      - -c
+      - 'for ns in $(oc get projects -o name | cut -d/ -f2); do if ! oc get netpol
+        -n "$ns" -o name 2>/dev/null | grep -q .; then echo "NO NETPOL: $ns"; fi;
+        done'
+      - -o
+      - '{case_dir}/netpol_missing.txt'
+      timeout: 120
+      type: tool
+    - id: oc_services
+      name: All services (including NodePort/LoadBalancer)
+      tool: oc
+      args:
+      - get
+      - svc
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/services.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/services.txt'
+      type: tool
+    - id: oc_ingress
+      name: Ingress resources
+      tool: oc
+      args:
+      - get
+      - ingress
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/ingress.txt'
+      timeout: 60
+      type: tool
+    - id: oc_endpoints
+      name: All endpoints (internal IP mapping)
+      tool: oc
+      args:
+      - get
+      - ep
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/endpoints.txt'
+      timeout: 60
+      type: tool
+    - id: oc_pods
+      name: All pods (all projects)
+      tool: oc
+      args:
+      - get
+      - pods
+      - --all-namespaces
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/pods.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/pods.txt'
+      type: tool
+    - id: oc_etcd_pods
+      name: etcd pods & status
+      tool: oc
+      args:
+      - get
+      - pods
+      - -n
+      - openshift-etcd
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/etcd_pods.txt'
+      timeout: 30
+      type: tool
+    - id: oc_master_pods
+      name: Control-plane pods (KAS, KCM, scheduler, OAuth)
+      tool: oc
+      args:
+      - get
+      - pods
+      - --all-namespaces
+      - -l
+      - app in (openshift-kube-apiserver,openshift-kube-controller-manager,openshift-scheduler,openshift-oauth-apiserver)
+      - -o
+      - wide
+      - -o
+      - '{case_dir}/control_plane_pods.txt'
+      timeout: 30
+      type: tool
+  name: Prompt Login
+- id: oauth_audit
+  name: OAuth & identity provider review
+  type: parallel
+  max_workers: 8
+  steps:
+  - id: oauth_config
+    name: OAuth cluster configuration
+    tool: oc
+    args:
+    - get
+    - oauth.config.openshift.io/cluster
+    - -o
+    - yaml
+    - -o
+    - '{case_dir}/oauth_config.yaml'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/oauth_config.yaml'
+    type: tool
+  - id: oauth_clients
+    name: OAuthClient custom resources
+    tool: oc
+    args:
+    - get
+    - oauthclients
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/oauth_clients.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/oauth_clients.txt'
+    type: tool
+  - id: oauth_client_secrets
+    name: OAuthClient secrets & redirect URIs
+    tool: oc
+    args:
+    - get
+    - oauthclients
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | {name: .metadata.name, secret: .secret, redirectURIs: .redirectURIs,
+      grantMethod: .grantMethod, scopeRestrictions: .scopeRestrictions}'''
+    - -o
+    - '{case_dir}/oauth_client_details.json'
+    timeout: 30
+    type: tool
+  - id: identity_providers
+    name: Identity provider list
+    tool: oc
+    args:
+    - get
+    - identity
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/identities.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/identities.txt'
+    type: tool
+  - id: htpasswd_secret
+    name: HTPasswd secrets (if used)
+    tool: oc
+    args:
+    - get
+    - secret
+    - --all-namespaces
+    - '|'
+    - grep
+    - -i
+    - htpasswd
+    - -o
+    - '{case_dir}/htpasswd_secrets.txt'
+    timeout: 30
+    type: tool
+  - id: users
+    name: All OpenShift users
+    tool: oc
+    args:
+    - get
+    - users
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/users.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/users.txt'
+    type: tool
+  - id: groups
+    name: All groups & members
+    tool: oc
+    args:
+    - get
+    - groups
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/groups.txt'
+    timeout: 30
+    type: tool
+  - id: user_identities
+    name: User-to-identity mappings
+    tool: oc
+    args:
+    - get
+    - useridentities
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/user_identities.txt'
+    timeout: 30
+    type: tool
+  - id: oc_whoami
+    name: Current session privileges
+    tool: oc
+    args:
+    - whoami
+    - -o
+    - '{case_dir}/whoami.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/whoami.txt'
+    type: tool
+  - id: oc_can_i
+    name: Current user permission check
+    tool: oc
+    args:
+    - auth
+    - can-i
+    - --list
+    - -o
+    - '{case_dir}/can_i_list.txt'
+    timeout: 30
+    type: tool
+- id: rbac_deepdive
+  name: RBAC audit & escalation path identification
+  type: parallel
+  max_workers: 10
+  steps:
+  - id: cluster_admins
+    name: ClusterRoleBinding — cluster-admin subjects
+    tool: oc
+    args:
+    - get
+    - clusterrolebindings
+    - cluster-admin
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.subjects'''
+    - -o
+    - '{case_dir}/cluster_admin_subjects.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/cluster_admin_subjects.json'
+    type: tool
+  - id: clusterrole_wildcards
+    name: ClusterRoles with wildcards
+    tool: oc
+    args:
+    - get
+    - clusterroles
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.rules[].resources? | index("*")) | {name: .metadata.name,
+      rules: .rules}'''
+    - -o
+    - '{case_dir}/clusterrole_wildcards.json'
+    timeout: 60
+    type: tool
+  - id: clusterrole_escalate
+    name: Roles with escalate/bind/impersonate verbs
+    tool: oc
+    args:
+    - get
+    - clusterroles
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.rules[]?.verbs? | index("escalate") or index("bind") or
+      index("impersonate")) | .metadata.name'''
+    - -o
+    - '{case_dir}/clusterrole_escalate_verbs.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/clusterrole_escalate_verbs.txt'
+    type: tool
+  - id: clusterrole_access
+    name: ClusterRoles allowing pod/exec create
+    tool: oc
+    args:
+    - get
+    - clusterroles
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.rules[]?.resources? | index("pods/exec") or index("pods")
+      and (.rules[]?.verbs? | index("create"))) | .metadata.name'''
+    - -o
+    - '{case_dir}/clusterrole_pod_exec.txt'
+    timeout: 60
+    type: tool
+  - id: clusterrole_secrets
+    name: ClusterRoles allowing secret access
+    tool: oc
+    args:
+    - get
+    - clusterroles
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.rules[]?.resources? | index("secrets")) | .metadata.name'''
+    - -o
+    - '{case_dir}/clusterrole_secret_access.txt'
+    timeout: 60
+    type: tool
+  - id: rolebindings_all
+    name: All RoleBindings
+    tool: oc
+    args:
+    - get
+    - rolebindings
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/rolebindings.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/rolebindings.txt'
+    type: tool
+  - id: clusterrolebindings_all
+    name: All ClusterRoleBindings
+    tool: oc
+    args:
+    - get
+    - clusterrolebindings
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/clusterrolebindings.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/clusterrolebindings.txt'
+    type: tool
+  - id: scc_escalation
+    name: SCC-to-SA mapping (which SA can use privileged SCC)
+    tool: oc
+    args:
+    - get
+    - scc
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.allowPrivilegedContainer == true) | {name: .metadata.name,
+      users: .users, groups: .groups}'''
+    - -o
+    - '{case_dir}/scc_privileged_mapping.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/scc_privileged_mapping.json'
+    type: tool
+  - id: sa_token_creator
+    name: Subjects that can create SA tokens
+    tool: oc
+    args:
+    - get
+    - clusterroles
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.rules[]?.resources? | index("serviceaccounts/token"))
+      | {name: .metadata.name, rules: .rules}'''
+    - -o
+    - '{case_dir}/sa_token_creators.json'
+    timeout: 30
+    type: tool
+  - id: who_can_exec
+    name: Subjects that can exec into pods
+    tool: oc
+    args:
+    - get
+    - clusterroles
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.rules[]?.resources? | index("pods/exec")) | .metadata.name'''
+    - -o
+    - '{case_dir}/who_can_exec.txt'
+    timeout: 30
+    type: tool
+- id: pod_security
+  name: Pod Security & SCC enforcement audit
+  type: parallel
+  max_workers: 10
+  steps:
+  - id: pods_by_scc
+    name: Running pods grouped by SCC annotation
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | {ns: .metadata.namespace, name: .metadata.name, scc: .metadata.annotations["openshift.io/scc"]}'''
+    - -o
+    - '{case_dir}/pods_by_scc.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/pods_by_scc.json'
+    type: tool
+  - id: privileged_pods
+    name: Pods using privileged SCC
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.metadata.annotations["openshift.io/scc"] == "privileged")
+      | .metadata.namespace + "/" + .metadata.name'''
+    - -o
+    - '{case_dir}/privileged_pods.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/privileged_pods.txt'
+    type: tool
+  - id: anyuid_pods
+    name: Pods using anyuid SCC
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.metadata.annotations["openshift.io/scc"] == "anyuid")
+      | .metadata.namespace + "/" + .metadata.name'''
+    - -o
+    - '{case_dir}/anyuid_pods.txt'
+    timeout: 60
+    type: tool
+  - id: hostaccess_pods
+    name: Pods using hostaccess SCC
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.metadata.annotations["openshift.io/scc"] == "hostaccess")
+      | .metadata.namespace + "/" + .metadata.name'''
+    - -o
+    - '{case_dir}/hostaccess_pods.txt'
+    timeout: 60
+    type: tool
+  - id: hostmount_pods
+    name: Pods using hostmount-anyuid SCC
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.metadata.annotations["openshift.io/scc"] == "hostmount-anyuid")
+      | .metadata.namespace + "/" + .metadata.name'''
+    - -o
+    - '{case_dir}/hostmount_pods.txt'
+    timeout: 60
+    type: tool
+  - id: root_containers
+    name: Containers running as root (UID 0)
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.spec.containers[]?.securityContext?.runAsNonRoot != true
+      and .spec.containers[]?.securityContext?.runAsUser != 0) | .metadata.namespace
+      + "/" + .metadata.name'''
+    - -o
+    - '{case_dir}/root_containers.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/root_containers.txt'
+    type: tool
+  - id: host_network_pods
+    name: Pods with hostNetwork / hostPID / hostIPC
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.spec.hostNetwork == true or .spec.hostPID == true or .spec.hostIPC
+      == true) | {ns: .metadata.namespace, name: .metadata.name, hostNetwork: .spec.hostNetwork,
+      hostPID: .spec.hostPID, hostIPC: .spec.hostIPC}'''
+    - -o
+    - '{case_dir}/host_namespace_pods.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/host_namespace_pods.json'
+    type: tool
+  - id: hostpath_pods
+    name: Pods with HostPath volumes (with paths)
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.spec.volumes[]?.hostPath != null) | {ns: .metadata.namespace,
+      name: .metadata.name, paths: [.spec.volumes[] | select(.hostPath != null) |
+      .hostPath.path]}'''
+    - -o
+    - '{case_dir}/hostpath_volumes.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/hostpath_volumes.json'
+    type: tool
+  - id: dangerous_caps
+    name: Containers with dangerous Linux capabilities
+    tool: oc
+    args:
+    - get
+    - pods
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.spec.containers[]?.securityContext?.capabilities?.add?
+      | index("SYS_ADMIN") or index("NET_ADMIN") or index("SYS_PTRACE") or index("SYS_MODULE")
+      or index("SYS_RAWIO") or index("DAC_OVERRIDE")) | {ns: .metadata.namespace,
+      name: .metadata.name, caps: [.spec.containers[]?.securityContext?.capabilities?.add?
+      // [] | .[]]}'''
+    - -o
+    - '{case_dir}/dangerous_capabilities.json'
+    timeout: 60
+    type: tool
+  - id: privileged_scc_users
+    name: Subjects who can use privileged SCC themselves
+    tool: oc
+    args:
+    - describe
+    - scc
+    - privileged
+    - -o
+    - '{case_dir}/scc_privileged_users.txt'
+    timeout: 30
+    type: tool
+  - id: psa_labels
+    name: PSA Pod Security Admission labels (OCP 4.12+)
+    tool: oc
+    args:
+    - get
+    - namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | {ns: .metadata.name, labels: .metadata.labels} | select(.labels."pod-security.kubernetes.io/enforce"
+      != null or .labels."pod-security.kubernetes.io/audit" != null)'''
+    - -o
+    - '{case_dir}/psa_labels.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/psa_labels.json'
+    type: tool
+  - id: psa_enforce_privileged
+    name: Namespaces with privileged PSA (weakest)
+    tool: oc
+    args:
+    - get
+    - namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.metadata.labels."pod-security.kubernetes.io/enforce" ==
+      "privileged") | .metadata.name'''
+    - -o
+    - '{case_dir}/psa_privileged_ns.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/psa_privileged_ns.txt'
+    type: tool
+  - id: security_profiles_operator
+    name: Security Profiles Operator (seccomp/SELinux profiles)
+    tool: oc
+    args:
+    - get
+    - securityprofile
+    - --all-namespaces
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/security_profiles.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/security_profiles.txt'
+    type: tool
+  - id: security_profiles_daemon
+    name: SPO daemon status
+    tool: oc
+    args:
+    - get
+    - pods
+    - -n
+    - openshift-security-profiles
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/spo_pods.txt'
+    timeout: 30
+    type: tool
+- id: build_pipeline
+  name: ImageStreams, BuildConfigs & CI/CD pipeline audit
+  type: parallel
+  max_workers: 8
+  steps:
+  - id: imagestream_tags
+    name: ImageStreamTags (image references)
+    tool: oc
+    args:
+    - get
+    - istag
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/imagestream_tags.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/imagestream_tags.txt'
+    type: tool
+  - id: build_config_detailed
+    name: BuildConfig triggers & Git sources
+    tool: oc
+    args:
+    - get
+    - bc
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | {ns: .metadata.namespace, name: .metadata.name, source: .spec.source,
+      triggers: .spec.triggers, strategy: .spec.strategy | keys}'''
+    - -o
+    - '{case_dir}/buildconfig_triggers.json'
+    timeout: 60
+    type: tool
+  - id: build_config_webhook
+    name: BuildConfig webhook secrets
+    tool: oc
+    args:
+    - get
+    - bc
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.spec.triggers[]?.type == "Generic" or .spec.triggers[]?.type
+      == "GitHub") | {ns: .metadata.namespace, name: .metadata.name, secrets: [.spec.triggers[]
+      | select(.type == "Generic" or .type == "GitHub") | {type: .type, secret: (.generic?.secret
+      // .github?.secret)}]}'''
+    - -o
+    - '{case_dir}/buildconfig_webhooks.json'
+    timeout: 60
+    type: tool
+  - id: build_history
+    name: Recent builds
+    tool: oc
+    args:
+    - get
+    - builds
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/builds.txt'
+    timeout: 60
+    type: tool
+  - id: build_log_check
+    name: Build logs for credential leakage (last 3 builds per project)
+    tool: bash
+    args:
+    - -c
+    - 'for ns in $(oc get projects -o name | cut -d/ -f2); do for b in $(oc get builds
+      -n "$ns" -o name 2>/dev/null | tail -3); do oc logs -n "$ns" "$b" 2>/dev/null
+      | grep -qiE ''(password|secret|token|api[_]?key|credential|AWS_SECRET|AZURE_)''
+      && echo "LEAK: $ns/$b"; done; done'
+    - -o
+    - '{case_dir}/build_log_leaks.txt'
+    timeout: 300
+    type: tool
+  - id: pipeline_sa
+    name: Pipeline/builder/deployer SAs & their permissions
+    tool: oc
+    args:
+    - get
+    - rolebindings
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.subjects[]?.name | IN("builder", "deployer", "pipeline"))
+      | {ns: .metadata.namespace, role: .roleRef.name, subjects: [.subjects[] | select(.name
+      | IN("builder", "deployer", "pipeline")) | .name]}'''
+    - -o
+    - '{case_dir}/pipeline_sas.json'
+    timeout: 60
+    type: tool
+- id: registry_audit
+  name: Internal OpenShift registry assessment
+  type: parallel
+  max_workers: 5
+  steps:
+  - id: registry_config
+    name: Registry configuration & storage backend
+    tool: oc
+    args:
+    - get
+    - configs.imageregistry.operator.openshift.io/cluster
+    - -o
+    - yaml
+    - -o
+    - '{case_dir}/registry_config.yaml'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/registry_config.yaml'
+    type: tool
+  - id: registry_pods
+    name: Registry pods
+    tool: oc
+    args:
+    - get
+    - pods
+    - -n
+    - openshift-image-registry
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/registry_pods.txt'
+    timeout: 30
+    type: tool
+  - id: registry_pvc
+    name: Registry PVC/PV (storage backend)
+    tool: oc
+    args:
+    - get
+    - pvc
+    - -n
+    - openshift-image-registry
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/registry_pvc.txt'
+    timeout: 30
+    type: tool
+  - id: registry_route_status
+    name: Registry route & TLS
+    tool: oc
+    args:
+    - get
+    - route
+    - default-route
+    - -n
+    - openshift-image-registry
+    - -o
+    - yaml
+    - -o
+    - '{case_dir}/registry_route.yaml'
+    timeout: 30
+    type: tool
+  - id: pull_secrets
+    name: All dockerconfigjson pull secrets (cross-project)
+    tool: oc
+    args:
+    - get
+    - secrets
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.type == "kubernetes.io/dockerconfigjson") | {ns: .metadata.namespace,
+      name: .metadata.name, auths: (.data[".dockerconfigjson"] | @base64d | fromjson
+      | .auths | keys)}'''
+    - -o
+    - '{case_dir}/pull_secrets.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/pull_secrets.json'
+    type: tool
+  - id: registry_route_external
+    name: Try registry catalog via route
+    tool: bash
+    args:
+    - -c
+    - 'ROUTE=$(oc get route default-route -n openshift-image-registry -o jsonpath=''{.spec.host}''
+      2>/dev/null); TOKEN=$(oc whoami -t 2>/dev/null); if [ -n "$ROUTE" ] && [ -n
+      "$TOKEN" ]; then curl -sk -H "Authorization: Bearer $TOKEN" "https://$ROUTE/v2/_catalog"
+      -o "{case_dir}/registry_route_catalog.json"; fi'
+    - -o
+    - '{case_dir}/registry_route_catalog.json'
+    timeout: 30
+    type: tool
+- id: operators_audit
+  name: Operator & CRD security assessment
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: csv_details
+    name: CSV details (permissions, install plan)
+    tool: oc
+    args:
+    - get
+    - csv
+    - --all-namespaces
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | {ns: .metadata.namespace, name: .metadata.name, provider: .spec.provider?.name,
+      permissions: [.spec.installStrategy?.spec?.permissions[]? | {sa: .serviceAccountName,
+      rules: [.rules[]? | {resources: .resources, verbs: .verbs}]}]}'''
+    - -o
+    - '{case_dir}/csv_permissions.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/csv_permissions.json'
+    type: tool
+  - id: operator_subscriptions
+    name: Operator subscriptions & approval strategy
+    tool: oc
+    args:
+    - get
+    - sub
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/operator_subscriptions.txt'
+    timeout: 30
+    type: tool
+  - id: operator_groups
+    name: OperatorGroup target namespaces
+    tool: oc
+    args:
+    - get
+    - og
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/operator_groups.txt'
+    timeout: 30
+    type: tool
+  - id: catalogsources
+    name: CatalogSources (custom OLM catalogs)
+    tool: oc
+    args:
+    - get
+    - catalogsource
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/catalogsources.txt'
+    timeout: 30
+    type: tool
+  - id: crd_audit
+    name: All CRDs count & notable extensions
+    tool: bash
+    args:
+    - -c
+    - 'echo "Total CRDs: $(oc get crd -o name | wc -l)"; echo; echo ''=== Notable
+      CRD instances ===''; for crd in argocd application keycloak vault secretproviderclass
+      istio knative tekton strimzi certmanager; do count=$(oc get crd 2>/dev/null
+      | grep -ci $crd); [ "$count" -gt 0 ] && echo "$crd: $count"; done'
+    - -o
+    - '{case_dir}/crd_audit.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/crd_audit.txt'
+    type: tool
+  - id: compliance_operator
+    name: Compliance Operator scan results
+    tool: bash
+    args:
+    - -c
+    - if oc get crd | grep -q compliance; then oc get compliancesuites --all-namespaces
+      -o wide -o {case_dir}/compliance_suites.txt; oc get compliancecheckresults -o
+      wide -o {case_dir}/compliance_results.txt 2>/dev/null; else echo 'Compliance
+      operator not installed' -o {case_dir}/compliance_suites.txt; fi
+    timeout: 60
+    type: tool
+- id: node_security
+  name: MachineConfig, kubelet & node-level security
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: machineconfigs
+    name: MachineConfigs (all)
+    tool: oc
+    args:
+    - get
+    - mc
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/machineconfigs.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/machineconfigs.txt'
+    type: tool
+  - id: machineconfigpools
+    name: MachineConfigPools & status
+    tool: oc
+    args:
+    - get
+    - mcp
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/machineconfigpools.txt'
+    timeout: 30
+    type: tool
+  - id: kubelet_config
+    name: KubeletConfig (custom kubelet arguments)
+    tool: oc
+    args:
+    - get
+    - kubeletconfig
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/kubeletconfig.txt'
+    timeout: 30
+    type: tool
+  - id: containerruntime_config
+    name: ContainerRuntimeConfig (custom CRI-O args)
+    tool: oc
+    args:
+    - get
+    - containerruntimeconfig
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/containerruntimeconfig.txt'
+    timeout: 30
+    type: tool
+  - id: node_labels
+    name: Node labels (infra/worker/master classification)
+    tool: oc
+    args:
+    - get
+    - nodes
+    - --show-labels
+    - -o
+    - '{case_dir}/node_labels.txt'
+    timeout: 30
+    type: tool
+  - id: node_csr
+    name: Pending/approved TLS certificate requests
+    tool: oc
+    args:
+    - get
+    - csr
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/csr.txt'
+    timeout: 30
+    type: tool
+- id: openshift_network
+  name: OVN-Kubernetes / OpenShiftSDN security
+  type: parallel
+  max_workers: 5
+  steps:
+  - id: network_type
+    name: Cluster network type (OVN-K8s vs SDN)
+    tool: oc
+    args:
+    - get
+    - network.config.openshift.io/cluster
+    - -o
+    - jsonpath='{.spec.networkType}'
+    - -o
+    - '{case_dir}/network_type.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/network_type.txt'
+    type: tool
+  - id: egress_firewall
+    name: EgressFirewall / EgressNetworkPolicy
+    tool: bash
+    args:
+    - -c
+    - oc get egressfirewall --all-namespaces -o wide 2>/dev/null -o {case_dir}/egress_firewall.txt;
+      oc get egressnetworkpolicy --all-namespaces -o wide 2>/dev/null -o {case_dir}/egress_network_policy.txt
+    - -o
+    - '{case_dir}/egress_firewall.txt'
+    timeout: 30
+    type: tool
+  - id: egress_ips
+    name: EgressIPs & EgressRouter
+    tool: oc
+    args:
+    - get
+    - hostsubnets
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/hostsubnets.txt'
+    timeout: 30
+    type: tool
+  - id: ovn_pods
+    name: OVN-Kubernetes pods
+    tool: oc
+    args:
+    - get
+    - pods
+    - -n
+    - openshift-ovn-kubernetes
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/ovn_pods.txt'
+    timeout: 30
+    type: tool
+  - id: multus
+    name: Multus (additional network attachments)
+    tool: oc
+    args:
+    - get
+    - networkattachmentdefinitions
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/network_attachments.txt'
+    timeout: 30
+    type: tool
+  - id: pod_network_connectivity
+    name: Pod network connectivity tests (reachability)
+    tool: bash
+    args:
+    - -c
+    - echo '=== API server ==='; oc auth can-i get pods -n default 2>&1; echo '===
+      DNS resolution ==='; oc run dns-test --image=registry.access.redhat.com/ubi9/ubi:latest
+      --restart=Never --rm --attach --command -- nslookup kubernetes.default.svc 2>/dev/null
+      || echo 'DNS test pod failed'; echo '=== NodePort test ==='; oc get svc --all-namespaces
+      | grep NodePort
+    - -o
+    - '{case_dir}/network_connectivity.txt'
+    timeout: 60
+    type: tool
+- id: secrets_audit
+  name: Secrets, certificates & encryption
+  type: parallel
+  max_workers: 8
+  steps:
+  - id: secrets_all
+    name: All secrets across all projects
+    tool: oc
+    args:
+    - get
+    - secrets
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/secrets_all.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/secrets_all.txt'
+    type: tool
+  - id: etcd_encryption
+    name: etcd encryption status
+    tool: oc
+    args:
+    - get
+    - apiserver
+    - cluster
+    - -o
+    - jsonpath='{.spec.encryption.type}'
+    - -o
+    - '{case_dir}/etcd_encryption.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/etcd_encryption.txt'
+    type: tool
+  - id: tls_certificates
+    name: TLS secrets (API, Ingress, Router)
+    tool: oc
+    args:
+    - get
+    - certificates.certificates.k8s.io
+    - --all-namespaces
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/tls_certificates.txt'
+    timeout: 30
+    type: tool
+  - id: router_certs
+    name: Router default certificate
+    tool: oc
+    args:
+    - get
+    - secret
+    - router-ca
+    - -n
+    - openshift-ingress-operator
+    - -o
+    - yaml
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/router_ca.yaml'
+    timeout: 30
+    type: tool
+  - id: pull_secret
+    name: Global pull-secret
+    tool: oc
+    args:
+    - get
+    - secret
+    - pull-secret
+    - -n
+    - openshift-config
+    - -o
+    - yaml
+    - -o
+    - '{case_dir}/global_pull_secret.yaml'
+    timeout: 30
+    type: tool
+  - id: cert_expiry
+    name: TLS secret expiry dates
+    tool: bash
+    args:
+    - -c
+    - 'oc get secrets --all-namespaces -o json | jq -r ''.items[] | select(.type ==
+      "kubernetes.io/tls") | .metadata.namespace + "/" + .metadata.name'' | while
+      read s; do ns=$(echo $s | cut -d/ -f1); name=$(echo $s | cut -d/ -f2); cert=$(oc
+      get secret -n $ns $name -o jsonpath=''{.data.tls\.crt}'' 2>/dev/null); [ -n
+      "$cert" ] && echo "$s expires: $(echo $cert | base64 -d | openssl x509 -noout
+      -enddate 2>/dev/null)"; done'
+    - -o
+    - '{case_dir}/cert_expiry.txt'
+    timeout: 120
+    type: tool
+- id: monitoring_audit
+  name: Monitoring, logging & alerting assessment
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: user_workload_monitoring
+    name: User-workload monitoring status
+    tool: oc
+    args:
+    - get
+    - configmap
+    - cluster-monitoring-config
+    - -n
+    - openshift-monitoring
+    - -o
+    - yaml
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/cluster_monitoring_config.yaml'
+    timeout: 30
+    type: tool
+  - id: alertmanager_config
+    name: AlertManager configuration (may leak receivers)
+    tool: oc
+    args:
+    - get
+    - secret
+    - alertmanager-main
+    - -n
+    - openshift-monitoring
+    - -o
+    - yaml
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/alertmanager_config.yaml'
+    timeout: 30
+    type: tool
+  - id: clusterlogging
+    name: ClusterLogging (if OpenShift Logging installed)
+    tool: oc
+    args:
+    - get
+    - clusterlogging
+    - instance
+    - -o
+    - yaml
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/clusterlogging.yaml'
+    timeout: 30
+    type: tool
+  - id: audit_profile
+    name: API server audit log profile
+    tool: oc
+    args:
+    - get
+    - apiserver
+    - cluster
+    - -o
+    - jsonpath='{.spec.audit.profile}'
+    - -o
+    - '{case_dir}/audit_profile.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/audit_profile.txt'
+    type: tool
+  - id: audit_policy
+    name: Audit policy (custom rules)
+    tool: oc
+    args:
+    - get
+    - apiserver
+    - cluster
+    - -o
+    - jsonpath='{.spec.audit.customRules}'
+    - -o
+    - '{case_dir}/audit_policy.txt'
+    timeout: 30
+    type: tool
+  - id: pod_monitoring
+    name: PodMonitor / ServiceMonitor resources
+    tool: bash
+    args:
+    - -c
+    - oc get servicemonitor --all-namespaces -o wide 2>/dev/null -o {case_dir}/servicemonitors.txt;
+      oc get podmonitor --all-namespaces -o wide 2>/dev/null -o {case_dir}/podmonitors.txt
+    - -o
+    - '{case_dir}/servicemonitors.txt'
+    timeout: 30
+    type: tool
+  - id: thanos_querier
+    name: Thanos Querier / metrics endpoints
+    tool: oc
+    args:
+    - get
+    - route
+    - -n
+    - openshift-monitoring
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/monitoring_routes_internal.txt'
+    timeout: 30
+    type: tool
+- id: admission_audit
+  name: Admission controllers & webhook review
+  type: parallel
+  max_workers: 5
+  steps:
+  - id: validating_webhooks
+    name: ValidatingWebhookConfigurations
+    tool: oc
+    args:
+    - get
+    - validatingwebhookconfigurations
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/validating_webhooks.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/validating_webhooks.txt'
+    type: tool
+  - id: mutating_webhooks
+    name: MutatingWebhookConfigurations
+    tool: oc
+    args:
+    - get
+    - mutatingwebhookconfigurations
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/mutating_webhooks.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/mutating_webhooks.txt'
+    type: tool
+  - id: webhook_failure_policy
+    name: Webhooks with failurePolicy=Ignore
+    tool: oc
+    args:
+    - get
+    - validatingwebhookconfigurations
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | select(.webhooks[]?.failurePolicy == "Ignore") | .metadata.name'''
+    - -o
+    - '{case_dir}/webhook_fail_ignore.txt'
+    timeout: 30
+    type: tool
+  - id: webhook_services
+    name: Webhook service endpoints (check for MITM)
+    tool: oc
+    args:
+    - get
+    - validatingwebhookconfigurations
+    - -o
+    - json
+    - '|'
+    - jq
+    - '''.items[] | {name: .metadata.name, webhooks: [.webhooks[]? | {svc: .clientConfig.service?.name,
+      ns: .clientConfig.service?.namespace, port: .clientConfig.service?.port}]}'''
+    - -o
+    - '{case_dir}/webhook_services.json'
+    timeout: 30
+    type: tool
+  - id: opa_gatekeeper
+    name: OPA/Gatekeeper constraint templates
+    tool: oc
+    args:
+    - get
+    - constrainttemplates
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/gatekeeper_templates.txt'
+    timeout: 30
+    type: tool
+  - id: kyverno
+    name: Kyverno cluster policies
+    tool: oc
+    args:
+    - get
+    - clusterpolicies
+    - -o
+    - wide
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/kyverno_policies.txt'
+    timeout: 30
+    type: tool
+- id: resource_audit
+  name: Resource quotas, limits & DoS vectors
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: resource_quotas
+    name: ResourceQuotas per project
+    tool: oc
+    args:
+    - get
+    - resourcequota
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/resource_quotas.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/resource_quotas.txt'
+    type: tool
+  - id: limit_ranges
+    name: LimitRanges per project
+    tool: oc
+    args:
+    - get
+    - limitranges
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/limit_ranges.txt'
+    timeout: 60
+    type: tool
+  - id: hpas
+    name: HorizontalPodAutoscalers
+    tool: oc
+    args:
+    - get
+    - hpa
+    - --all-namespaces
+    - -o
+    - wide
+    - -o
+    - '{case_dir}/hpas.txt'
+    timeout: 30
+    type: tool
+  - id: pod_density
+    name: Pod density per node
+    tool: bash
+    args:
+    - -c
+    - oc get pods --all-namespaces -o json | jq -r '[.items[] | .spec.nodeName] |
+      sort | .[]' | uniq -c | sort -rn
+    - -o
+    - '{case_dir}/pod_density.txt'
+    timeout: 30
+    type: tool
+- id: provider_checks
+  name: Cloud provider-specific checks
+  type: sequential
+  steps:
+  - id: provider_detect
+    name: Detect cloud provider (ROSA/ARO/upstream)
+    tool: oc
+    args:
+    - get
+    - infrastructure
+    - cluster
+    - -o
+    - jsonpath='{.status.platformStatus.type}'
+    - -o
+    - '{case_dir}/provider_type.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/provider_type.txt'
+    type: tool
+  - id: aws_checks
+    name: AWS/ROSA-specific checks
+    type: conditional
+    condition:
+      any_contains:
+        ref: provider_detect
+        values:
+        - AWS
+        - aws
+    then:
+    - id: aws_checks_parallel
+      type: parallel
+      max_workers: 4
+      steps:
+      - id: aws_node_ips
+        name: Node IPs from AWS
+        tool: oc
+        args:
+        - get
+        - nodes
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | {name: .metadata.name, externalIP: (.status.addresses[] |
+          select(.type == "ExternalIP") | .address), instanceType: (.metadata.labels["beta.kubernetes.io/instance-type"]
+          // .metadata.labels["node.kubernetes.io/instance-type"])}'''
+        - -o
+        - '{case_dir}/aws_node_info.json'
+        timeout: 30
+        type: tool
+      - id: aws_irsa
+        name: IAM Roles for ServiceAccounts (IRSA)
+        tool: oc
+        args:
+        - get
+        - pods
+        - --all-namespaces
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | select(.spec.containers[]?.env[]?.valueFrom?.fieldRef?.fieldPath
+          == "spec.serviceAccountName") | .metadata.namespace + "/" + .metadata.name'''
+        - -o
+        - '{case_dir}/aws_irsa_pods.txt'
+        timeout: 60
+        type: tool
+      - id: aws_cloud_creds
+        name: Cloud credential operator
+        tool: oc
+        args:
+        - get
+        - credentialsrequest
+        - --all-namespaces
+        - -o
+        - wide
+        - 2>/dev/null
+        - -o
+        - '{case_dir}/aws_cred_requests.txt'
+        timeout: 30
+        type: tool
+      - id: rosa_sts_check
+        name: ROSA STS cluster role detection
+        tool: oc
+        args:
+        - get
+        - clusterrole
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | select(.metadata.name | startswith("rosa") or startswith("sts")
+          or startswith("managed-")) | .metadata.name'''
+        - -o
+        - '{case_dir}/rosa_sts_roles.txt'
+        timeout: 30
+        artifacts:
+        - '{case_dir}/rosa_sts_roles.txt'
+        type: tool
+      - id: rosa_byon_ip
+        name: ROSA BYON / cluster network config
+        tool: oc
+        args:
+        - get
+        - configmap
+        - kubeconfig-ca-bundle
+        - -n
+        - kube-system
+        - -o
+        - yaml
+        - 2>/dev/null
+        - -o
+        - '{case_dir}/rosa_network_config.yaml'
+        timeout: 30
+        type: tool
+      name: Aws Checks Parallel
+  - id: azure_checks
+    name: Azure/ARO-specific checks
+    type: conditional
+    condition:
+      any_contains:
+        ref: provider_detect
+        values:
+        - Azure
+        - azure
+    then:
+    - id: azure_checks_parallel
+      type: parallel
+      max_workers: 3
+      steps:
+      - id: azure_ad_integration
+        name: Azure AD integration
+        tool: oc
+        args:
+        - get
+        - clusterrolebindings
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | select(.subjects[]?.apiGroup == "rbac.authorization.k8s.io"
+          and .subjects[]?.kind == "Group") | .metadata.name'''
+        - -o
+        - '{case_dir}/azure_ad_bindings.txt'
+        timeout: 30
+        type: tool
+      - id: azure_managed_id
+        name: Azure managed identities
+        tool: oc
+        args:
+        - get
+        - pods
+        - --all-namespaces
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | select(.metadata.annotations."azure.workload.identity/injector"?
+          or .metadata.annotations."azure.workload.identity/client-id"?) | .metadata.namespace
+          + "/" + .metadata.name'''
+        - -o
+        - '{case_dir}/azure_identity_pods.txt'
+        timeout: 60
+        type: tool
+      name: Azure Checks Parallel
+  - id: gcp_checks
+    name: GCP-specific checks
+    type: conditional
+    condition:
+      any_contains:
+        ref: provider_detect
+        values:
+        - GCP
+        - gcp
+    then:
+    - id: gcp_checks_parallel
+      type: parallel
+      max_workers: 3
+      steps:
+      - id: gcp_wi
+        name: Workload Identity
+        tool: oc
+        args:
+        - get
+        - pods
+        - --all-namespaces
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | select(.metadata.annotations."iam.gke.io/gcp-service-account"
+          != null) | .metadata.namespace + "/" + .metadata.name + " -> " + .metadata.annotations."iam.gke.io/gcp-service-account"'''
+        - -o
+        - '{case_dir}/gcp_wi_pods.txt'
+        timeout: 60
+        type: tool
+      - id: gcp_metadata
+        name: Metadata concealment check
+        tool: oc
+        args:
+        - get
+        - nodes
+        - -o
+        - json
+        - '|'
+        - jq
+        - '''.items[] | {name: .metadata.name, metadataConcealment: (.metadata.labels["cloud.google.com/metadata-proxy-ready"]
+          // "not-configured")}'''
+        - -o
+        - '{case_dir}/gcp_metadata.txt'
+        timeout: 30
+        type: tool
+      name: Gcp Checks Parallel
+- id: compliance_scanners
+  name: CIS benchmarks & external vulnerability scans
+  type: parallel
+  max_workers: 3
+  steps:
+  - id: openshift_cis
+    name: OpenShift CIS benchmark notes
+    type: log
+    message: 'Apply CIS benchmark checks manually or via Compliance Operator:
+
+      - kube-bench: run `kube-bench run --targets master,node,controlplane,etcd,policies`
+
+      - OCP CIS: https://docs.openshift.com/container-platform/latest/security/compliance_operator/compliance-operator.html
+
+      - Critical: audit profile, encryption, RBAC, pod security, network policies
+
+      '
+  - id: kube_hunter
+    name: kube-hunter scan (K8s vulnerability scanner)
+    tool: bash
+    args:
+    - -c
+    - command -v kube-hunter 2>/dev/null && kube-hunter --pod --report json --log
+      {case_dir}/kube_hunter.json 2>&1 || echo 'kube-hunter not available - install
+      via pip' -o {case_dir}/kube_hunter.log
+    - -o
+    - '{case_dir}/kube_hunter.log'
+    timeout: 300
+    artifacts:
+    - '{case_dir}/kube_hunter.log'
+    type: tool
+  - id: scan_summary
+    name: OpenShift assessment complete
+    type: log
+    message: 'OCP security assessment v3 complete for {target}.
+
+      Results in {case_dir}/:
+
+      - External: api_version, ignition_*, oauth_well_known, tls_*
+
+      - Discovery: nodes, projects, routes, scc_details, pods
+
+      - OAuth: oauth_config, oauth_clients, identities, users
+
+      - RBAC: cluster_admin_subjects, clusterrole_escalate_verbs, rolebindings
+
+      - Pod Security: pods_by_scc, privileged_pods, host_namespace_pods, hostpath_volumes
+
+      - Build Pipeline: buildconfig_triggers, build_log_leaks, pipeline_sas
+
+      - Registry: registry_config, pull_secrets, registry_route_catalog
+
+      - Operators: csv_permissions, crd_audit, catalogsources
+
+      - Network: cluster_network, network_policies, egress_firewall, ovn_pods
+
+      - Secrets: secrets_all, etcd_encryption, cert_expiry
+
+      - Provider: provider_type, aws/azure/gcp specifics
+
+      '
+- id: advanced_scanners
+  name: Advanced K8s security scanners & automated attack path testing
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: kubescape_scan
+    name: Kubescape comprehensive K8s misconfiguration scan
+    tool: kubescape
+    args:
+    - scan
+    - --format
+    - json
+    - --output
+    - '{case_dir}/kubescape_results.json'
+    - --use-artifacts
+    - all
+    timeout: 300
+    artifacts:
+    - '{case_dir}/kubescape_results.json'
+    type: tool
+  - id: kubescape_nsa
+    name: Kubescape NSA/CISA K8s hardening guidance
+    tool: kubescape
+    args:
+    - scan
+    - --format
+    - json
+    - --output
+    - '{case_dir}/kubescape_nsa.json'
+    - framework
+    - nsa
+    timeout: 300
+    artifacts:
+    - '{case_dir}/kubescape_nsa.json'
+    type: tool
+  - id: popeye_scan
+    name: Popeye cluster sanitizer & best-practice health check
+    tool: popeye
+    args:
+    - --out
+    - json
+    - --output-file
+    - '{case_dir}/popeye_report.json'
+    - --save
+    timeout: 120
+    artifacts:
+    - '{case_dir}/popeye_report.json'
+    type: tool
+  - id: peirates_attack
+    name: Peirates automated privilege escalation & attack path enumeration
+    tool: peirates
+    args:
+    - --auto
+    - --only-attack
+    - --output
+    - '{case_dir}/peirates_attack_paths.json'
+    timeout: 180
+    artifacts:
+    - '{case_dir}/peirates_attack_paths.json'
+    type: tool
+  - id: trivy_ocp_k8s
+    name: Trivy OCP cluster config scan (K8s manifests & node images)
+    tool: trivy
+    args:
+    - k8s
+    - --severity=CRITICAL,HIGH,MEDIUM
+    - --output
+    - '{case_dir}/trivy_ocp_report.json'
+    - --format
+    - json
+    - cluster
+    timeout: 300
+    artifacts:
+    - '{case_dir}/trivy_ocp_report.json'
+    type: tool
+  - id: grype_ocp_images
+    name: Grype vulnerability scan of running container images
+    tool: bash
+    args:
+    - -c
+    - images=$(oc get pods --all-namespaces -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}'
+      2>/dev/null | sort -u | head -20); for img in $images; do grype --quiet --output
+      json "$img" >> "{case_dir}/grype_ocp_scan.json" 2>/dev/null || true; done
+    - -o
+    - '{case_dir}/grype_ocp_scan.json'
+    timeout: 600
+    artifacts:
+    - '{case_dir}/grype_ocp_scan.json'
+    type: tool
+- id: report
+  name: Generate OCP security assessment report
+  type: report
+  format: markdown
+  title: OpenShift Container Platform Security Assessment Report
+  output: '{case_dir}/openshift-security-report.md'
+  sections:
+  - heading: Assessment Summary
+    body: '- Cluster: {target}
+
+      - Case: {case_id}
+
+      - Date: {timestamp}'
+  - heading: External Reconnaissance
+    body: '- API version: {case_dir}/api_version.txt
+
+      - Ignition config accessible: check {case_dir}/ignition_master.json
+
+      - OAuth endpoints: {case_dir}/oauth_well_known.json
+
+      - Registry route: {case_dir}/registry_catalog.txt'
+  - heading: Cluster Discovery
+    body: '- Nodes: {case_dir}/nodes.txt
+
+      - Projects: {case_dir}/projects.txt
+
+      - SCM: {case_dir}/scc_details.json
+
+      - Routes: {case_dir}/routes.txt
+
+      - Network type: {case_dir}/network_type.txt'
+  - heading: Authentication & Identity
+    body: '- OAuth config: {case_dir}/oauth_config.yaml
+
+      - OAuth clients: {case_dir}/oauth_clients.txt
+
+      - Users & groups: {case_dir}/users.txt
+
+      - Identities: {case_dir}/identities.txt'
+  - heading: RBAC & Escalation Paths
+    body: '- Cluster admin subjects: {case_dir}/cluster_admin_subjects.json
+
+      - Escalate verbs: {case_dir}/clusterrole_escalate_verbs.txt
+
+      - Pod exec access: {case_dir}/who_can_exec.txt
+
+      - Role bindings: {case_dir}/rolebindings.txt'
+  - heading: Pod Security (SCC)
+    body: '- Privileged pods: {case_dir}/privileged_pods.txt
+
+      - anyuid pods: {case_dir}/anyuid_pods.txt
+
+      - Host namespace: {case_dir}/host_namespace_pods.json
+
+      - HostPath volumes: {case_dir}/hostpath_volumes.json
+
+      - Dangerous capabilities: {case_dir}/dangerous_capabilities.json'
+  - heading: Build & Image Pipeline
+    body: '- ImageStreams: {case_dir}/imagestreams.txt
+
+      - BuildConfigs: {case_dir}/buildconfigs.txt
+
+      - Build log credential leaks: {case_dir}/build_log_leaks.txt
+
+      - Pipeline SAs: {case_dir}/pipeline_sas.json'
+  - heading: Secrets & Encryption
+    body: '- etcd encryption: {case_dir}/etcd_encryption.txt
+
+      - Secrets inventory: {case_dir}/secrets_all.txt
+
+      - Pull secrets: {case_dir}/pull_secrets.json
+
+      - Certificate expiry: {case_dir}/cert_expiry.txt'
+  - heading: Network Security
+    body: '- Network policies: {case_dir}/network_policies.txt
+
+      - Projects without policies: {case_dir}/netpol_missing.txt
+
+      - Egress firewall: {case_dir}/egress_firewall.txt
+
+      - Services (NodePort/LB): {case_dir}/services.txt'
+  - heading: Operators & CRDs
+    body: '- Installed operators: {case_dir}/operators.txt
+
+      - CRD audit: {case_dir}/crd_audit.txt
+
+      - CSV permissions: {case_dir}/csv_permissions.json'
+  - heading: Provider-Specific
+    body: '- Provider: {case_dir}/provider_type.txt
+
+      - Provider-specific details in {case_dir}/'
+  - heading: Advanced Scanners & Attack Paths
+    body: '- Kubescape: {case_dir}/kubescape_results.json, {case_dir}/kubescape_nsa.json
+
+      - Popeye: {case_dir}/popeye_report.json
+
+      - Peirates: {case_dir}/peirates_attack_paths.json
+
+      - Trivy: {case_dir}/trivy_ocp_report.json
+
+      - Grype: {case_dir}/grype_ocp_scan.json'
+  - heading: Pod Security Admission (PSA)
+    body: '- PSA enforce labels: {case_dir}/psa_labels.json
+
+      - Privileged PSA namespaces: {case_dir}/psa_privileged_ns.txt
+
+      - Security Profiles: {case_dir}/security_profiles.txt
+
+      - SPO pods: {case_dir}/spo_pods.txt'
+postflight:
+- id: cleanup
+  type: notify
+  level: success
+  message: OpenShift security assessment v3 complete — results in {case_dir}. Review
+    findings and generate report.
+  name: Cleanup

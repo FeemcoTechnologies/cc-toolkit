@@ -23,13 +23,14 @@ import traceback
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file, session
+from flask import Flask, jsonify, render_template, request, send_file, session, redirect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from modules.case_manager import CaseManager
-from modules.config import CASES_DIR, load_config
+from modules.config import CASES_DIR, load_config, BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
 from modules.findings_db import FindingsDB
+from modules.tag_refs import resolve as resolve_tag, search as search_tags
 from modules.job_queue import get_job_manager, run_in_thread
 try:
     from modules.ws_terminal import WSTerminalServer
@@ -39,7 +40,11 @@ except ImportError:
     WSTerminalServer = None  # type: ignore
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("CC_DASHBOARD_SECRET", secrets.token_hex(32))
+# Persistent secret key so sessions survive restarts
+_SECRET_FILE = Path(__file__).with_name(".dashboard_secret")
+if not _SECRET_FILE.exists():
+    _SECRET_FILE.write_text(secrets.token_hex(32))
+app.config["SECRET_KEY"] = os.environ.get("CC_DASHBOARD_SECRET", _SECRET_FILE.read_text().strip())
 
 # ---------------------------------------------------------------------------
 # Config
@@ -50,12 +55,17 @@ CFG = load_config()
 
 _ws_port = int(os.environ.get("CC_WS_PORT", 5001))
 DASHBOARD_CONFIG = {
-    "jupyter_url": CFG.get("jupyter_url", "http://192.168.56.104:8888"),
-    "caido_url": CFG.get("caido_url", "http://192.168.56.1:8080"),
+    "jupyter_url": CFG.get("jupyter_url", "http://127.0.0.1:8888"),
+    "caido_url": CFG.get("caido_url", "http://127.0.0.1:8080"),
+    "ai_tunnel_target": CFG.get("ai_tunnel_target", "127.0.0.1"),
     "listen_host": CFG.get("dashboard_host", "0.0.0.0"),
     "listen_port": CFG.get("dashboard_port", 5000),
     "debug": CFG.get("dashboard_debug", False),
     "ws_port": _ws_port,
+    # Burp Suite Pro
+    "burp_api_url": CFG.get("burp_api_url", BURP_API_URL),
+    "burp_api_key": CFG.get("burp_api_key", BURP_API_KEY),
+    "burp_proxy_url": CFG.get("burp_proxy_url", BURP_PROXY_URL),
 }
 
 API_KEY = CFG.get("dashboard_api_key", "")
@@ -120,14 +130,21 @@ def log_debug(level: str, msg: str):
 # Optional API key auth
 # ---------------------------------------------------------------------------
 def _check_auth():
-    """Check API key header OR session CSRF token."""
+    """Check API key header OR session CSRF token (header or JSON body)."""
     if not API_KEY:
         return True
     key = request.headers.get("X-API-Key", "")
     if key == API_KEY:
         return True
-    csrf = request.headers.get("X-CSRF-Token", "")
-    if csrf and csrf == session.get("_csrf_token", ""):
+    csrf_hdr = request.headers.get("X-CSRF-Token", "")
+    sess_token = session.get("_csrf_token", "")
+    log_debug("AUTH", f"key={key!r} csrf_hdr={csrf_hdr[:16]!r} sess={sess_token[:16]!r}")
+    if csrf_hdr and csrf_hdr == sess_token:
+        return True
+    body = request.get_json(silent=True) or {}
+    body_token = body.get("csrf_token", "")
+    log_debug("AUTH", f"body_token={body_token[:16]!r} sess={sess_token[:16]!r}")
+    if body_token and body_token == sess_token:
         return True
     return False
 
@@ -170,8 +187,8 @@ def csrf_required(f):
                 return f(*a, **kw)
 
             token = None
-            # Check form data first (HTML forms)
-            if request.content_type and 'application/x-www-form-urlencoded' in request.content_type:
+            # Check form data first (HTML forms — both urlencoded and multipart)
+            if request.form:
                 token = request.form.get('csrf_token')
             # Check JSON body
             elif request.is_json:
@@ -216,11 +233,9 @@ def _run_cc_command(cmd_str: str) -> dict:
     try:
         parts = shlex.split(cmd_str)
         if parts and parts[0] not in _CC_SUBCOMMANDS and parts[0] not in ("cc", "python3", "python"):
-            try:
-                r = subprocess.run(parts, capture_output=True, text=True, timeout=180)
-            except FileNotFoundError:
-                # Fallback: run via shell for built-ins (echo, dir on Windows)
-                r = subprocess.run(cmd_str, capture_output=True, text=True, timeout=180, shell=True)
+            if not shutil.which(parts[0]):
+                return {"rc": -1, "stdout": "", "stderr": f"Command not found: {parts[0]}"}
+            r = subprocess.run(parts, capture_output=True, text=True, timeout=180)
             return {"rc": r.returncode, "stdout": r.stdout, "stderr": r.stderr}
         r = subprocess.run(
             [sys.executable, str(CC_DIR / "kali-command-center.py")] + parts,
@@ -283,6 +298,8 @@ _DEFAULT_DASHBOARD_WIDGETS = [
     {"id": "case-overview", "enabled": True, "title": "Case Overview", "width": "full"},
     {"id": "top-cves", "enabled": True, "title": "Top CVEs", "width": "half"},
     {"id": "finding-trend", "enabled": False, "title": "Findings Over Time", "width": "half"},
+    {"id": "recent-activity", "enabled": True, "title": "Recent Activity", "width": "half"},
+    {"id": "recent-loot", "enabled": True, "title": "Recent Loot", "width": "half"},
 ]
 
 
@@ -555,8 +572,14 @@ def api_case_scan_nmap(case_id: str):
     subcommand = data.get("subcommand", "")
     target = data.get("target", "")
     ports = data.get("ports", "")
-    if not subcommand or not target:
-        return jsonify({"error": "subcommand and target required"}), 400
+    timeout = int(data.get("timeout", 7200))
+    VALID = ["init-tcp", "init-udp", "full-tcp", "full-ack",
+             "service-version", "versions-tcp", "versions-udp",
+             "vuln", "pipeline", "parse", "custom"]
+    if subcommand not in VALID:
+        return jsonify({"error": f"Unknown subcommand '{subcommand}'. Valid: {', '.join(VALID)}"}), 400
+    if not target:
+        return jsonify({"error": "target required"}), 400
     import subprocess, sys, json as _json
     from pathlib import Path as _Path
     script = str(_Path(__file__).resolve().parent.parent / "kali-command-center.py")
@@ -569,10 +592,9 @@ def api_case_scan_nmap(case_id: str):
     if ports:
         cmd.extend(["--ports", ports])
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         output = r.stdout[-3000:] if len(r.stdout) > 3000 else r.stdout
         err = r.stderr[-500:] if r.stderr else ""
-        # Refresh case info to get updated evidence list
         refreshed = cm.info(case_id)
         return jsonify({
             "status": "ok" if r.returncode == 0 else "error",
@@ -583,7 +605,7 @@ def api_case_scan_nmap(case_id: str):
             "evidence_count": len(refreshed.get("evidence", [])),
         })
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Scan timed out after 2 hours"}), 504
+        return jsonify({"error": f"Scan timed out after {timeout}s"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1003,12 +1025,15 @@ def api_findings_stats():
 @app.route("/api/findings/list")
 @require_api_key
 def api_findings_list():
-    """All findings across all cases with case context, for the global findings page."""
+    """All findings across all cases with case context. Supports ?case_id= filter."""
     cm = CaseManager()
+    filter_case_id = request.args.get("case_id", "").strip()
     cases = cm.list_cases()
     results = []
     for c in cases:
         cid = c.get("case_id", "")
+        if filter_case_id and cid != filter_case_id:
+            continue
         ctitle = c.get("client", cid)
         try:
             db = FindingsDB(cm._case_path(cid))
@@ -1069,6 +1094,18 @@ def findings_page():
     return render_template("findings.html", config=DASHBOARD_CONFIG)
 
 
+@app.route("/case/<case_id>/findings")
+@require_api_key_html
+def case_findings_page(case_id: str):
+    """Show only findings for a specific case."""
+    cm = CaseManager()
+    try:
+        info = cm.info(case_id)
+    except Exception:
+        info = {"case_id": case_id, "client": case_id, "type": "pentest"}
+    return render_template("findings.html", case=info, config=DASHBOARD_CONFIG)
+
+
 @app.route("/api/cases/create", methods=["POST"])
 @require_api_key
 @csrf_required
@@ -1101,7 +1138,7 @@ def api_case_goals(case_id: str):
 @require_api_key
 @csrf_required
 def api_case_goal_add(case_id: str):
-    goal = request.json.get("goal", "")
+    goal = (request.json or {}).get("goal", "")
     if not goal:
         return jsonify({"error": "Goal required"}), 400
     cm = CaseManager()
@@ -1120,7 +1157,7 @@ def api_ir_timeline(case_id: str):
 @require_api_key
 @csrf_required
 def api_ir_timeline_add(case_id: str):
-    data = request.json
+    data = request.json or {}
     cm = CaseManager()
     r = cm.ir_timeline_add(case_id, timestamp=data.get("timestamp", ""),
                             event=data.get("event", ""),
@@ -1144,9 +1181,10 @@ def api_ir_containment(case_id: str):
 
 
 @app.route("/api/cc", methods=["POST"])
+@csrf_required
 @require_api_key
 def api_cc_command():
-    cmd = request.json.get("command", "")
+    cmd = (request.json or {}).get("command", "")
     if not cmd:
         return jsonify({"error": "Command required"}), 400
     result = _run_cc_command(cmd)
@@ -1172,8 +1210,9 @@ def case_notes(case_id: str):
 def api_notes(case_id: str):
     cm = CaseManager()
     if request.method == "POST":
-        body = request.json.get("body", "")
-        tags = request.json.get("tags", [])
+        j = request.json or {}
+        body = j.get("body", "")
+        tags = j.get("tags", [])
         r = cm.add_note(case_id, body, tags)
         return jsonify(r or {"error": "Case not found"})
     return jsonify(cm.get_notes(case_id))
@@ -1222,7 +1261,13 @@ def api_evidence_upload(case_id: str):
     if request.content_length and request.content_length > max_size:
         return jsonify({"error": f"File too large ({request.content_length:,} bytes)"}), 400
     temp_path = temp_dir / safe_name
-    f.save(str(temp_path))
+    if request.content_length is None:
+        f.save(str(temp_path))
+        if temp_path.stat().st_size > max_size:
+            temp_path.unlink(missing_ok=True)
+            return jsonify({"error": "File too large"}), 400
+    else:
+        f.save(str(temp_path))
     cm = CaseManager()
     rec = cm.add_evidence(case_id, str(temp_path), category, description)
     temp_path.unlink(missing_ok=True)
@@ -1240,6 +1285,25 @@ def api_evidence_verify(case_id: str):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(results)
+
+
+@app.route("/api/case/<case_id>/evidence/delete", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_evidence_delete(case_id: str):
+    """Delete an evidence record by filename."""
+    cm = CaseManager()
+    try:
+        info = cm.info(case_id)
+    except Exception:
+        return jsonify({"error": "Case not found"}), 404
+    filename = (request.json or {}).get("filename", "").strip()
+    if not filename:
+        return jsonify({"error": "filename required"}), 400
+    deleted = cm.delete_evidence(case_id, filename)
+    if deleted:
+        return jsonify({"status": "deleted", "filename": filename})
+    return jsonify({"error": "Evidence not found"}), 404
 
 
 # ---------------------------------------------------------------------------
@@ -1443,7 +1507,7 @@ def api_case_file_delete(case_id: str):
         info = cm.info(case_id)
     except Exception:
         return jsonify({"error": "Case not found"}), 404
-    file_path = request.json.get("path", "")
+    file_path = (request.json or {}).get("path", "")
     case_dir = cm._case_path(case_id)
     target = (case_dir / file_path).resolve()
     if not str(target).startswith(str(case_dir.resolve()) + os.sep):
@@ -1627,6 +1691,9 @@ def api_case_finding_create(case_id: str):
     if not title:
         return jsonify({"error": "title required"}), 400
     db = FindingsDB(cm._case_path(case_id))
+    tags = data.get("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
     finding = db.add(
         title=title,
         severity=data.get("severity", "medium"),
@@ -1637,6 +1704,10 @@ def api_case_finding_create(case_id: str):
         cwe=data.get("cwe", ""),
         impact=data.get("impact", ""),
         poc=data.get("poc", ""),
+        cvss_score=data.get("cvss_score"),
+        cvss_vector=data.get("cvss_vector", ""),
+        tags=tags,
+        affected_hosts=data.get("affected_hosts", ""),
     )
     # Override default status if provided
     new_status = data.get("status", "")
@@ -1687,6 +1758,7 @@ def api_case_finding_detail(case_id: str, finding_id: str):
 
 @app.route("/api/case/<case_id>/finding/<finding_id>/update",
            methods=["POST"])
+@csrf_required
 @require_api_key
 def api_case_finding_update(case_id: str, finding_id: str):
     cm = CaseManager()
@@ -1700,11 +1772,85 @@ def api_case_finding_update(case_id: str, finding_id: str):
     if not finding:
         return jsonify({"error": "Finding not found"}), 404
     allowed = {"title", "severity", "status", "description", "remediation",
-               "impact", "poc", "source", "cve", "cwe", "references"}
+               "impact", "poc", "source", "cve", "cwe", "references",
+               "cvss_score", "cvss_vector", "tags", "affected_hosts",
+               "command_output", "evidence_refs"}
     kwargs = {k: v for k, v in data.items() if k in allowed}
     log_debug("INFO", f"Updating finding {case_id}/{finding_id}: {kwargs}")
     db.update(finding_id, **kwargs)
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/case/<case_id>/finding/<finding_id>/tags/add",
+           methods=["POST"])
+@require_api_key
+@csrf_required
+def api_case_finding_tag_add(case_id: str, finding_id: str):
+    cm = CaseManager()
+    try:
+        info = cm.info(case_id)
+    except Exception:
+        return jsonify({"error": "Case not found"}), 404
+    tag = (request.json or {}).get("tag", "").strip()
+    if not tag:
+        return jsonify({"error": "tag required"}), 400
+    db = FindingsDB(cm._case_path(case_id))
+    f = db.add_tag(finding_id, tag)
+    if not f:
+        return jsonify({"error": "Finding not found"}), 404
+    return jsonify({"status": "ok", "finding": f})
+
+
+@app.route("/api/case/<case_id>/finding/<finding_id>/tags/remove",
+           methods=["POST"])
+@require_api_key
+@csrf_required
+def api_case_finding_tag_remove(case_id: str, finding_id: str):
+    cm = CaseManager()
+    try:
+        info = cm.info(case_id)
+    except Exception:
+        return jsonify({"error": "Case not found"}), 404
+    tag = (request.json or {}).get("tag", "").strip()
+    if not tag:
+        return jsonify({"error": "tag required"}), 400
+    db = FindingsDB(cm._case_path(case_id))
+    f = db.remove_tag(finding_id, tag)
+    if not f:
+        return jsonify({"error": "Finding not found"}), 404
+    return jsonify({"status": "ok", "finding": f})
+
+
+@app.route("/api/case/<case_id>/tags")
+@require_api_key
+def api_case_tags(case_id: str):
+    cm = CaseManager()
+    try:
+        info = cm.info(case_id)
+    except Exception:
+        return jsonify({"error": "Case not found"}), 404
+    db = FindingsDB(cm._case_path(case_id))
+    return jsonify(db.tags())
+
+
+@app.route("/api/tags/search")
+@require_api_key
+def api_tags_search():
+    q = request.args.get("q", "").strip()
+    namespace = request.args.get("namespace", "").strip()
+    if not q:
+        return jsonify([])
+    results = search_tags(q, namespace)
+    return jsonify(results)
+
+
+@app.route("/api/tags/resolve")
+@require_api_key
+def api_tags_resolve():
+    tag = request.args.get("tag", "").strip()
+    if not tag:
+        return jsonify({"error": "tag required"}), 400
+    return jsonify(resolve_tag(tag))
 
 
 @app.route("/api/case/<case_id>/finding/<finding_id>/delete",
@@ -2143,6 +2289,7 @@ def api_runbook_run(filename: str):
     if not target:
         return jsonify({"error": "target required"}), 400
     case_id_input = data.get("case_id", "").strip() or None
+    vars_override = data.get("vars", {}) or {}
 
     resolved_case_id = case_id_input or f"runbook-{filename.replace('.yaml','').replace('.yml','')}-{datetime.datetime.now(datetime.timezone.utc):%Y%m%d_%H%M%S}"
 
@@ -2173,7 +2320,7 @@ def api_runbook_run(filename: str):
             results = engine.run_file(
                 filename, targets=[target],
                 case_id=resolved_case_id,
-                vars_override={},
+                vars_override=vars_override,
                 verbose=False,
             )
             if _progress:
@@ -2469,7 +2616,7 @@ def api_rules_bulk_delete():
 # ---------------------------------------------------------------------------
 
 def _scan_single_rule(rule_format: str, rule_id: str, target: str,
-                      output_dir: str, prog) -> dict:
+                      output_dir: str, prog, **kwargs) -> dict:
     """Run a scan with a single rule. Returns results dict."""
     rm = _get_rm()
     rule = rm.get_rule(rule_format, rule_id)
@@ -2488,6 +2635,10 @@ def _scan_single_rule(rule_format: str, rule_id: str, target: str,
     elif rule_format == "semgrep":
         from modules.tool_wrappers import semgrep_scan
         result = semgrep_scan(filepath, target)
+    elif rule_format == "codeql":
+        from modules.tool_wrappers import codeql_scan
+        language = kwargs.get("language", "")
+        result = codeql_scan(filepath, target, language=language)
     else:
         return {"error": f"Scan not supported for format: {rule_format}"}
     return result
@@ -2519,6 +2670,13 @@ def _scan_all_rules(rule_format: str, target: str,
             return {"error": "Semgrep rules directory not found"}
         from modules.tool_wrappers import semgrep_scan
         result = semgrep_scan(str(root), target)
+    elif rule_format == "codeql":
+        root = RULE_ROOTS.get("codeql")
+        if not root or not root.exists():
+            return {"error": "CodeQL rules directory not found"}
+        from modules.tool_wrappers import codeql_scan
+        # CodeQL batch scan not supported — must pick a query for a specific language
+        result = {"error": "Use single-rule scan for CodeQL (requires language parameter)"}
     else:
         return {"error": f"Scan not supported for format: {rule_format}"}
     return result
@@ -2543,8 +2701,9 @@ def api_rule_scan(format_name: str, rule_id: str):
         try:
             if _progress:
                 _progress(current_step=1, message=f"Loading rule {rule_id}...")
+            language = data.get("language", "")
             result = _scan_single_rule(format_name, rule_id, target,
-                                       output_dir or str(Path.cwd()), _progress)
+                                       output_dir or str(Path.cwd()), _progress, language=language)
             if _progress:
                 _progress(current_step=4,
                           message=f"Scan complete: {result.get('finding_count', result.get('total', 'done'))} results")
@@ -2616,14 +2775,101 @@ def case_report(case_id: str):
 @require_api_key
 @csrf_required
 def api_report_generate(case_id: str):
-    fmt = request.json.get("format", "md")
+    data = request.json or {}
+    fmt = data.get("format", "md")
+    markdown_override = data.get("markdown", "")
+    html_override = data.get("html", "")
     cm = CaseManager()
 
+    case_dir = cm._case_path(case_id)
+    from modules.report_generator import (generate_obsidian_report, _md_to_html_full,
+                                          _convert_md_to_docx, _convert_md_to_pdf,
+                                          _render_report_markdown, _load_case,
+                                          _logo_base64_tag, _add_table_th_styles,
+                                          _add_poc_inline_styles)
+
+    # If raw HTML provided (from preview iframe), handle directly for DOCX/PDF/HTML
+    if html_override:
+        if fmt == "html":
+            # Preview HTML has JS PoC fixes baked in; add table header inline styles for pandoc compat
+            styled = _add_table_th_styles(html_override)
+            styled = _add_poc_inline_styles(styled)
+            return jsonify({"status": "ok", "output": styled})
+        elif fmt in ("docx", "pdf"):
+            try:
+                import tempfile
+                # Apply inline table header styles so pandoc picks them up
+                styled = _add_table_th_styles(html_override)
+                tmp_html = tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8")
+                tmp_html.write(styled)
+                tmp_path = Path(tmp_html.name)
+                tmp_html.close()
+                out_path = tmp_path.with_suffix(f".{fmt}")
+                if fmt == "docx":
+                    subprocess.run(["pandoc", str(tmp_path), "-o", str(out_path), "--from", "html"],
+                                   capture_output=True, text=True, timeout=60)
+                else:
+                    from weasyprint import HTML
+                    HTML(filename=str(tmp_path)).write_pdf(str(out_path))
+                if out_path.exists():
+                    mimetypes = {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                 "pdf": "application/pdf"}
+                    mime = mimetypes.get(fmt, "application/octet-stream")
+                    return send_file(str(out_path), mimetype=mime, as_attachment=True,
+                                     download_name=f"report-{case_id}.{fmt}")
+                return jsonify({"error": "Conversion failed", "job_id": ""}), 500
+            except Exception as e:
+                return jsonify({"error": str(e), "job_id": ""}), 500
+        # For MD format, fall through to markdownify conversion below
+
+    # If raw HTML provided (for MD format only), convert to markdown via markdownify
+    if html_override and fmt == "md":
+        from markdownify import markdownify as _md_from_html
+        markdown_override = _md_from_html(html_override, heading_style="ATX")
+
+    # If markdown provided directly (or converted from HTML for MD format), process it
+    if markdown_override:
+        try:
+            if fmt == "md":
+                return jsonify({"status": "ok", "output": markdown_override})
+            elif fmt == "html":
+                logo_tag = _logo_base64_tag(case_dir)
+                md_with_logo = f"{logo_tag}\n\n{markdown_override}" if logo_tag else markdown_override
+                html = _md_to_html_full(md_with_logo, f"Report — {case_id}")
+                html = _add_table_th_styles(html)
+                html = _add_poc_inline_styles(html)
+                return jsonify({"status": "ok", "output": html})
+            elif fmt in ("docx", "pdf"):
+                import tempfile
+                logo_tag = _logo_base64_tag(case_dir)
+                md_for_export = f"{logo_tag}\n\n{markdown_override}" if logo_tag else markdown_override
+                tmp = tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False)
+                tmp_path = Path(tmp.name)
+                tmp.close()
+                if fmt == "docx":
+                    _convert_md_to_docx(md_for_export, tmp_path, f"Report — {case_id}", case_dir=case_dir)
+                else:
+                    _convert_md_to_pdf(md_for_export, tmp_path, f"Report — {case_id}", case_dir=case_dir)
+                if tmp_path.exists():
+                    mimetypes = {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                 "pdf": "application/pdf"}
+                    mime = mimetypes.get(fmt, "application/octet-stream")
+                    return send_file(str(tmp_path), mimetype=mime, as_attachment=True,
+                                     download_name=f"report-{case_id}.{fmt}")
+                return jsonify({"error": "Conversion failed", "job_id": ""}), 500
+        except Exception as e:
+            return jsonify({"error": str(e), "job_id": ""}), 500
+
+    # For raw markdown, use _render_report_markdown directly (avoids file-path bugs)
+    if fmt == "md":
+        case_data, findings = _load_case(case_dir)
+        md = _render_report_markdown(case_data, findings, case_dir=case_dir)
+        return jsonify({"status": "ok", "output": md})
+
+    # Full report generation from case data (original flow for html/docx/pdf)
     job_id = _jm.create("report", f"Generate {fmt.upper()} report for {case_id}", total_steps=5)
     prog = _make_job_progress(case_id, job_id)
     try:
-        from modules.report_generator import generate_obsidian_report
-        case_dir = cm._case_path(case_id)
         prog(current_step=1, message="Loading case data...")
         result = generate_obsidian_report(case_dir, formats=[fmt])
         prog(current_step=4, message="Rendering output...")
@@ -2633,11 +2879,16 @@ def api_report_generate(case_id: str):
         if output_path and output_path.exists():
             if fmt in ("md", "html"):
                 content = output_path.read_text(encoding="utf-8", errors="replace")
+                _jm.complete(job_id, str(output_path))
+                return jsonify({"status": "ok", "output": content,
+                                "file": str(output_path), "job_id": job_id})
             else:
-                content = f"Generated: {output_path.name} ({output_path.stat().st_size} bytes)"
-            _jm.complete(job_id, str(output_path))
-            return jsonify({"status": "ok", "output": content,
-                            "file": str(output_path), "job_id": job_id})
+                mimetypes = {"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                             "pdf": "application/pdf"}
+                mime = mimetypes.get(fmt, "application/octet-stream")
+                _jm.complete(job_id, str(output_path))
+                return send_file(str(output_path), mimetype=mime, as_attachment=True,
+                                 download_name=f"report-{case_id}.{fmt}")
         _jm.complete(job_id, str(output_path) if output_path else "")
         return jsonify({"status": "ok", "output": str(output_path) if output_path else "Report generated",
                         "job_id": job_id})
@@ -2831,7 +3082,7 @@ def api_ai_opencode_output():
 @require_api_key_html
 def ai_dashboard():
     """AI Infrastructure dashboard page."""
-    return render_template("ai.html", config=DASHBOARD_CONFIG)
+    return render_template("ai.html", config=DASHBOARD_CONFIG, ai_tunnel_target=DASHBOARD_CONFIG["ai_tunnel_target"])
 
 
 # ---------------------------------------------------------------------------
@@ -2920,7 +3171,7 @@ def serve_case_file(case_id: str, subpath: str):
     case_dir = cm._case_path(case_id)
     # Prevent path traversal beyond the case directory
     file_path = (case_dir / subpath).resolve()
-    if not str(file_path).startswith(str(case_dir.resolve())):
+    if not str(file_path).startswith(str(case_dir.resolve()) + os.sep):
         return "Forbidden", 403
     if not file_path.exists() or not file_path.is_file():
         return "File not found", 404
@@ -3213,6 +3464,7 @@ import yaml
 PROMPTS_DIR = CC_DIR / "prompts"
 
 @app.route("/api/prompts", methods=["GET", "POST"])
+@csrf_required
 @require_api_key
 def api_prompts():
     if request.method == "POST":
@@ -3251,6 +3503,7 @@ def api_prompts():
 
 
 @app.route("/api/prompts/<name>", methods=["PUT", "DELETE"])
+@csrf_required
 @require_api_key
 def api_prompt_detail(name):
     path = PROMPTS_DIR / f"{name}.yaml"
@@ -3387,6 +3640,542 @@ def api_dashboard_layout_save():
     widgets = data.get("widgets", [])
     _save_dashboard_layout(widgets)
     return jsonify({"status": "saved"})
+
+
+# ---------------------------------------------------------------------------
+# Loot Database
+# ---------------------------------------------------------------------------
+
+_LOOT = None
+
+def _get_loot_db():
+    global _LOOT
+    if _LOOT is None:
+        from modules.tool_wrappers import LootDB
+        from modules.constants import CC_DIR
+        _LOOT = LootDB(CC_DIR / "loot.db")
+    return _LOOT
+
+
+@app.route("/loot")
+@require_api_key_html
+def loot_page():
+    return render_template("loot.html", config=DASHBOARD_CONFIG)
+
+
+@app.route("/api/loot")
+@require_api_key
+def api_loot_list():
+    q = request.args.get("q", "")
+    if q:
+        results = _get_loot_db().search(q)
+        return jsonify(results)
+    creds = _get_loot_db().list_credentials(limit=200)
+    return jsonify({"credentials": creds})
+
+
+@app.route("/api/loot", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_loot_add():
+    data = request.json or {}
+    source = data.get("source", "").strip()
+    target = data.get("target", "").strip()
+    username = data.get("username", "").strip()
+    if not source or not target or not username:
+        return jsonify({"error": "source, target, username required"}), 400
+    db = _get_loot_db()
+    cid = db.add_credential(
+        source=source, target=target, username=username,
+        password=data.get("password", ""),
+        hash=data.get("hash", ""), hash_type=data.get("hash_type", ""),
+        domain=data.get("domain", ""), protocol=data.get("protocol", ""),
+        port=int(data["port"]) if data.get("port") else 0,
+        notes=data.get("notes", ""),
+    )
+    return jsonify({"status": "ok", "id": cid}), 201
+
+
+@app.route("/api/loot/<int:cred_id>", methods=["DELETE"])
+@require_api_key
+@csrf_required
+def api_loot_delete(cred_id: int):
+    db = _get_loot_db()
+    conn = db._conn
+    cur = conn.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
+    conn.commit()
+    if cur.rowcount == 0:
+        return jsonify({"error": "Credential not found"}), 404
+    return jsonify({"status": "deleted"})
+
+
+@app.route("/api/loot/<int:cred_id>", methods=["PUT"])
+@require_api_key
+@csrf_required
+def api_loot_update(cred_id: int):
+    """Update a single field on a loot credential (inline editing)."""
+    data = request.get_json(silent=True) or {}
+    field = data.get("field")
+    value = data.get("value")
+    if not field or field not in ("source", "target", "username", "password", "hash", "hash_type", "protocol", "port", "domain", "notes"):
+        return jsonify({"error": "Invalid field"}), 400
+    db = _get_loot_db()
+    conn = db._conn
+    if field == "port":
+        try:
+            value = int(value) if value else None
+        except (ValueError, TypeError):
+            return jsonify({"error": "Port must be an integer"}), 400
+    cur = conn.execute(f"UPDATE credentials SET {field} = ? WHERE id = ?", (value, cred_id))
+    conn.commit()
+    if cur.rowcount == 0:
+        return jsonify({"error": "Credential not found"}), 404
+    return jsonify({"status": "updated"})
+
+
+@app.route("/api/loot/tokens")
+@require_api_key
+def api_loot_tokens():
+    db = _get_loot_db()
+    rows = db._conn.execute(
+        "SELECT * FROM tokens ORDER BY discovered DESC LIMIT 200"
+    ).fetchall()
+    return jsonify([dict(zip(["id","source","token_type","token_value","target","expires","notes","discovered"], r)) for r in rows])
+
+
+@app.route("/api/loot/tokens", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_loot_token_add():
+    data = request.json or {}
+    source = data.get("source", "").strip()
+    token_type = data.get("token_type", "").strip()
+    token_value = data.get("token_value", "").strip()
+    if not source or not token_type or not token_value:
+        return jsonify({"error": "source, token_type, token_value required"}), 400
+    db = _get_loot_db()
+    tid = db.add_token(
+        source=source, token_type=token_type, token_value=token_value,
+        target=data.get("target", ""), expires=data.get("expires", ""),
+        notes=data.get("notes", ""),
+    )
+    return jsonify({"status": "ok", "id": tid}), 201
+
+
+@app.route("/api/loot/tokens/<int:token_id>", methods=["DELETE"])
+@require_api_key
+@csrf_required
+def api_loot_token_delete(token_id: int):
+    db = _get_loot_db()
+    cur = db._conn.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+    db._conn.commit()
+    if cur.rowcount == 0:
+        return jsonify({"error": "Token not found"}), 404
+    return jsonify({"status": "deleted"})
+
+
+@app.route("/api/loot/sessions")
+@require_api_key
+def api_loot_sessions():
+    db = _get_loot_db()
+    rows = db._conn.execute(
+        "SELECT * FROM sessions ORDER BY discovered DESC LIMIT 200"
+    ).fetchall()
+    return jsonify([dict(zip(["id","source","session_id","target","protocol","data","discovered"], r)) for r in rows])
+
+
+@app.route("/api/loot/sessions", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_loot_session_add():
+    data = request.json or {}
+    source = data.get("source", "").strip()
+    session_id = data.get("session_id", "").strip()
+    if not source or not session_id:
+        return jsonify({"error": "source, session_id required"}), 400
+    db = _get_loot_db()
+    sid = db.add_session(
+        source=source, session_id=session_id,
+        target=data.get("target", ""), protocol=data.get("protocol", ""),
+        data=data.get("data", ""),
+    )
+    return jsonify({"status": "ok", "id": sid}), 201
+
+
+@app.route("/api/loot/sessions/<int:sid>", methods=["DELETE"])
+@require_api_key
+@csrf_required
+def api_loot_session_delete(sid: int):
+    db = _get_loot_db()
+    cur = db._conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+    db._conn.commit()
+    if cur.rowcount == 0:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify({"status": "deleted"})
+
+
+# ---------------------------------------------------------------------------
+# API Documentation
+# ---------------------------------------------------------------------------
+@app.route("/docs")
+@require_api_key_html
+def docs_page():
+    return render_template("docs.html", config=DASHBOARD_CONFIG)
+
+
+@app.route("/api/routes")
+@require_api_key
+def api_routes():
+    """Return all registered API routes grouped by category for documentation."""
+    import re as _re
+    skip_patterns = _re.compile(r"^(/static/|/cases/)")
+    groups = {}
+    for rule in sorted(app.url_map.iter_rules(), key=lambda r: r.rule):
+        path = rule.rule
+        if skip_patterns.match(path) or path == "/api/routes":
+            continue
+        endpoint = rule.endpoint
+        methods = sorted(m for m in rule.methods if m not in ("HEAD", "OPTIONS"))
+        if not methods:
+            continue
+        # Get docstring from view function
+        fn = app.view_functions.get(endpoint)
+        doc = (fn.__doc__ or "").strip().split("\n")[0] if fn else ""
+        is_api = path.startswith("/api/")
+        # Derive category from path
+        parts = [p for p in path.split("/") if p]
+        if is_api and len(parts) >= 2:
+            cat = parts[1].capitalize()
+        elif not is_api and parts:
+            cat = "Pages"
+        else:
+            cat = "Other"
+        groups.setdefault(cat, []).append({
+            "path": path,
+            "methods": methods,
+            "description": doc[:120],
+        })
+    # Sort categories
+    result = []
+    for cat in sorted(groups, key=lambda c: (c != "Pages", c)):
+        result.append({"category": cat, "routes": groups[cat]})
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# MCP Resources — browse and read MCP resources from the web UI
+# ---------------------------------------------------------------------------
+
+_RESOURCE_CATALOG = [
+    {"uri": "cc://cases/list", "title": "Case List", "description": "All cases with status, type, creation date", "category": "Cases"},
+    {"uri": "cc://cases/{case_id}", "title": "Case Detail", "description": "Full case info including findings summary, scope, tasks, and file sizes", "category": "Cases"},
+    {"uri": "cc://cases/{case_id}/findings", "title": "Case Findings", "description": "All structured findings for a case", "category": "Cases"},
+    {"uri": "cc://cases/{case_id}/notes", "title": "Case Notes", "description": "All case notes with timestamps and tags", "category": "Cases"},
+    {"uri": "cc://cases/{case_id}/scope", "title": "Case Scope", "description": "In-scope and out-of-scope targets", "category": "Cases"},
+    {"uri": "cc://cases/{case_id}/tasks", "title": "Case Tasks", "description": "Task checklist with completion status and priority", "category": "Cases"},
+    {"uri": "cc://cases/{case_id}/runbook/log", "title": "Runbook Execution Log", "description": "Runbook/playbook execution results", "category": "Cases"},
+    {"uri": "cc://flashcards", "title": "Flashcard Deck List", "description": "All available flashcard decks with card counts", "category": "Flashcards"},
+    {"uri": "cc://flashcards/{name}", "title": "Flashcard Deck Detail", "description": "Full flashcard deck with all questions and answers", "category": "Flashcards"},
+    {"uri": "cc://playbooks", "title": "Playbook List", "description": "All available YAML playbooks/runbooks", "category": "Playbooks"},
+    {"uri": "cc://prompts", "title": "Prompt Template List", "description": "All available AI prompt templates", "category": "Prompts"},
+    {"uri": "cc://findings/stats", "title": "Findings Statistics", "description": "Aggregated findings statistics across all cases", "category": "Findings"},
+    {"uri": "cc://loot/credentials", "title": "Loot Credentials", "description": "All captured credentials in the loot database", "category": "Loot"},
+    {"uri": "cc://loot/tokens", "title": "Loot Tokens", "description": "All captured tokens in the loot database", "category": "Loot"},
+    {"uri": "cc://loot/sessions", "title": "Loot Sessions", "description": "All captured sessions in the loot database", "category": "Loot"},
+]
+
+
+@app.route("/mcp-resources")
+@require_api_key_html
+def mcp_resources_page():
+    return render_template("mcp_resources.html", config=DASHBOARD_CONFIG)
+
+
+@app.route("/api/mcp/resources")
+@require_api_key
+def api_mcp_resources_list():
+    return jsonify(_RESOURCE_CATALOG)
+
+
+@app.route("/api/mcp/resources/read", methods=["POST"])
+@require_api_key
+def api_mcp_resources_read():
+    uri = (request.json or {}).get("uri", "")
+    if not uri:
+        return jsonify({"error": "uri parameter required"}), 400
+    try:
+        content = _read_mcp_resource(uri)
+        return jsonify({"uri": uri, "content": content})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _read_mcp_resource(uri: str) -> str:
+    """Read an MCP resource by URI — shared logic with cc_mcp_server.py."""
+    import yaml
+    from modules.case_manager import CaseManager
+    from modules.constants import CASES_DIR, CC_DIR
+    from modules.findings_db import FindingsDB
+    from modules.tool_wrappers import LootDB
+    import json as _json
+
+    # Static resources (no parameters)
+    static: dict[str, str] = {
+        "cc://cases/list": lambda: _json.dumps(
+            CaseManager().list_cases(), indent=2, default=str
+        ),
+        "cc://flashcards": lambda: _json.dumps([
+            {"id": f.stem, "title": (yaml.safe_load(f.read_text()) or {}).get("title", f.stem),
+             "description": (yaml.safe_load(f.read_text()) or {}).get("description", ""),
+             "card_count": len((yaml.safe_load(f.read_text()) or {}).get("cards", []))}
+            for f in sorted((CC_DIR / "flashcards").glob("*.yaml"))
+            if (CC_DIR / "flashcards").is_dir()
+        ], indent=2),
+        "cc://playbooks": lambda: _read_mcp_playbooks(),
+        "cc://prompts": lambda: _read_mcp_prompts(),
+        "cc://findings/stats": lambda: _read_mcp_findings_stats(),
+        "cc://loot/credentials": lambda: _read_mcp_loot_credentials(),
+        "cc://loot/tokens": lambda: _read_mcp_loot_tokens(),
+        "cc://loot/sessions": lambda: _read_mcp_loot_sessions(),
+    }
+
+    if uri in static:
+        return static[uri]()
+
+    # Template resources (with parameters)
+    parts = uri.split("/")
+    if uri.startswith("cc://cases/") and len(parts) >= 4:
+        case_id = parts[3]
+        cm = CaseManager()
+        if not cm._manifest_path(case_id).exists():
+            raise ValueError(f"Case '{case_id}' not found.")
+
+        if len(parts) == 4:
+            return _json.dumps(cm.info(case_id), indent=2, default=str)
+        sub = parts[4] if len(parts) > 4 else ""
+
+        if sub == "findings":
+            db = FindingsDB(CASES_DIR / case_id)
+            return _json.dumps(db._read().get("findings", []), indent=2, default=str)
+        elif sub == "notes":
+            return _json.dumps(cm.get_notes(case_id), indent=2, default=str)
+        elif sub == "scope":
+            info = cm.info(case_id)
+            scope = info.get("scope", {}) if info else {}
+            return _json.dumps(scope, indent=2, default=str)
+        elif sub == "tasks":
+            info = cm.info(case_id)
+            tasks = info.get("tasks", []) if info else []
+            return _json.dumps(tasks, indent=2, default=str)
+        elif sub == "runbook" and len(parts) >= 6 and parts[5] == "log":
+            log_path = cm._case_path(case_id) / "runbook-log.json"
+            if not log_path.exists():
+                raise ValueError("No runbook log found for this case.")
+            return _json.dumps(_json.loads(log_path.read_text()), indent=2, default=str)
+
+    if uri.startswith("cc://flashcards/") and len(parts) >= 4:
+        name = parts[3]
+        path = CC_DIR / "flashcards" / f"{name}.yaml"
+        if not path.is_file():
+            raise ValueError(f"Deck '{name}' not found.")
+        return _json.dumps(yaml.safe_load(path.read_text()) or {}, indent=2)
+
+    raise ValueError(f"Unknown resource URI: {uri}")
+
+
+def _read_mcp_playbooks() -> str:
+    import yaml
+    from modules.playbook_engine import RunbookEngine
+    engine = RunbookEngine()
+    books = engine.list_runbooks()
+    results = []
+    for b in sorted(books, key=lambda x: x.name):
+        try:
+            data = yaml.safe_load(b.read_text()) or {}
+            results.append({"name": b.name, "description": (data.get("description") or "")[:120],
+                            "step_count": len(data.get("steps", []))})
+        except Exception:
+            results.append({"name": b.name, "description": "", "step_count": 0})
+    import json as _json
+    return _json.dumps(results, indent=2)
+
+
+def _read_mcp_prompts() -> str:
+    import yaml
+    from modules.constants import CC_DIR
+    prompts_dir = CC_DIR / "prompts"
+    if not prompts_dir.is_dir():
+        return "[]"
+    results = []
+    for f in sorted(prompts_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text()) or {}
+            results.append({"id": f.stem, "title": data.get("title", f.stem),
+                            "description": (data.get("description") or "")[:120]})
+        except Exception:
+            results.append({"id": f.stem, "title": f.stem, "description": ""})
+    import json as _json
+    return _json.dumps(results, indent=2)
+
+
+def _read_mcp_findings_stats() -> str:
+    from modules.findings_db import FindingsDB
+    total = 0
+    by_severity = {}
+    by_case = {}
+    if CASES_DIR.is_dir():
+        for case_dir in sorted(CASES_DIR.iterdir()):
+            if case_dir.is_dir():
+                db = FindingsDB(case_dir)
+                data = db._read()
+                findings = data.get("findings", [])
+                if findings:
+                    by_case[case_dir.name] = len(findings)
+                    total += len(findings)
+                    for f in findings:
+                        s = f.get("severity", "unknown")
+                        by_severity[s] = by_severity.get(s, 0) + 1
+    import json as _json
+    return _json.dumps({"total_findings": total, "by_severity": by_severity, "by_case": by_case}, indent=2)
+
+
+def _read_mcp_loot_credentials() -> str:
+    from modules.tool_wrappers import LootDB
+    import json as _json
+    db = LootDB(CC_DIR / "loot.db")
+    try:
+        return _json.dumps(db.list_credentials(limit=999), indent=2, default=str)
+    finally:
+        db.close()
+
+
+def _read_mcp_loot_tokens() -> str:
+    from modules.tool_wrappers import LootDB
+    import json as _json
+    db = LootDB(CC_DIR / "loot.db")
+    try:
+        rows = db._conn.execute("SELECT * FROM tokens ORDER BY discovered DESC").fetchall()
+        results = [dict(zip(["id","source","token_type","token_value","target","expires","notes","discovered"], r)) for r in rows]
+        return _json.dumps(results, indent=2, default=str)
+    finally:
+        db.close()
+
+
+def _read_mcp_loot_sessions() -> str:
+    from modules.tool_wrappers import LootDB
+    import json as _json
+    db = LootDB(CC_DIR / "loot.db")
+    try:
+        rows = db._conn.execute("SELECT * FROM sessions ORDER BY discovered DESC").fetchall()
+        results = [dict(zip(["id","source","session_id","target","protocol","data","discovered"], r)) for r in rows]
+        return _json.dumps(results, indent=2, default=str)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Burp Suite Pro — Web Dashboard
+# ---------------------------------------------------------------------------
+
+def _burp_client():
+    from modules.burp_client import BurpClient
+    return BurpClient(
+        api_url=DASHBOARD_CONFIG["burp_api_url"],
+        api_key=DASHBOARD_CONFIG["burp_api_key"],
+    )
+
+@app.route("/burp")
+@require_api_key_html
+def burp_dashboard():
+    return render_template("burp_dashboard.html", config=DASHBOARD_CONFIG)
+
+@app.route("/burp/scans")
+@require_api_key_html
+def burp_scans():
+    return render_template("burp_scans.html", config=DASHBOARD_CONFIG)
+
+@app.route("/burp/settings")
+@require_api_key_html
+def burp_settings():
+    return render_template("burp_settings.html", config=DASHBOARD_CONFIG)
+
+# --- API endpoints ---
+
+@app.route("/api/burp/health")
+@require_api_key
+def api_burp_health():
+    bc = _burp_client()
+    h = bc.health()
+    v = bc.versions()
+    return jsonify({
+        "health": h,
+        "versions": v,
+        "connected": "status" not in h or h.get("status") == "ok",
+    })
+
+@app.route("/api/burp/scans/<scan_id>")
+@require_api_key
+def api_burp_scan_detail(scan_id: str):
+    bc = _burp_client()
+    status = bc.scan_status(scan_id)
+    issues = bc.issues_list(scan_id)
+    return jsonify({"status": status, "issues": issues})
+
+@app.route("/api/burp/scan/start", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_burp_scan_start():
+    data = request.get_json(force=True) or {}
+    urls = data.get("urls", [])
+    if isinstance(urls, str):
+        urls = [u.strip() for u in urls.split(",") if u.strip()]
+    if not urls:
+        return jsonify({"error": "No URLs provided"}), 400
+    bc = _burp_client()
+    r = bc.scan_start(urls)
+    if "error" in r:
+        return jsonify({"error": r["error"]}), 500
+    return jsonify(r)
+
+@app.route("/api/burp/scan/<scan_id>/stop", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_burp_scan_stop(scan_id: str):
+    bc = _burp_client()
+    r = bc.scan_stop(scan_id)
+    if "error" in r:
+        return jsonify({"error": r["error"]}), 500
+    return jsonify(r)
+
+@app.route("/api/burp/config")
+@require_api_key
+def api_burp_config():
+    return jsonify({
+        "api_url": DASHBOARD_CONFIG["burp_api_url"],
+        "api_key": DASHBOARD_CONFIG["burp_api_key"][:8] + "..." if DASHBOARD_CONFIG["burp_api_key"] else "",
+        "proxy_url": DASHBOARD_CONFIG["burp_proxy_url"],
+    })
+
+@app.route("/api/burp/config", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_burp_config_update():
+    data = request.get_json(force=True) or {}
+    cfg = load_config()
+    if "api_url" in data:
+        cfg["burp_api_url"] = data["api_url"]
+        DASHBOARD_CONFIG["burp_api_url"] = data["api_url"]
+    if "api_key" in data:
+        cfg["burp_api_key"] = data["api_key"]
+        DASHBOARD_CONFIG["burp_api_key"] = data["api_key"]
+    if "proxy_url" in data:
+        cfg["burp_proxy_url"] = data["proxy_url"]
+        DASHBOARD_CONFIG["burp_proxy_url"] = data["proxy_url"]
+    from modules.constants import CONFIG_FILE
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    return jsonify({"status": "ok"})
 
 
 # ---------------------------------------------------------------------------

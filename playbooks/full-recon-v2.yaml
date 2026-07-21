@@ -1,137 +1,181 @@
-# v2 runbook — full external + internal recon pipeline
-name: "Full Reconnaissance"
-description: "Comprehensive recon: port scan, web fingerprint, subdomain enum, URL gathering, vulnerability scan"
-version: "2.0"
-
+name: Full Reconnaissance
+description: 'Comprehensive recon: port scan, web fingerprint, subdomain enum, URL
+  gathering, vulnerability scan'
+version: '2.0'
 vars:
-  wordlist: "/wordlists/webcontent-top-10000.txt"
-  dns_wordlist: "/wordlists/dns-top-10000.txt"
-
+  wordlist: /wordlists/webcontent-top-10000.txt
+  dns_wordlist: /wordlists/dns-top-10000.txt
 preflight:
-  - id: setup
-    type: log
-    message: "Starting recon on {target} (case: {case_id})"
-
+- id: setup
+  type: log
+  message: 'Starting recon on {target} (case: {case_id})'
+  name: Setup
 steps:
-  # ---- Phase 1: Port scan ----
-  - id: port_scan
-    name: "Full port scan"
-    tool: nmap
-    args: ["-sS", "-sV", "-Pn", "-p-", "--open", "--min-rate", "1000",
-           "-oN", "{case_dir}/nmap.txt", "-oX", "{case_dir}/nmap.xml",
-           "{target}"]
-    timeout: 900
-    artifacts: ["{case_dir}/nmap.txt", "{case_dir}/nmap.xml"]
-
-  # ---- Phase 2: Web discovery (conditional) ----
-  - id: web_check
-    name: "Check for web services"
-    type: conditional
-    condition:
-      or:
-        - on_port:80
-        - on_port:443
-        - on_port:8080
-        - on_port:8443
-    then:
-      - id: whatweb
-        name: "WhatWeb fingerprinting"
-        tool: whatweb
-        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb.txt"]
-        timeout: 120
-
-      - id: dir_fuzz
-        name: "Directory fuzzing"
-        tool: ffuf
-        args: ["-u", "http://{target}/FUZZ", "-w", "{wordlist}",
-               "-o", "{case_dir}/ffuf.json", "-of", "json", "-ac"]
-        timeout: 300
-        when: "on_port:80"
-
-      - id: nuclei_web
-        name: "Nuclei web scan"
-        tool: nuclei
-        args: ["-u", "{target}", "-json",
-               "-o", "{case_dir}/nuclei.json"]
-        timeout: 300
-    else:
-      - id: skip_web
-        type: log
-        message: "No web services detected — skipping web phase"
-
-  # ---- Phase 3: Subdomain enumeration (parallel) ----
-  - id: sub_enum
-    name: "Subdomain enumeration"
-    type: parallel
-    max_workers: 3
-    steps:
-      - id: subfinder
-        name: "Subfinder"
-        tool: subfinder
-        args: ["-silent", "-d", "{target}",
-               "-o", "{case_dir}/subfinder.txt"]
-        artifacts: ["{case_dir}/subfinder.txt"]
-
-      - id: amass
-        name: "Amass enum"
-        tool: amass
-        args: ["enum", "-d", "{target}",
-               "-o", "{case_dir}/amass.txt"]
-        timeout: 300
-
-  # ---- Phase 4: Check for critical ports ----
-  - id: smb_notify
-    type: notify
-    level: warn
-    message: "SMB port 445 open — check MS17-010 and share enumeration"
-    condition:
-      contains: "/445/tcp"
-      ref: port_scan
-
-  - id: rdp_notify
-    type: notify
-    level: warn
-    message: "RDP port 3389 open — check BlueKeep and credential harvesting"
-    condition:
-      contains: "/3389/tcp"
-      ref: port_scan
-
-  # ---- Phase 5: SSL/TLS deep scan ----
-  - id: ssl_scan
-    name: "SSL/TLS scan"
-    tool: nmap
-    args: ["--script", "ssl-enum-ciphers,ssl-cert",
-           "-p", "443", "{target}",
-           "-oN", "{case_dir}/ssl.txt"]
-    when: "on_port:443"
+- id: port_scan
+  name: Full port scan
+  tool: nmap
+  args:
+  - -sS
+  - -sV
+  - -Pn
+  - -p-
+  - --open
+  - --min-rate
+  - '1000'
+  - -oN
+  - '{case_dir}/nmap.txt'
+  - -oX
+  - '{case_dir}/nmap.xml'
+  - '{target}'
+  timeout: 900
+  artifacts:
+  - '{case_dir}/nmap.txt'
+  - '{case_dir}/nmap.xml'
+  type: tool
+- id: web_check
+  name: Check for web services
+  type: conditional
+  condition:
+    or:
+    - on_port:80
+    - on_port:443
+    - on_port:8080
+    - on_port:8443
+  then:
+  - id: whatweb
+    name: WhatWeb fingerprinting
+    tool: whatweb
+    args:
+    - -a3
+    - '{target}'
+    - --log-verbose
+    - '{case_dir}/whatweb.txt'
     timeout: 120
+    type: tool
+  - id: dir_fuzz
+    name: Directory fuzzing
+    tool: ffuf
+    args:
+    - -u
+    - http://{target}/FUZZ
+    - -w
+    - '{wordlist}'
+    - -o
+    - '{case_dir}/ffuf.json'
+    - -of
+    - json
+    - -ac
+    timeout: 300
+    when: on_port:80
+    type: tool
+  - id: nuclei_web
+    name: Nuclei web scan
+    tool: nuclei
+    args:
+    - -u
+    - '{target}'
+    - -json
+    - -o
+    - '{case_dir}/nuclei.json'
+    timeout: 300
+    type: tool
+  else:
+  - id: skip_web
+    type: log
+    message: No web services detected — skipping web phase
+    name: Skip Web
+- id: sub_enum
+  name: Subdomain enumeration
+  type: parallel
+  max_workers: 3
+  steps:
+  - id: subfinder
+    name: Subfinder
+    tool: subfinder
+    args:
+    - -silent
+    - -d
+    - '{target}'
+    - -o
+    - '{case_dir}/subfinder.txt'
+    artifacts:
+    - '{case_dir}/subfinder.txt'
+    type: tool
+  - id: amass
+    name: Amass enum
+    tool: amass
+    args:
+    - enum
+    - -d
+    - '{target}'
+    - -o
+    - '{case_dir}/amass.txt'
+    timeout: 300
+    type: tool
+- id: smb_notify
+  type: notify
+  level: warn
+  message: SMB port 445 open — check MS17-010 and share enumeration
+  condition:
+    contains: /445/tcp
+    ref: port_scan
+  name: Smb Notify
+- id: rdp_notify
+  type: notify
+  level: warn
+  message: RDP port 3389 open — check BlueKeep and credential harvesting
+  condition:
+    contains: /3389/tcp
+    ref: port_scan
+  name: Rdp Notify
+- id: ssl_scan
+  name: SSL/TLS scan
+  tool: nmap
+  args:
+  - --script
+  - ssl-enum-ciphers,ssl-cert
+  - -p
+  - '443'
+  - '{target}'
+  - -oN
+  - '{case_dir}/ssl.txt'
+  when: on_port:443
+  timeout: 120
+  type: tool
+- id: ask_deeper
+  type: prompt
+  message: Run deeper scanning (nuclei critical, full service enum)?
+  then:
+  - id: nuclei_deep
+    name: Nuclei deep scan
+    tool: nuclei
+    args:
+    - -u
+    - '{target}'
+    - -severity
+    - critical,high
+    - -json
+    - -o
+    - '{case_dir}/nuclei-deep.json'
+    timeout: 600
+    type: tool
+  name: Ask Deeper
+- id: gen_report
+  type: report
+  format: markdown
+  title: Recon Report — {target}
+  output: '{case_dir}/report.md'
+  sections:
+  - heading: Target
+    body: '- IP/Domain: {target}
 
-  # ---- Phase 6: Ask about exploitation ----
-  - id: ask_deeper
-    type: prompt
-    message: "Run deeper scanning (nuclei critical, full service enum)?"
-    then:
-      - id: nuclei_deep
-        name: "Nuclei deep scan"
-        tool: nuclei
-        args: ["-u", "{target}", "-severity", "critical,high",
-               "-json", "-o", "{case_dir}/nuclei-deep.json"]
-        timeout: 600
-
-  # ---- Phase 7: Report ----
-  - id: gen_report
-    type: report
-    format: markdown
-    title: "Recon Report — {target}"
-    output: "{case_dir}/report.md"
-    sections:
-      - heading: "Target"
-        body: "- IP/Domain: {target}\n- Case: {case_id}"
-      - heading: "Findings Summary"
-        body: "See step outputs below."
-
+      - Case: {case_id}'
+  - heading: Findings Summary
+    body: See step outputs below.
+  name: Gen Report
 postflight:
-  - id: done
-    type: notify
-    level: success
-    message: "Recon complete — results in {case_dir}"
+- id: done
+  type: notify
+  level: success
+  message: Recon complete — results in {case_dir}
+  name: Done

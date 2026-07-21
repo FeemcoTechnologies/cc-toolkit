@@ -1,0 +1,385 @@
+name: "Enterprise VDP Recon Pipeline"
+description: >
+  Multi-phase reconnaissance pipeline for large enterprise VDP/bug bounty
+  programs. Covers: Phase 0 passive recon (subdomain enumeration, httpx
+  probing, technology fingerprinting, WAF detection), Phase 1 low-and-slow
+  security checks (sensitive file discovery, OpenAPI/Swagger discovery, auth
+  bypass probes, cache deception tests, COS/S3 bucket enumeration, JS reverse
+  engineering for API endpoint discovery, and ArgoCD/internal-tool discovery).
+  Designed for rate-limited, stealthy scanning against scoped enterprise domains.
+version: "2.0"
+target_required: true
+
+vars:
+  subfinder_threads: "50"
+  httpx_threads: "50"
+  rate_limit_ms: "333"
+  scope_domains: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Enterprise VDP recon pipeline starting — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Passive reconnaissance
+  - id: phase0_passive_recon
+    name: "Phase 0 — Passive reconnaissance"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: subfinder_enum
+        name: "Passive subdomain enumeration"
+        tool: subfinder
+        args:
+          - "-d"
+          - "{target}"
+          - "-all"
+          - "-silent"
+          - "-o"
+          - "{case_dir}/subdomains.txt"
+          - "-t"
+          - "{subfinder_threads}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/subdomains.txt"
+
+      - id: gau_url_discovery
+        name: "Historical URL discovery via GAU"
+        tool: bash
+        args:
+          - "-c"
+          - "gau '{target}' --subs --blacklist png,jpg,gif,jpeg,swf,woff,svg,pdf,css,ico 2>/dev/null | sort -u > {case_dir}/gau-urls.txt"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/gau-urls.txt"
+
+      - id: dns_resolve
+        name: "DNS resolution & massdns"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if [ -f /wordlists/resolvers.txt ]; then
+              RESOLVERS=/wordlists/resolvers.txt;
+            else
+              RESOLVERS=/etc/resolv.conf;
+            fi;
+            if [ -s {case_dir}/subdomains.txt ]; then
+              massdns -r \"$RESOLVERS\" -t A -o S -w {case_dir}/resolved.txt {case_dir}/subdomains.txt 2>/dev/null;
+            fi
+        timeout: 180
+        artifacts:
+          - "{case_dir}/resolved.txt"
+
+      - id: waf_detect
+        name: "WAF fingerprinting on target"
+        tool: wafw00f
+        args:
+          - "https://{target}"
+          - "-a"
+        timeout: 60
+        artifacts:
+          - "{case_dir}/waf-detect.txt"
+
+  # Phase 2: HTTP probing & filtering
+  - id: httpx_probe
+    name: "Phase 1 — HTTP probing & tech detection"
+    type: sequential
+    steps:
+      - id: probe_live_hosts
+        name: "Probe resolved hosts for HTTP/HTTPS"
+        tool: httpx
+        args:
+          - "-l"
+          - "{case_dir}/resolved.txt"
+          - "-silent"
+          - "-sc"
+          - "-cl"
+          - "-title"
+          - "-web-server"
+          - "-tech-detect"
+          - "-status-code"
+          - "-follow-redirects"
+          - "-threads"
+          - "{httpx_threads}"
+          - "-o"
+          - "{case_dir}/httpx-probed.txt"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/httpx-probed.txt"
+
+      - id: categorize_hosts
+        name: "Categorize hosts by response code"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== 200 OK ===" > {case_dir}/hosts-categorized.txt;
+            grep ' 200 ' {case_dir}/httpx-probed.txt 2>/dev/null | cut -d' ' -f1 >> {case_dir}/hosts-categorized.txt;
+            echo "" >> {case_dir}/hosts-categorized.txt;
+            echo "=== 3xx Redirect ===" >> {case_dir}/hosts-categorized.txt;
+            grep ' 30[12378] ' {case_dir}/httpx-probed.txt 2>/dev/null | cut -d' ' -f1 >> {case_dir}/hosts-categorized.txt;
+            echo "" >> {case_dir}/hosts-categorized.txt;
+            echo "=== 401/403 Auth ===" >> {case_dir}/hosts-categorized.txt;
+            grep -E ' 40[13] ' {case_dir}/httpx-probed.txt 2>/dev/null | cut -d' ' -f1 >> {case_dir}/hosts-categorized.txt;
+            echo "" >> {case_dir}/hosts-categorized.txt;
+            echo "=== 404/Other ===" >> {case_dir}/hosts-categorized.txt;
+            grep -E ' 40[04] ' {case_dir}/httpx-probed.txt 2>/dev/null | cut -d' ' -f1 >> {case_dir}/hosts-categorized.txt;
+            echo "" >> {case_dir}/hosts-categorized.txt;
+            echo "=== Tech Stack Summary ===" >> {case_dir}/hosts-categorized.txt;
+            grep -oP '\[.*?\]' {case_dir}/httpx-probed.txt 2>/dev/null | sort | uniq -c | sort -rn >> {case_dir}/hosts-categorized.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/hosts-categorized.txt"
+
+  # Phase 3: Surface-level security checks
+  - id: phase2_surface_checks
+    name: "Phase 2 — Surface-level security checks"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: sensitive_file_fuzz
+        name: "Sensitive file discovery (rate-limited)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            URLS=$(awk '/200 OK|30[12378] /{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10);
+            for url in $URLS; do
+              echo "=== Scanning: $url ===" >> {case_dir}/sensitive-files.txt;
+              for path in /.git/HEAD /.env /api/env /swagger /swagger.json /api/swagger /openapi.json /api/docs /robots.txt /sitemap.xml /sitemap /.well-known/security.txt /.well-known/openid-configuration /health /healthz /actuator /actuator/health /info /version /debug /console /api /graphql /graphiql /admin /jenkinsbuild.txt /buildInfo; do
+                sleep 0.5;
+                resp=$(curl -sk -o /dev/null -w \"%{http_code}\" \"$url$path\");
+                if [ \"$resp\" != \"404\" ] && [ \"$resp\" != \"000\" ]; then
+                  echo \"  $path -> $resp\" >> {case_dir}/sensitive-files.txt;
+                fi;
+              done;
+            done
+        timeout: 300
+        artifacts:
+          - "{case_dir}/sensitive-files.txt"
+
+      - id: robots_sitemap_analysis
+        name: "robots.txt & sitemap analysis"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for url in $(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -20); do
+              echo "=== $url ===" >> {case_dir}/robots-analysis.txt;
+              echo "--- robots.txt ---" >> {case_dir}/robots-analysis.txt;
+              curl -sk \"$url/robots.txt\" 2>/dev/null | head -50 >> {case_dir}/robots-analysis.txt;
+              echo "" >> {case_dir}/robots-analysis.txt;
+              echo "--- sitemap.xml ---" >> {case_dir}/robots-analysis.txt;
+              SITEMAP=$(curl -sk \"$url/robots.txt\" 2>/dev/null | grep -i sitemap | grep -oP 'https?://[^\\s]+' | head -1);
+              if [ -n \"$SITEMAP\" ]; then
+                curl -sk \"$SITEMAP\" 2>/dev/null | head -100 >> {case_dir}/robots-analysis.txt;
+              else
+                curl -sk \"$url/sitemap.xml\" 2>/dev/null | head -100 >> {case_dir}/robots-analysis.txt;
+              fi;
+              echo \"\" >> {case_dir}/robots-analysis.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/robots-analysis.txt"
+
+      - id: cache_deception_test
+        name: "Cache deception & poisoning tests"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for url in $(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -5); do
+              echo \"=== $url ===\" >> {case_dir}/cache-tests.txt;
+              hdr=$(curl -skI \"$url\" 2>/dev/null | grep -iE '(x-cache|cache-control|cf-cache-status|x-served-by)');
+              echo \"$hdr\" >> {case_dir}/cache-tests.txt;
+              for ext in .css .js .png .jpg .json .html; do
+                decep=$(curl -sk -o /dev/null -w \"%{http_code}\" \"$url/api/v1$ext\" 2>/dev/null);
+                echo \"  /api/v1$ext -> $decep\" >> {case_dir}/cache-tests.txt;
+              done;
+              echo \"\" >> {case_dir}/cache-tests.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/cache-tests.txt"
+
+      - id: auth_bypass_probes
+        name: "Basic auth bypass probes on protected endpoints"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            PROTECTED=$(awk '/40[13]/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10);
+            for url in $PROTECTED; do
+              echo \"=== $url ===\" >> {case_dir}/auth-bypass.txt;
+              echo \"--- X-Original-URL ---\" >> {case_dir}/auth-bypass.txt;
+              curl -sk -H \"X-Original-URL: /admin\" \"$url\" -w \" %{http_code}\" >> {case_dir}/auth-bypass.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-bypass.txt;
+              echo \"--- X-Forwarded-For: 127.0.0.1 ---\" >> {case_dir}/auth-bypass.txt;
+              curl -sk -H \"X-Forwarded-For: 127.0.0.1\" \"$url\" -w \" %{http_code}\" >> {case_dir}/auth-bypass.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-bypass.txt;
+              echo \"--- Path normalization /../ ---\" >> {case_dir}/auth-bypass.txt;
+              curl -sk \"$url/../admin\" -w \" %{http_code}\" >> {case_dir}/auth-bypass.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-bypass.txt;
+              echo \"--- X-Http-Method-Override: GET ---\" >> {case_dir}/auth-bypass.txt;
+              curl -sk -X POST -H \"X-Http-Method-Override: GET\" \"$url\" -w \" %{http_code}\" >> {case_dir}/auth-bypass.txt 2>&1;
+              echo \"\" >> {case_dir}/auth-bypass.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/auth-bypass.txt"
+
+  # Phase 4: Deep discovery on live targets
+  - id: phase3_deep_discovery
+    name: "Phase 3 — Deep discovery on live 200 targets"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: js_endpoint_extraction
+        name: "JS bundle analysis for hidden endpoints"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            LIVE200=$(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10);
+            for url in $LIVE200; do
+              echo \"=== $url ===\" >> {case_dir}/js-endpoints.txt;
+              JS_URLS=$(curl -sk \"$url\" 2>/dev/null | grep -oiE '(src|href)=\"[^\"]+\\.js[^\"]*\"' | grep -oP 'https?://[^\"]+' | sort -u);
+              for js in $JS_URLS; do
+                echo \"--- JS: $js ---\" >> {case_dir}/js-endpoints.txt;
+                curl -sk \"$js\" 2>/dev/null | grep -oiE '(POST|GET|PUT|DELETE)\\s+\"[^\"]+\"|(POST|GET|PUT|DELETE)\\s+'\"'\"'[^'\"'\"']+'\"'\"'|/api/[a-zA-Z0-9_/_-]+|/v[0-9]+/[a-zA-Z0-9_/_-]+' | sort -u | head -50 >> {case_dir}/js-endpoints.txt;
+              done;
+              echo \"\" >> {case_dir}/js-endpoints.txt;
+              echo \"--- Build manifest ---\" >> {case_dir}/js-endpoints.txt;
+              curl -sk \"$url/_next/static/\" 2>/dev/null | grep -oP 'buildManifest\\.js' | head -1 | while read bm; do
+                curl -sk \"$url/_next/static/$bm\" 2>/dev/null >> {case_dir}/js-endpoints.txt;
+              done;
+            done
+        timeout: 180
+        artifacts:
+          - "{case_dir}/js-endpoints.txt"
+
+      - id: cos_bucket_discovery
+        name: "Cloud storage bucket discovery"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            LIVE200=$(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10);
+            for url in $LIVE200; do
+              echo \"=== $url ===\" >> {case_dir}/cloud-storage.txt;
+              curl -sk \"$url\" 2>/dev/null | grep -oiE '(s3\\.|s3-|s3\\.amazonaws\\.com|cloud-object-storage|blob\\.core\\.windows\\.net|storage\\.googleapis\\.com|digitaloceanspaces\\.com|cloudfront\\.net|cos\\.|bucket|storage)' | sort -u >> {case_dir}/cloud-storage.txt;
+              echo \"--- env/config bucket leaks ---\" >> {case_dir}/cloud-storage.txt;
+              for ep in /api/env /api/config /env /config /env.json /config.json /settings.json /build.json; do
+                resp=$(curl -sk \"$url$ep\" 2>/dev/null);
+                if echo \"$resp\" | grep -qiE '(bucket|cos|s3|storage|cdn|cloudfront)'; then
+                  echo \"$ep -> FOUND\" >> {case_dir}/cloud-storage.txt;
+                  echo \"$resp\" | grep -oiE '(s3\\.|cos\\.|bucket|cloudfront|storage)[^\"]+' | head -10 >> {case_dir}/cloud-storage.txt;
+                fi;
+              done;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/cloud-storage.txt"
+
+      - id: internal_tool_detect
+        name: "Detect internal/CI-CD tools (ArgoCD, Jenkins, Grafana)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo \"Probing for internal tool signatures\" > {case_dir}/internal-tools.txt;
+            for url in $(awk '{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -50); do
+              echo \"=== $url ===\" >> {case_dir}/internal-tools.txt;
+              for path in /api/v1/settings /argocd /jenkins /grafana /kibana /prometheus /alertmanager /sonar /nexus /artifactory /concourse /gitlab /api/health /healthz /metrics /debug/pprof /actuator/prometheus; do
+                resp=$(curl -sk -o /dev/null -w \"%{http_code}\" \"$url$path\" 2>/dev/null);
+                if [ \"$resp\" != \"404\" ] && [ \"$resp\" != \"000\" ]; then
+                  echo \"  $path -> $resp (may be ArgoCD/Jenkins/etc)\" >> {case_dir}/internal-tools.txt;
+                fi;
+              done;
+            done
+        timeout: 300
+        artifacts:
+          - "{case_dir}/internal-tools.txt"
+
+      - id: cors_headers_check
+        name: "CORS misconfiguration check on live hosts"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for url in $(awk '{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -20); do
+              echo \"=== $url ===\" >> {case_dir}/cors-check.txt;
+              curl -sk -H \"Origin: https://evil.com\" -H \"Access-Control-Request-Method: GET\" \"$url\" -I 2>/dev/null | grep -iE '(access-control|origin)' >> {case_dir}/cors-check.txt 2>&1;
+              echo \"\" >> {case_dir}/cors-check.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/cors-check.txt"
+
+  # Phase 5: Deeper dive on best targets
+  - id: phase4_targeted_deep
+    name: "Phase 4 — Targeted deep dive on best targets"
+    type: sequential
+    steps:
+      - id: katana_crawl
+        name: "Crawl best live targets for endpoint discovery"
+        tool: katana
+        args:
+          - "-u"
+          - "$(awk '/200 OK/{print $1; exit}' {case_dir}/httpx-probed.txt 2>/dev/null)"
+          - "-d"
+          - "3"
+          - "-jc"
+          - "-aff"
+          - "-kf"
+          - "-o"
+          - "{case_dir}/katana-endpoints.txt"
+        timeout: 180
+        artifacts:
+          - "{case_dir}/katana-endpoints.txt"
+
+      - id: gauntlet_ffuf
+        name: "Rate-limited ffuf on best target"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            BEST=$(awk '/200 OK/{print $1; exit}' {case_dir}/httpx-probed.txt 2>/dev/null);
+            if [ -n \"$BEST\" ]; then
+              ffuf -u \"$BEST/FUZZ\" -w /usr/share/wordlists/dirb/common.txt -mc 200,204,301,302,307,401,403,500 -ac -t 3 -p 0.333 -o \"{case_dir}/ffuf-best-target.json\" -of json 2>/dev/null;
+            fi
+        timeout: 300
+        artifacts:
+          - "{case_dir}/ffuf-best-target.json"
+
+  # Phase 6: Report
+  - id: report
+    name: "Enterprise VDP recon report"
+    type: report
+    format: markdown
+    title: "Enterprise VDP Recon Pipeline Report — {target}"
+    output: "{case_dir}/vdp-recon-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- Target domain: {target}\n- Scope: {scope_domains}"
+      - heading: "Phase 0 — Passive Recon"
+        body: "- Subdomains found: {case_dir}/subdomains.txt\n- Historical URLs: {case_dir}/gau-urls.txt\n- DNS resolved: {case_dir}/resolved.txt\n- WAF detection: {case_dir}/waf-detect.txt"
+      - heading: "Phase 1 — HTTP Probing"
+        body: "- HTTP probe results: {case_dir}/httpx-probed.txt\n- Hosts categorized: {case_dir}/hosts-categorized.txt"
+      - heading: "Phase 2 — Surface Checks"
+        body: "- Sensitive files: {case_dir}/sensitive-files.txt\n- robots/sitemap: {case_dir}/robots-analysis.txt\n- Cache tests: {case_dir}/cache-tests.txt\n- Auth bypass: {case_dir}/auth-bypass.txt"
+      - heading: "Phase 3 — Deep Discovery"
+        body: "- JS endpoints: {case_dir}/js-endpoints.txt\n- Cloud storage: {case_dir}/cloud-storage.txt\n- Internal tools: {case_dir}/internal-tools.txt\n- CORS check: {case_dir}/cors-check.txt"
+      - heading: "Phase 4 — Targeted Deep Dive"
+        body: "- Crawl endpoints: {case_dir}/katana-endpoints.txt\n- Ffuf results: {case_dir}/ffuf-best-target.json"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Enterprise VDP recon pipeline complete — report at {case_dir}/vdp-recon-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "VDP recon pipeline finished for {target}. Results in {case_dir}"

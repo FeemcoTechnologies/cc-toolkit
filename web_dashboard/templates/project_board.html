@@ -15,9 +15,14 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Project Board</span>
+</nav>
 <div class="flex items-center justify-between mb-4">
     <div class="flex items-center gap-4">
-        <a href="/" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Dashboard</a>
         <h1 class="text-lg font-semibold flex items-center gap-2">
             <i data-lucide="columns" class="w-5 h-5 text-indigo-400"></i>
             Project Board
@@ -95,11 +100,13 @@
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify({case_id: caseId, status: newStatus}),
-                            });
+                            }).catch(function() {});
                         },
                     });
                 });
                 lucide.createIcons();
+            }).catch(function(e) {
+                document.getElementById('board-container').innerHTML = '<div class="text-red-400 col-span-4 text-center py-12">Failed to load board: ' + e.message + '</div>';
             });
     }
 
@@ -170,6 +177,9 @@
                 }
                 html += '<div class="flex gap-2 pt-2"><a href="/case/' + encodeURIComponent(data.case_id) + '" class="bg-indigo-700 hover:bg-indigo-600 px-3 py-1.5 rounded text-sm">Open Case</a></div>';
                 body.innerHTML = html;
+                document.getElementById('case-modal').classList.remove('hidden');
+            }).catch(function(e) {
+                document.getElementById('modal-body').innerHTML = '<div class="text-red-400">Failed to load case data: ' + e.message + '</div>';
                 document.getElementById('case-modal').classList.remove('hidden');
             });
     }

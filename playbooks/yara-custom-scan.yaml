@@ -1,42 +1,89 @@
-# v2 runbook — YARA scan using custom rules from rules section
-name: "YARA Custom Rule Scan"
-description: "Scan a file or directory with our custom YARA rules"
-version: "1.0"
-
+name: YARA Custom Rule Scan
+description: Scan a file or directory with our custom YARA rules — parallel rule matching
+  with severity reporting
+version: '2.0'
 vars:
-  yara_rules_dir: "/share/git-repo/Scripts/aislop/rules/yara"
-
-steps:
-  - id: setup
-    type: log
-    message: "YARA custom scan against {target}"
-
-  - id: yara_scan_step
-    name: "YARA scan with custom rules"
-    tool: yara
-    args: ["-r", "-s", "{yara_rules_dir}", "{target}"]
-    timeout: 300
-    save: "{case_dir}/yara-custom-results.txt"
-
-  - id: summary
-    name: "Summarize matches"
-    type: conditional
-    condition:
-      ref: yara_scan_step
-      field: rc
-      expected: 0
-    then:
-      - id: matches_found
-        type: notify
-        level: warning
-        message: "YARA matches found — see {case_dir}/yara-custom-results.txt"
-    else:
-      - id: no_matches
-        type: notify
-        level: info
-        message: "No YARA matches found"
-
-postflight:
-  - id: done
+  yara_rules_dir: /share/git-repo/Scripts/aislop/rules/yara
+  max_match_count: '100'
+preflight:
+- id: setup
+  type: log
+  message: 'YARA custom scan against {target} (case: {case_id})'
+  name: Setup
+- id: dir_check
+  name: Verify rules directory
+  type: conditional
+  condition:
+    any:
+    - exists: '{yara_rules_dir}'
+  else:
+  - id: warn_dir
     type: notify
-    message: "YARA custom scan complete — {case_dir}"
+    level: warn
+    message: YARA rules dir {yara_rules_dir} not found — scan may fail
+    name: Warn Dir
+steps:
+- id: yara_scan_step
+  name: YARA scan with custom rules
+  tool: yara
+  args:
+  - -r
+  - -s
+  - -m
+  - '{max_match_count}'
+  - '{yara_rules_dir}'
+  - '{target}'
+  timeout: 300
+  save: '{case_dir}/yara-custom-results.txt'
+  type: tool
+- id: summary
+  name: Summarize matches
+  type: conditional
+  condition:
+    ref: yara_scan_step
+    field: rc
+    expected: 0
+  then:
+  - id: matches_found
+    type: notify
+    level: warning
+    message: YARA matches found — see {case_dir}/yara-custom-results.txt
+    name: Matches Found
+  - id: count_matches
+    name: Count matching rules
+    tool: grep
+    args:
+    - -c
+    - ^[a-zA-Z_]
+    - '{case_dir}/yara-custom-results.txt'
+    - -o
+    - '{case_dir}/yara-match-count.txt'
+    timeout: 10
+    type: tool
+  else:
+  - id: no_matches
+    type: notify
+    level: info
+    message: No YARA matches found
+    name: No Matches
+- id: report
+  name: YARA scan report
+  type: report
+  format: markdown
+  title: YARA Custom Rule Scan — {target}
+  output: '{case_dir}/yara-report.md'
+  sections:
+  - heading: Target
+    body: '- Path: {target}
+
+      - Rules: {yara_rules_dir}'
+  - heading: Results
+    body: '- Full results: {case_dir}/yara-custom-results.txt
+
+      - Match count: {case_dir}/yara-match-count.txt'
+postflight:
+- id: done
+  type: notify
+  level: success
+  message: YARA custom scan complete — {case_dir}
+  name: Done

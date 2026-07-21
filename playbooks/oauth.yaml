@@ -1,6 +1,6 @@
 name: "OAuth 2.0 / OpenID Connect Assessment"
 description: "OAuth and OIDC security testing: redirect URI bypass, CSRF, authorization code interception, PKCE downgrade, token revocation, and provider misconfiguration"
-version: "1.0"
+version: "2.0"
 
 vars:
   client_id: ""
@@ -202,14 +202,32 @@ steps:
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "OAuth assessment note"
+    name: "OAuth/OIDC assessment report"
+    type: report
+    format: markdown
+    title: "OAuth 2.0 / OIDC Security Report — {target}"
+    output: "{case_dir}/oauth-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Provider: {target}\n- Client ID: {client_id}\n- Auth endpoint: {auth_endpoint}\n- Token endpoint: {token_endpoint}"
+      - heading: "Endpoint Discovery"
+        body: "- OpenID config: {case_dir}/oauth_wellknown.json\n- JWKS: {case_dir}/oauth_jwks.json\n- Provider fingerprint: {case_dir}/whatweb-oauth.txt"
+      - heading: "Redirect URI Attacks"
+        body: "- Open redirect: {case_dir}/oauth_redirect_open.txt\n- Subdomain: {case_dir}/oauth_redirect_sub.txt\n- Path traversal: {case_dir}/oauth_redirect_path.txt\n- SQLi: {case_dir}/oauth_redirect_sqli.txt\n- Host override: {case_dir}/oauth_redirect_host.txt"
+      - heading: "CSRF & State"
+        body: "- No state: {case_dir}/oauth_no_state.txt\n- State reuse: {case_dir}/oauth_state_reuse.txt"
+      - heading: "Code Attacks"
+        body: "- Implicit token: {case_dir}/oauth_implicit_token.txt\n- PKCE downgrade: {case_dir}/oauth_pkce_downgrade.txt\n- Code replay: {case_dir}/oauth_code_reuse.txt"
+      - heading: "Token Endpoint"
+        body: "- Client creds: {case_dir}/oauth_client_creds.txt\n- Refresh abuse: {case_dir}/oauth_refresh.txt\n- Introspection: {case_dir}/oauth_introspect.txt"
+      - heading: "Rogue Client"
+        body: "- Registration: {case_dir}/oauth_rogue_client.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      OAuth/OIDC assessment complete for client {client_id}.
-      Results in {case_dir}/:
-      - Discovery: oauth_wellknown.json, oauth_jwks.json
-      - Redirect URI: oauth_redirect_open.txt, oauth_redirect_sub.txt, oauth_redirect_path.txt
-      - CSRF: oauth_no_state.txt, oauth_state_reuse.txt
-      - Code attacks: oauth_implicit_token.txt, oauth_pkce_downgrade.txt, oauth_code_reuse.txt
-      - Token: oauth_client_creds.txt, oauth_refresh.txt, oauth_introspect.txt
-      - Rogue client: oauth_rogue_client.txt
+    message: "OAuth/OIDC assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "OAuth/OIDC assessment finished for {target}. Results in {case_dir}"

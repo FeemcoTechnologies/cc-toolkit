@@ -1,230 +1,314 @@
-# v2 runbook — CMS (WordPress/Joomla/Drupal) assessment
-name: "CMS Assessment"
-description: "Enumerate and assess CMS platforms: WordPress, Joomla, and Drupal — version checks, plugin scanning, user enumeration, config leaks"
-version: "2.0"
-
+name: CMS Assessment
+description: 'Enumerate and assess CMS platforms: WordPress, Joomla, and Drupal —
+  version checks, plugin scanning, user enumeration, config leaks'
+version: '2.0'
 vars:
-  cms_url: ""
-  cms_type: ""        # wordpress | joomla | drupal | auto
-  cms_user: ""
-
+  cms_url: ''
+  cms_type: ''
+  cms_user: ''
 steps:
-  - id: preamble
-    type: log
-    message: "CMS assessment — {cms_url} (case: {case_id})"
+- id: preamble
+  type: log
+  message: 'CMS assessment — {cms_url} (case: {case_id})'
+  name: Preamble
+- id: cms_detect
+  name: CMS type detection
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: detect_whatweb
+    name: WhatWeb fingerprint
+    tool: whatweb
+    args:
+    - -a
+    - '3'
+    - '{cms_url}'
+    - --log-verbose
+    - '{case_dir}/whatweb.log'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/whatweb.log'
+    type: tool
+  - id: detect_wappalyzer
+    name: Wappalyzer detection
+    tool: wappalyzer
+    args:
+    - '{cms_url}'
+    - -o
+    - '{case_dir}/wappalyzer.json'
+    timeout: 60
+    type: tool
+  - id: detect_http
+    name: HTTP response analysis
+    tool: curl
+    args:
+    - -sI
+    - '{cms_url}'
+    - -o
+    - '{case_dir}/http_headers.txt'
+    timeout: 15
+    type: tool
+- id: wp_scan
+  name: WordPress enumeration
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: wp_core
+    name: WP core version & vulnerabilities
+    tool: wpscan
+    args:
+    - --url
+    - '{cms_url}'
+    - --enumerate
+    - vp,vdb,vt,tt,cb,dbe,u,m
+    - --api-token
+    - ${WPSCAN_API_TOKEN}
+    - --output
+    - '{case_dir}/wpscan_core.txt'
+    timeout: 300
+    artifacts:
+    - '{case_dir}/wpscan_core.txt'
+    type: tool
+  - id: wp_plugins
+    name: WP plugin enumeration (aggressive)
+    tool: wpscan
+    args:
+    - --url
+    - '{cms_url}'
+    - --enumerate
+    - ap,at
+    - --plugins-detection
+    - aggressive
+    - --output
+    - '{case_dir}/wpscan_plugins.txt'
+    timeout: 300
+    type: tool
+  - id: wp_users
+    name: WP user enumeration
+    tool: wpscan
+    args:
+    - --url
+    - '{cms_url}'
+    - --enumerate
+    - u
+    - --output
+    - '{case_dir}/wpscan_users.txt'
+    timeout: 120
+    type: tool
+  - id: wp_config_backup
+    name: Check for config backups
+    tool: curl
+    args:
+    - -s
+    - -o
+    - '{case_dir}/wp_config_check.txt'
+    - -w
+    - '%{http_code}'
+    - '{cms_url}/wp-config.php.bak'
+    - '{cms_url}/wp-config.php~'
+    - '{cms_url}/wp-config.old'
+    - '{cms_url}/wp-config.txt'
+    timeout: 30
+    type: tool
+  - id: wp_xmlrpc
+    name: XML-RPC availability
+    tool: curl
+    args:
+    - -s
+    - -o
+    - /dev/null
+    - -w
+    - '%{http_code}'
+    - '{cms_url}/xmlrpc.php'
+    timeout: 15
+    type: tool
+  - id: wp_wpcontent
+    name: WP-content directory listing
+    tool: curl
+    args:
+    - -s
+    - -o
+    - '{case_dir}/wp_content_list.txt'
+    - '{cms_url}/wp-content/plugins/'
+    timeout: 15
+    type: tool
+- id: joomla_scan
+  name: Joomla enumeration
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: joom_core
+    name: Joomla version detection
+    tool: curl
+    args:
+    - -s
+    - '{cms_url}/administrator/manifests/files/joomla.xml'
+    - -o
+    - '{case_dir}/joomla_version.xml'
+    timeout: 15
+    type: tool
+  - id: joom_scan
+    name: JoomScan full
+    tool: joomscan
+    args:
+    - -u
+    - '{cms_url}'
+    - --enumerate-components
+    - -o
+    - '{case_dir}/joomscan.txt'
+    timeout: 180
+    artifacts:
+    - '{case_dir}/joomscan.txt'
+    type: tool
+  - id: joom_browse
+    name: Joomla browse components
+    tool: curl
+    args:
+    - -s
+    - '{cms_url}/index.php?option=com_'
+    - -o
+    - '{case_dir}/joom_components.txt'
+    timeout: 15
+    type: tool
+  - id: joom_admin
+    name: Joomla admin page check
+    tool: curl
+    args:
+    - -s
+    - -o
+    - /dev/null
+    - -w
+    - '%{http_code}'
+    - '{cms_url}/administrator/'
+    timeout: 15
+    type: tool
+- id: drupal_scan
+  name: Drupal enumeration
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: dr_changelog
+    name: Drupal version from CHANGELOG
+    tool: curl
+    args:
+    - -s
+    - '{cms_url}/CHANGELOG.txt'
+    - -o
+    - '{case_dir}/drupal_changelog.txt'
+    timeout: 15
+    type: tool
+  - id: dr_droopescan
+    name: DroopeScan full
+    tool: droopescan
+    args:
+    - scan
+    - drupal
+    - -u
+    - '{cms_url}'
+    - --output
+    - '{case_dir}/droopescan.txt'
+    timeout: 180
+    artifacts:
+    - '{case_dir}/droopescan.txt'
+    type: tool
+  - id: dr_admin
+    name: Drupal admin access
+    tool: curl
+    args:
+    - -s
+    - -o
+    - /dev/null
+    - -w
+    - '%{http_code}'
+    - '{cms_url}/user/login'
+    timeout: 15
+    type: tool
+  - id: dr_install
+    name: Drupal install.php
+    tool: curl
+    args:
+    - -s
+    - -o
+    - /dev/null
+    - -w
+    - '%{http_code}'
+    - '{cms_url}/core/install.php'
+    timeout: 15
+    type: tool
+- id: ask_brute
+  type: prompt
+  message: Run brute-force on CMS admin login? (requires wordlist)
+  then:
+  - id: brute_wp
+    name: WordPress xmlrpc brute-force
+    tool: wpscan
+    args:
+    - --url
+    - '{cms_url}'
+    - --passwords
+    - /usr/share/wordlists/rockyou.txt
+    - --usernames
+    - '{cms_user}'
+    - --output
+    - '{case_dir}/wp_brute.txt'
+    timeout: 600
+    when: cms_type == wordpress
+    type: tool
+  - id: brute_joom
+    name: Joomla brute-force
+    tool: hydra
+    args:
+    - -l
+    - '{cms_user}'
+    - -P
+    - /usr/share/wordlists/rockyou.txt
+    - '{cms_url}'
+    - http-post-form
+    - /administrator/index.php:username=^USER^&passwd=^PASS^&option=com_users&task=user.login:S=token
+    - -o
+    - '{case_dir}/joom_brute.txt'
+    timeout: 600
+    when: cms_type == joomla
+    type: tool
+  name: Ask Brute
+- id: report
+  name: Generate CMS assessment report
+  type: report
+  format: markdown
+  title: CMS Assessment — {cms_url}
+  output: '{case_dir}/cms-assessment-report.md'
+  sections:
+  - heading: Target
+    body: '- URL: {cms_url}
 
-  # Phase 1: CMS detection
-  - id: cms_detect
-    name: "CMS type detection"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: detect_whatweb
-        name: "WhatWeb fingerprint"
-        tool: whatweb
-        args: ["-a", "3", "{cms_url}",
-               "--log-verbose", "{case_dir}/whatweb.log"]
-        timeout: 60
-        artifacts: ["{case_dir}/whatweb.log"]
+      - CMS: {cms_type}
 
-      - id: detect_wappalyzer
-        name: "Wappalyzer detection"
-        tool: wappalyzer
-        args: ["{cms_url}",
-               "-o", "{case_dir}/wappalyzer.json"]
-        timeout: 60
+      - Case: {case_id}'
+  - heading: CMS Detection
+    body: '- WhatWeb: {case_dir}/whatweb.log
 
-      - id: detect_http
-        name: "HTTP response analysis"
-        tool: curl
-        args: ["-sI", "{cms_url}",
-               "-o", "{case_dir}/http_headers.txt"]
-        timeout: 15
+      - Wappalyzer: {case_dir}/wappalyzer.json'
+  - heading: WordPress
+    body: '- Core scan: {case_dir}/wpscan_core.txt
 
-  # Phase 2: WordPress
-  - id: wp_scan
-    name: "WordPress enumeration"
-    type: parallel
-    max_workers: 6
-    steps:
-      - id: wp_core
-        name: "WP core version & vulnerabilities"
-        tool: wpscan
-        args: ["--url", "{cms_url}",
-               "--enumerate", "vp,vdb,vt,tt,cb,dbe,u,m",
-               "--api-token", "${WPSCAN_API_TOKEN}",
-               "--output", "{case_dir}/wpscan_core.txt"]
-        timeout: 300
-        artifacts: ["{case_dir}/wpscan_core.txt"]
+      - Plugins: {case_dir}/wpscan_plugins.txt
 
-      - id: wp_plugins
-        name: "WP plugin enumeration (aggressive)"
-        tool: wpscan
-        args: ["--url", "{cms_url}",
-               "--enumerate", "ap,at",
-               "--plugins-detection", "aggressive",
-               "--output", "{case_dir}/wpscan_plugins.txt"]
-        timeout: 300
+      - Users: {case_dir}/wpscan_users.txt
 
-      - id: wp_users
-        name: "WP user enumeration"
-        tool: wpscan
-        args: ["--url", "{cms_url}",
-               "--enumerate", "u",
-               "--output", "{case_dir}/wpscan_users.txt"]
-        timeout: 120
+      - Config backups: {case_dir}/wp_config_check.txt'
+  - heading: Joomla
+    body: '- JoomScan: #{case_dir}/joomscan.txt
 
-      - id: wp_config_backup
-        name: "Check for config backups"
-        tool: curl
-        args: ["-s",
-               "-o", "{case_dir}/wp_config_check.txt",
-               "-w", "%{http_code}",
-               "{cms_url}/wp-config.php.bak",
-               "{cms_url}/wp-config.php~",
-               "{cms_url}/wp-config.old",
-               "{cms_url}/wp-config.txt"]
-        timeout: 30
+      - Components: {case_dir}/joom_components.txt'
+  - heading: Drupal
+    body: '- CHANGELOG: {case_dir}/drupal_changelog.txt
 
-      - id: wp_xmlrpc
-        name: "XML-RPC availability"
-        tool: curl
-        args: ["-s", "-o", "/dev/null",
-               "-w", "%{http_code}",
-               "{cms_url}/xmlrpc.php"]
-        timeout: 15
-
-      - id: wp_wpcontent
-        name: "WP-content directory listing"
-        tool: curl
-        args: ["-s", "-o", "{case_dir}/wp_content_list.txt",
-               "{cms_url}/wp-content/plugins/"]
-        timeout: 15
-
-  # Phase 3: Joomla
-  - id: joomla_scan
-    name: "Joomla enumeration"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: joom_core
-        name: "Joomla version detection"
-        tool: curl
-        args: ["-s", "{cms_url}/administrator/manifests/files/joomla.xml",
-               "-o", "{case_dir}/joomla_version.xml"]
-        timeout: 15
-
-      - id: joom_scan
-        name: "JoomScan full"
-        tool: joomscan
-        args: ["-u", "{cms_url}",
-               "--enumerate-components",
-               "-o", "{case_dir}/joomscan.txt"]
-        timeout: 180
-        artifacts: ["{case_dir}/joomscan.txt"]
-
-      - id: joom_browse
-        name: "Joomla browse components"
-        tool: curl
-        args: ["-s", "{cms_url}/index.php?option=com_",
-               "-o", "{case_dir}/joom_components.txt"]
-        timeout: 15
-
-      - id: joom_admin
-        name: "Joomla admin page check"
-        tool: curl
-        args: ["-s", "-o", "/dev/null",
-               "-w", "%{http_code}",
-               "{cms_url}/administrator/"]
-        timeout: 15
-
-  # Phase 4: Drupal
-  - id: drupal_scan
-    name: "Drupal enumeration"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: dr_changelog
-        name: "Drupal version from CHANGELOG"
-        tool: curl
-        args: ["-s", "{cms_url}/CHANGELOG.txt",
-               "-o", "{case_dir}/drupal_changelog.txt"]
-        timeout: 15
-
-      - id: dr_droopescan
-        name: "DroopeScan full"
-        tool: droopescan
-        args: ["scan", "drupal",
-               "-u", "{cms_url}",
-               "--output", "{case_dir}/droopescan.txt"]
-        timeout: 180
-        artifacts: ["{case_dir}/droopescan.txt"]
-
-      - id: dr_admin
-        name: "Drupal admin access"
-        tool: curl
-        args: ["-s", "-o", "/dev/null",
-               "-w", "%{http_code}",
-               "{cms_url}/user/login"]
-        timeout: 15
-
-      - id: dr_install
-        name: "Drupal install.php"
-        tool: curl
-        args: ["-s", "-o", "/dev/null",
-               "-w", "%{http_code}",
-               "{cms_url}/core/install.php"]
-        timeout: 15
-
-  # Phase 5: Brute-force (optional)
-  - id: ask_brute
-    type: prompt
-    message: "Run brute-force on CMS admin login? (requires wordlist)"
-    then:
-      - id: brute_wp
-        name: "WordPress xmlrpc brute-force"
-        tool: wpscan
-        args: ["--url", "{cms_url}",
-               "--passwords", "/usr/share/wordlists/rockyou.txt",
-               "--usernames", "{cms_user}",
-               "--output", "{case_dir}/wp_brute.txt"]
-        timeout: 600
-        when: "cms_type == wordpress"
-
-      - id: brute_joom
-        name: "Joomla brute-force"
-        tool: hydra
-        args: ["-l", "{cms_user}",
-               "-P", "/usr/share/wordlists/rockyou.txt",
-               "{cms_url}", "http-post-form",
-               "/administrator/index.php:username=^USER^&passwd=^PASS^&option=com_users&task=user.login:S=token",
-               "-o", "{case_dir}/joom_brute.txt"]
-        timeout: 600
-        when: "cms_type == joomla"
-
-  # Phase 6: Report
-  - id: report
-    name: "Generate CMS assessment report"
-    type: report
-    format: markdown
-    title: "CMS Assessment — {cms_url}"
-    output: "{case_dir}/cms-assessment-report.md"
-    sections:
-      - heading: "Target"
-        body: "- URL: {cms_url}\n- CMS: {cms_type}\n- Case: {case_id}"
-      - heading: "CMS Detection"
-        body: "- WhatWeb: {case_dir}/whatweb.log\n- Wappalyzer: {case_dir}/wappalyzer.json"
-      - heading: "WordPress"
-        body: "- Core scan: {case_dir}/wpscan_core.txt\n- Plugins: {case_dir}/wpscan_plugins.txt\n- Users: {case_dir}/wpscan_users.txt\n- Config backups: {case_dir}/wp_config_check.txt"
-      - heading: "Joomla"
-        body: "- JoomScan: #{case_dir}/joomscan.txt\n- Components: {case_dir}/joom_components.txt"
-      - heading: "Drupal"
-        body: "- CHANGELOG: {case_dir}/drupal_changelog.txt\n- DroopeScan: {case_dir}/droopescan.txt"
-      - heading: "Brute-force"
-        body: "- Results: {case_dir}/wp_brute.txt / {case_dir}/joom_brute.txt"
-
+      - DroopeScan: {case_dir}/droopescan.txt'
+  - heading: Brute-force
+    body: '- Results: {case_dir}/wp_brute.txt / {case_dir}/joom_brute.txt'
 postflight:
-  - id: done
-    type: notify
-    level: info
-    message: "CMS assessment complete — {case_dir}"
+- id: done
+  type: notify
+  level: info
+  message: CMS assessment complete — {case_dir}
+  name: Done

@@ -1,30 +1,152 @@
-# Sample playbooks for Kali Command Center
+name: Quick Reconnaissance
+description: 'Fast initial recon: top-1000 port scan with service detection -> parallel
+  HTTP probing (whatweb HTTP + HTTPS) -> nuclei vulnerability scan -> port- specific
+  notifications for critical services found
 
-name: "Quick Recon"
-description: "Nmap top-ports scan + whatweb fingerprinting + nuclei"
+  '
+version: '2.0'
 target_required: true
-
+vars:
+  nmap_rate: '500'
+preflight:
+- id: preamble
+  type: log
+  message: 'Quick recon starting — target: {target}, case: {case_id}'
+  name: Preamble
 steps:
-  - name: "Nmap quick scan (top 1000 ports)"
-    tool: "nmap"
-    args: ["-sS", "-sV", "-Pn", "--top-ports", "1000", "--open", "--min-rate", "500",
-           "-oA", "{case_dir}/{target_safe}", "{target}"]
-    timeout: 1200
-    pause: 2
-
-  - name: "WhatWeb on discovered web ports"
-    tool: "whatweb"
-    args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb.txt"]
-    when: "on_port:80"
+- id: port_scan
+  name: Nmap top-1000 port scan with service detection
+  tool: nmap
+  args:
+  - -sS
+  - -sV
+  - -Pn
+  - --top-ports
+  - '1000'
+  - --open
+  - --min-rate
+  - '{nmap_rate}'
+  - -oA
+  - '{case_dir}/{target_safe}'
+  - '{target}'
+  timeout: 1200
+  pause: 2
+  artifacts:
+  - '{case_dir}/{target_safe}.txt'
+  - '{case_dir}/{target_safe}.xml'
+  type: tool
+- id: web_recon
+  name: Web service fingerprinting
+  type: parallel
+  max_workers: 2
+  steps:
+  - id: whatweb_http
+    name: WhatWeb HTTP
+    tool: whatweb
+    args:
+    - -a3
+    - '{target}'
+    - --log-verbose
+    - '{case_dir}/whatweb.txt'
     timeout: 120
-
-  - name: "WhatWeb on HTTPS"
-    tool: "whatweb"
-    args: ["-a3", "https://{target}", "--log-verbose", "{case_dir}/whatweb-ssl.txt"]
-    when: "on_port:443"
+    when: on_port:80
+    artifacts:
+    - '{case_dir}/whatweb.txt'
+    type: tool
+  - id: whatweb_https
+    name: WhatWeb HTTPS
+    tool: whatweb
+    args:
+    - -a3
+    - https://{target}
+    - --log-verbose
+    - '{case_dir}/whatweb-ssl.txt'
     timeout: 120
+    when: on_port:443
+    artifacts:
+    - '{case_dir}/whatweb-ssl.txt'
+    type: tool
+- id: nuclei_scan
+  name: Nuclei vulnerability scan
+  tool: nuclei
+  args:
+  - -u
+  - '{target}'
+  - -jsonl
+  - -o
+  - '{case_dir}/nuclei.json'
+  - -c
+  - '10'
+  timeout: 600
+  artifacts:
+  - '{case_dir}/nuclei.json'
+  type: tool
+- id: notify_services
+  name: Service discovery notifications
+  type: sequential
+  steps:
+  - id: smb_notify
+    type: notify
+    level: info
+    message: SMB (445) open — run smb-enum playbook for deeper testing
+    when: on_port:445
+    name: Smb Notify
+  - id: rdp_notify
+    type: notify
+    level: info
+    message: RDP (3389) open — check BlueKeep
+    when: on_port:3389
+    name: Rdp Notify
+  - id: ssh_notify
+    type: notify
+    level: info
+    message: 'SSH (22) open — version: check scan output'
+    when: on_port:22
+    name: Ssh Notify
+  - id: web_notify
+    type: notify
+    level: info
+    message: Web services detected — see {case_dir}/whatweb.txt
+    when:
+      or:
+      - on_port:80
+      - on_port:443
+    name: Web Notify
+  - id: db_notify_mysql
+    type: notify
+    level: warn
+    message: MySQL (3306) open — check for default creds
+    when: on_port:3306
+    name: Db Notify Mysql
+  - id: db_notify_redis
+    type: notify
+    level: critical
+    message: Redis (6379) open without auth — CRITICAL
+    when: on_port:6379
+    name: Db Notify Redis
+- id: gen_report
+  name: Generate quick recon summary
+  type: report
+  format: markdown
+  title: Quick Recon Report — {target}
+  output: '{case_dir}/recon-summary.md'
+  sections:
+  - heading: Target
+    body: '- Target: {target}
 
-  - name: "Nuclei scan"
-    tool: "nuclei"
-    args: ["-u", "{target}", "-jsonl", "-o", "{case_dir}/nuclei.json", "-c", "10"]
-    timeout: 600
+      - Case: {case_id}'
+  - heading: Open Ports
+    body: '- Scan: {case_dir}/{target_safe}.txt'
+  - heading: Web
+    body: '- WhatWeb HTTP: {case_dir}/whatweb.txt
+
+      - WhatWeb HTTPS: {case_dir}/whatweb-ssl.txt'
+  - heading: Vulnerabilities
+    body: '- Nuclei: {case_dir}/nuclei.json'
+postflight:
+- id: done
+  type: notify
+  level: success
+  message: Quick recon complete — {case_dir}/{target_safe}.txt, nuclei results in
+    {case_dir}/nuclei.json
+  name: Done

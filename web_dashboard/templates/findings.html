@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Findings — CC Dashboard{% endblock %}
+{% block title %}{% if case %}{{ case.case_id }} / Findings{% else %}Findings{% endif %} — CC Dashboard{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
@@ -20,7 +20,21 @@
 </style>
 {% endblock %}
 {% block content %}
+{% if case %}
+{% set active_section = 'findings' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Findings</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+{% endif %}
 <div class="max-w-7xl mx-auto">
+
     <!-- Header -->
     <div class="flex items-center justify-between mb-6">
         <div class="flex items-center gap-2">
@@ -77,6 +91,10 @@
                 <h2 class="text-xs font-semibold text-gray-300 mb-2">Top CVEs</h2>
                 <div id="cve-list" class="space-y-0.5 max-h-40 overflow-y-auto text-xs"></div>
             </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 chart-container">
+                <h2 class="text-xs font-semibold text-gray-300 mb-2">Top Tags</h2>
+                <div id="tag-stats-list" class="space-y-0.5 max-h-40 overflow-y-auto text-xs"></div>
+            </div>
         </div>
     </div>
 
@@ -110,7 +128,7 @@
     <div id="incomplete-pills" class="flex flex-wrap gap-2 mb-3"></div>
 
     <!-- Bulk action toolbar -->
-    <div id="bulk-bar" class="hidden bulk-bar bg-indigo-900/30 border border-indigo-700/50 rounded-lg p-2.5 mb-3 flex items-center gap-3">
+    <div id="bulk-bar" class="hidden bulk-bar bg-indigo-900/30 border border-indigo-700/50 rounded-lg p-2.5 mb-3 flex items-center gap-3 flex-wrap">
         <span class="text-xs text-indigo-300"><span id="selected-count">0</span> selected</span>
         <span class="text-gray-600">|</span>
         <select id="bulk-status-select" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200">
@@ -119,7 +137,19 @@
             <option value="remediated">Remediated</option>
             <option value="closed_other">Closed (Other)</option>
         </select>
-        <button onclick="bulkUpdateStatus()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs text-white">Update Status</button>
+        <button onclick="bulkUpdate('status')" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs text-white">Set Status</button>
+        <select id="bulk-severity-select" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200">
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="info">Info</option>
+        </select>
+        <button onclick="bulkUpdate('severity')" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs text-white">Set Severity</button>
+        <span class="text-gray-600">|</span>
+        <input id="bulk-tag-input" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 w-28" placeholder="tag (e.g. cwe:79)">
+        <button onclick="bulkTagAdd()" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1 rounded text-xs text-white">+Tag</button>
+        <button onclick="bulkTagRemove()" class="bg-red-800 hover:bg-red-700 px-3 py-1 rounded text-xs text-white">-Tag</button>
         <span class="text-gray-600">|</span>
         <button onclick="bulkDelete()" class="bg-red-800 hover:bg-red-700 px-3 py-1 rounded text-xs text-white">Delete Selected</button>
         <button onclick="clearSelection()" class="text-gray-500 hover:text-gray-300 text-xs ml-auto">Deselect all</button>
@@ -171,10 +201,15 @@
     let sortBy = 'severity-desc';
     let viewMode = 'cards';
     let selected = {};
+    const CASE_FILTER = '{{ case.case_id if case else "" }}';
 
     // --- Load ---
     function loadFindings() {
-        fetch('/api/findings/list')
+        var url = '/api/findings/list';
+        if (CASE_FILTER) url += '?case_id=' + encodeURIComponent(CASE_FILTER);
+        var el = document.getElementById('findings-list');
+        if (el) el.innerHTML = '<div class="text-center text-gray-500 py-12"><i data-lucide="loader" class="w-5 h-5 mx-auto animate-spin mb-2"></i><div class="text-xs">Loading findings...</div></div>';
+        fetch(url)
             .then(function(r) {
                 if (!r.ok) throw new Error(r.status + ' loading findings');
                 return r.json();
@@ -266,6 +301,21 @@
             });
         }
         document.getElementById('cve-list').innerHTML = cveHtml;
+
+        var tagCounts = {};
+        allFindings.forEach(function(f) {
+            (f.tags || []).forEach(function(t) { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+        });
+        var tagEntries = Object.entries(tagCounts).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 20);
+        var tagHtml = '';
+        if (!tagEntries.length) {
+            tagHtml = '<div class="text-gray-500 py-4 text-center">No tags</div>';
+        } else {
+            tagEntries.forEach(function(entry) {
+                tagHtml += '<div class="flex items-center justify-between py-0.5"><span class="text-indigo-300">' + escapeHtml(entry[0]) + '</span><span class="text-gray-400">' + entry[1] + 'x</span></div>';
+            });
+        }
+        document.getElementById('tag-stats-list').innerHTML = tagHtml;
     }
 
     // --- Per-case breakdown table ---
@@ -323,12 +373,14 @@
         var noRemediation = allFindings.filter(function(f) { return !f.remediation; }).length;
         var noDescription = allFindings.filter(function(f) { return !f.description; }).length;
         var noImpact = allFindings.filter(function(f) { return !f.impact; }).length;
+        var noTags = allFindings.filter(function(f) { return !(f.tags || []).length; }).length;
 
         var pills = [
             { key: 'missing_cve', label: 'Missing CVE', count: missingCve, color: '#f97316' },
             { key: 'no_remediation', label: 'No Remediation', count: noRemediation, color: '#eab308' },
             { key: 'no_description', label: 'No Description', count: noDescription, color: '#6366f1' },
             { key: 'no_impact', label: 'Missing Impact', count: noImpact, color: '#6b7280' },
+            { key: 'no_tags', label: 'No Tags', count: noTags, color: '#a855f7' },
         ];
         var html = '<span class="text-xs text-gray-600 mr-1 self-center">Incomplete:</span>';
         pills.forEach(function(p) {
@@ -364,16 +416,22 @@
                 if (activeIncomplete === 'no_remediation') return !f.remediation;
                 if (activeIncomplete === 'no_description') return !f.description;
                 if (activeIncomplete === 'no_impact') return !f.impact;
+                if (activeIncomplete === 'no_tags') return !(f.tags || []).length;
                 return true;
             });
         }
         if (activeSearch) {
             var q = activeSearch.toLowerCase();
             filtered = filtered.filter(function(f) {
-                return (f.title || '').toLowerCase().indexOf(q) !== -1
-                    || (f.cve || '').toLowerCase().indexOf(q) !== -1
-                    || (f.description || '').toLowerCase().indexOf(q) !== -1
-                    || (f.id || '').toLowerCase().indexOf(q) !== -1;
+                if ((f.title || '').toLowerCase().indexOf(q) !== -1) return true;
+                if ((f.cve || '').toLowerCase().indexOf(q) !== -1) return true;
+                if ((f.description || '').toLowerCase().indexOf(q) !== -1) return true;
+                if ((f.id || '').toLowerCase().indexOf(q) !== -1) return true;
+                var ftags = f.tags || [];
+                for (var i = 0; i < ftags.length; i++) {
+                    if (ftags[i].toLowerCase().indexOf(q) !== -1) return true;
+                }
+                return false;
             });
         }
         filtered.sort(function(a, b) {
@@ -413,6 +471,10 @@
             var statusBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded" style="background:' + stColor + '20;color:' + stColor + '">' + (f.status || 'unvalidated').replace('_', ' ') + '</span>';
             var cveTag = f.cve ? '<span class="font-mono text-[10px] text-red-400">' + escapeHtml(f.cve) + '</span>' : '';
             var desc = (f.description || '').slice(0, 160);
+            var tags = f.tags || [];
+            var tagsHtml = tags.length ? '<div class="flex flex-wrap gap-1 mt-1.5">' + tags.slice(0, 5).map(function(t) {
+                return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-700/40">' + escapeHtml(t) + '</span>';
+            }).join('') + (tags.length > 5 ? '<span class="text-[10px] text-gray-500">+' + (tags.length - 5) + '</span>' : '') + '</div>' : '';
 
             html += '<div class="finding-card bg-gray-900 border border-gray-800 rounded-lg p-3">' +
                 '<div class="flex items-start gap-3">' +
@@ -430,6 +492,7 @@
                             (cveTag ? '<span class="text-gray-600">/</span>' + cveTag : '') +
                         '</div>' +
                         (desc ? '<div class="text-xs text-gray-500 mt-1 line-clamp-2">' + escapeHtml(desc) + '</div>' : '') +
+                        tagsHtml +
                     '</div>' +
                 '</div></div>';
         });
@@ -440,8 +503,9 @@
         var html = '<div class="bg-gray-900 border border-gray-800 rounded-lg overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-gray-400 border-b border-gray-800">' +
             '<th class="px-2 py-2 w-8"><input type="checkbox" class="w-4 h-4 accent-indigo-500" onchange="toggleSelectAll(this.checked)"></th>' +
             '<th class="text-left px-2 py-2 font-medium">ID</th>' +
-            '<th class="text-left px-2 py-2 font-medium">Severity</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Sev</th>' +
             '<th class="text-left px-2 py-2 font-medium">Title</th>' +
+            '<th class="text-left px-2 py-2 font-medium">Tags</th>' +
             '<th class="text-left px-2 py-2 font-medium">Status</th>' +
             '<th class="text-left px-2 py-2 font-medium">Case</th>' +
             '<th class="text-left px-2 py-2 font-medium">CVE</th>' +
@@ -452,11 +516,16 @@
             var color = SEV_COLORS[f.severity] || '#6b7280';
             var stColor = STATUS_COLORS[f.status] || '#6b7280';
             var created = (f.created || '').slice(0, 10);
+            var tags = f.tags || [];
+            var tagsCell = tags.length ? tags.slice(0, 3).map(function(t) {
+                return '<span class="text-[10px] px-1 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-700/40 mr-0.5">' + escapeHtml(t) + '</span>';
+            }).join('') + (tags.length > 3 ? '<span class="text-[10px] text-gray-500">+' + (tags.length - 3) + '</span>' : '') : '';
             html += '<tr class="finding-row border-b border-gray-800/50 last:border-0">' +
                 '<td class="px-2 py-1.5"><input type="checkbox" class="finding-checkbox w-4 h-4 accent-indigo-500" data-key="' + f._case_id + '/' + f.id + '"' + checked + ' onchange="toggleSelect(\'' + f._case_id + '\',\'' + f.id + '\')"></td>' +
                 '<td class="px-2 py-1.5 text-gray-400 font-mono">' + escapeHtml(f.id) + '</td>' +
                 '<td class="px-2 py-1.5"><span class="w-2.5 h-2.5 rounded-full inline-block shrink-0" style="background:' + color + '" title="' + f.severity + '"></span></td>' +
                 '<td class="px-2 py-1.5"><a href="/case/' + encodeURIComponent(f._case_id) + '/finding/' + encodeURIComponent(f.id) + '" class="text-gray-200 hover:text-indigo-400">' + escapeHtml(f.title) + '</a></td>' +
+                '<td class="px-2 py-1.5 max-w-[140px] truncate">' + tagsCell + '</td>' +
                 '<td class="px-2 py-1.5"><span class="px-1.5 py-0.5 rounded text-[10px]" style="background:' + stColor + '20;color:' + stColor + '">' + (f.status || 'unvalidated').replace('_', ' ') + '</span></td>' +
                 '<td class="px-2 py-1.5"><a href="/case/' + encodeURIComponent(f._case_id) + '" class="font-mono text-indigo-400 hover:text-indigo-300">' + escapeHtml(f._case_id) + '</a></td>' +
                 '<td class="px-2 py-1.5 font-mono text-red-400">' + escapeHtml(f.cve || '') + '</td>' +
@@ -595,19 +664,21 @@
         }
     }
 
-    window.bulkUpdateStatus = function() {
+    window.bulkUpdate = function(field) {
         var keys = Object.keys(selected);
         if (!keys.length) return;
-        var status = document.getElementById('bulk-status-select').value;
-        if (!confirm('Update ' + keys.length + ' finding(s) to "' + status + '"?')) return;
+        var value = document.getElementById('bulk-' + field + '-select').value;
+        if (!confirm('Set ' + field + ' to "' + value + '" for ' + keys.length + ' finding(s)?')) return;
         var findings = keys.map(function(k) {
             var parts = k.split('/');
             return { case_id: parts[0], finding_id: parts[1] };
         });
+        var changes = {};
+        changes[field] = value;
         fetch('/api/findings/bulk-update', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ findings: findings, changes: { status: status } })
+            body: JSON.stringify({ findings: findings, changes: changes })
         })
         .then(function(r) {
             if (!r.ok) return r.text().then(function(t) { throw new Error(r.status + ': ' + t.slice(0, 200)); });
@@ -615,8 +686,7 @@
         })
         .then(function(data) {
             var errs = data.errors || [];
-            if (errs.length) alert(errs.length + ' error(s). ' + data.updated + ' updated.');
-            else alert(data.updated + ' finding(s) updated.');
+            alert((errs.length ? errs.length + ' error(s). ' : '') + data.updated + ' finding(s) updated.');
             if (errs.length) console.warn('Bulk update errors:', errs);
             selected = {};
             loadFindings();
@@ -653,14 +723,60 @@
         .catch(function(e) { alert('Bulk delete failed: ' + e.message); });
     };
 
+    window.bulkTagAdd = function() {
+        var tag = document.getElementById('bulk-tag-input').value.trim();
+        if (!tag) return alert('Enter a tag');
+        var keys = Object.keys(selected);
+        if (!keys.length) return alert('No findings selected');
+        var ok = 0, fail = 0;
+        var total = keys.length;
+        keys.forEach(function(k) {
+            var parts = k.split('/');
+            fetch('/api/case/' + parts[0] + '/finding/' + parts[1] + '/tags/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tag: tag })
+            }).then(function(r) {
+                if (r.ok) ok++; else fail++;
+                if (ok + fail === total) {
+                    alert('Tag added to ' + ok + ' finding(s)' + (fail ? ', ' + fail + ' failed' : ''));
+                    if (ok) { selected = {}; loadFindings(); }
+                }
+            }).catch(function() { fail++; });
+        });
+    };
+
+    window.bulkTagRemove = function() {
+        var tag = document.getElementById('bulk-tag-input').value.trim();
+        if (!tag) return alert('Enter a tag');
+        var keys = Object.keys(selected);
+        if (!keys.length) return alert('No findings selected');
+        var ok = 0, fail = 0;
+        var total = keys.length;
+        keys.forEach(function(k) {
+            var parts = k.split('/');
+            fetch('/api/case/' + parts[0] + '/finding/' + parts[1] + '/tags/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tag: tag })
+            }).then(function(r) {
+                if (r.ok) ok++; else fail++;
+                if (ok + fail === total) {
+                    alert('Tag removed from ' + ok + ' finding(s)' + (fail ? ', ' + fail + ' failed' : ''));
+                    if (ok) { selected = {}; loadFindings(); }
+                }
+            }).catch(function() { fail++; });
+        });
+    };
+
     // === Export ===
     window.exportFindings = function(format) {
         var filtered = getFiltered();
         if (!filtered.length) { alert('No findings to export.'); return; }
         if (format === 'csv') {
-            var headers = ['ID', 'Title', 'Severity', 'Status', 'Case', 'CVE', 'CWE', 'Source', 'Created', 'Description', 'Remediation', 'Impact'];
+            var headers = ['ID', 'Title', 'Severity', 'Status', 'Case', 'CVE', 'CWE', 'Source', 'CVSS', 'Tags', 'Created', 'Description', 'Remediation', 'Impact'];
             var rows = filtered.map(function(f) {
-                return [f.id, f.title, f.severity, f.status, f._case_id, f.cve || '', f.cwe || '', f.source || '', (f.created || '').slice(0, 10), (f.description || '').replace(/"/g, '""'), (f.remediation || '').replace(/"/g, '""'), (f.impact || '').replace(/"/g, '""')];
+                return [f.id, f.title, f.severity, f.status, f._case_id, f.cve || '', f.cwe || '', f.source || '', f.cvss_score || '', (f.tags || []).join('; ') || '', (f.created || '').slice(0, 10), (f.description || '').replace(/"/g, '""'), (f.remediation || '').replace(/"/g, '""'), (f.impact || '').replace(/"/g, '""')];
             });
             var csv = '\uFEFF' + headers.join(',') + '\n' + rows.map(function(r) { return r.map(function(v) { return '"' + v + '"'; }).join(','); }).join('\n');
             downloadBlob(csv, 'findings-export.csv', 'text/csv;charset=utf-8');
@@ -694,4 +810,6 @@
     loadFindings();
 })();
 </script>
+</div>
+{% if case %}</div></div>{% endif %}
 {% endblock %}

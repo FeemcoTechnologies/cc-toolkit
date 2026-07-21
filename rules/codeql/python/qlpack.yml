@@ -1,0 +1,4 @@
+name: custom-security-queries/python
+version: 1.0.0
+dependencies:
+  codeql/python-all: ^0.8.0

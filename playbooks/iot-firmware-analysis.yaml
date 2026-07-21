@@ -1,0 +1,250 @@
+name: "IoT Firmware Analysis"
+description: >
+  IoT and embedded device firmware security analysis covering extraction,
+  filesystem analysis, binary reverse engineering, vulnerability discovery,
+  backdoor detection, and emulation. Works with any firmware image
+  (router, IoT, camera, embedded Linux, RTOS).
+version: "2.0"
+target_required: true
+
+vars:
+  firmware_file: ""
+  firmware_type: ""
+  extraction_dir: "{case_dir}/extracted"
+  emulation_port: 8080
+
+preflight:
+  - id: preamble
+    type: log
+    message: "IoT firmware analysis — {firmware_file} case: {case_id}"
+
+steps:
+  # Phase 1: Firmware identification
+  - id: identify
+    name: "Firmware identification"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: file_type
+        name: "Determine file type"
+        tool: file
+        args: ["{firmware_file}"]
+        save: "{case_dir}/firmware-filetype.txt"
+        timeout: 15
+
+      - id: strings_scan
+        name: "Extract strings"
+        tool: strings
+        args: ["-n", "6", "{firmware_file}"]
+        save: "{case_dir}/firmware-strings.txt"
+        timeout: 60
+
+      - id: entropy
+        name: "Calculate file entropy"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'rb').read(); from collections import Counter; c=Counter(d); e=-sum((v/len(d))*(v/len(d)).bit_length() for v in c.values()); print(f'Entropy: {e:.2f} (compressed if >0.85)')",
+               "{firmware_file}"]
+        save: "{case_dir}/firmware-entropy.txt"
+        timeout: 30
+
+  # Phase 2: Firmware extraction
+  - id: extraction
+    name: "Firmware extraction"
+    type: sequential
+    steps:
+      - id: binwalk_extract
+        name: "Binwalk extraction"
+        tool: binwalk
+        args: ["-Mer", "{firmware_file}", "-C", "{extraction_dir}"]
+        timeout: 300
+        artifacts:
+          - "{extraction_dir}"
+
+      - id: extract_manual
+        name: "Manual extraction fallback"
+        tool: python3
+        args: ["-c", "import sys,os; f=sys.argv[1]; d=sys.argv[2]; print(f'Manual extraction fallback for {f}:\\n1. dd if={f} bs=1 skip=$OFFSET of={d}/kernel.bin\\n2. unsquashfs -d {d}/squashfs-root {f}\\n3. tar xvf {f} -C {d}\\n4. jefferson {f} -d {d}\\n5. ubi_reader: ubireader_extract_images {f}\\n6. cramfstool -x {f}\\n7. jffs2dump {f} -o {d}')",
+               "{firmware_file}", "{extraction_dir}"]
+        save: "{case_dir}/manual-extract.txt"
+        timeout: 15
+
+      - id: list_fs
+        name: "List extracted filesystem"
+        tool: find
+        args: ["{extraction_dir}", "-type", "f"]
+        save: "{case_dir}/extracted-files.txt"
+        timeout: 30
+
+  # Phase 3: Filesystem analysis
+  - id: fs_analysis
+    name: "Filesystem analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: suid_sgid
+        name: "Find SUID/SGID binaries"
+        tool: find
+        args: ["{extraction_dir}", "-perm", "-4000", "-o", "-perm", "-2000"]
+        save: "{case_dir}/suid-binaries.txt"
+        timeout: 30
+
+      - id: world_writable
+        name: "Find world-writable files"
+        tool: find
+        args: ["{extraction_dir}", "-perm", "-o+w"]
+        save: "{case_dir}/world-writable.txt"
+        timeout: 30
+
+      - id: hardcoded_creds
+        name: "Search hardcoded credentials"
+        tool: grep
+        args: ["-r", "-i",
+               "(password|passwd|secret|token|api.key|auth|credentials)",
+               "{extraction_dir}", "--include", "*.{conf,cfg,ini,json,xml,sh,py,php,js}"]
+        save: "{case_dir}/hardcoded-creds.txt"
+        timeout: 60
+
+      - id: config_files
+        name: "Extract config files"
+        tool: find
+        args: ["{extraction_dir}", "-name", "*.conf", "-o", "-name",
+               "*.cfg", "-o", "-name", "*.ini", "-o", "-name", "config"]
+        save: "{case_dir}/config-files.txt"
+        timeout: 30
+
+      - id: web_content
+        name: "Find web server content"
+        tool: find
+        args: ["{extraction_dir}", "-name", "*.html", "-o", "-name",
+               "*.php", "-o", "-name", "*.asp", "-o", "-name", "*.cgi"]
+        save: "{case_dir}/web-content.txt"
+        timeout: 30
+
+      - id: init_scripts
+        name: "Find init/service scripts"
+        tool: find
+        args: ["{extraction_dir}", "-name", "S*", "-o", "-name",
+               "*.service", "-o", "-name", "rc*", "-o", "-name", "inittab"]
+        save: "{case_dir}/init-scripts.txt"
+        timeout: 30
+
+  # Phase 4: Binary analysis
+  - id: binary_analysis
+    name: "Binary security analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: checksec_all
+        name: "Check binary security mitigations"
+        tool: python3
+        args: ["-c", "import sys,os,subprocess; d=sys.argv[1]; r=[]; for root,dirs,files in os.walk(d): [r.append(os.path.join(root,f)) for f in files if os.access(os.path.join(root,f),os.X_OK) and not os.path.islink(os.path.join(root,f))]; [print(f'{b}: NX={os.popen(f\\\"readelf -l {b} 2>/dev/null | grep -c GNU_STACK\\\").read().strip()}, Canary={os.popen(f\\\"readelf -s {b} 2>/dev/null | grep -c __stack_chk_fail\\\").read().strip()}, PIE={os.popen(f\\\"readelf -h {b} 2>/dev/null | grep -c Type.*DYN\\\").read().strip()}, RELRO={os.popen(f\\\"readelf -l {b} 2>/dev/null | grep -c GNU_RELRO\\\").read().strip()}') for b in r[:50]]",
+               "{extraction_dir}"]
+        save: "{case_dir}/binary-mitigations.txt"
+        timeout: 120
+
+      - id: dangerous_funcs
+        name: "Find dangerous functions"
+        tool: grep
+        args: ["-r", "-l", "\\b(system|exec|popen|popen64|shell|eval|assert|gets|scanf|sprintf|strcpy|strcat|memcpy|dlload|dlopen|LoadLibrary|CreateProcess)\\b",
+               "{extraction_dir}", "--include", "*.so", "--include", "*.o"]
+        save: "{case_dir}/dangerous-funcs.txt"
+        timeout: 60
+
+  # Phase 5: Vulnerability discovery
+  - id: vuln_discovery
+    name: "Vulnerability discovery"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: cve_search
+        name: "CVE search by version"
+        tool: python3
+        args: ["-c", "import sys,os,re; d=sys.argv[1]; vfiles=os.popen(f'find {d} -name \\\"version*\\\" -o -name \\\"*.version\\\" -o -name \\\"VERSION\\\" 2>/dev/null').read().split(); [print(open(f).read().strip()) for f in vfiles[:20]]",
+               "{extraction_dir}"]
+        save: "{case_dir}/version-info.txt"
+        timeout: 30
+
+      - id: backdoor_check
+        name: "Backdoor detection"
+        tool: python3
+        args: ["-c", "import sys,os; d=sys.argv[1]; patterns=['telnetd','backdoor','debug','test','hidden','secret','magic','backdoor','maintainer','manufacturer']; r=os.popen(f'grep -rl \\\"{\\\"|\\\".join(patterns)}\\\" {d} 2>/dev/null').read(); [print(f'Found in: {f}') for f in r.split('\\n') if f][:50]",
+               "{extraction_dir}"]
+        save: "{case_dir}/backdoor-candidates.txt"
+        timeout: 60
+
+      - id: crypto_check
+        name: "Cryptography weakness check"
+        tool: python3
+        args: ["-c", "import sys,os; d=sys.argv[1]; patterns=['SSL','HTTPS','certificate','public.key','private.key','ssl.crt','ssl.key','cert.pem','openssl']; r=os.popen(f'find {d} -name \\\"*.pem\\\" -o -name \\\"*.key\\\" -o -name \\\"*.crt\\\" -o -name \\\"*.cert\\\" 2>/dev/null').read(); print(r if r else 'No cert/key files found')",
+               "{extraction_dir}"]
+        save: "{case_dir}/crypto-materials.txt"
+        timeout: 30
+
+  # Phase 6: Firmware emulation
+  - id: emulation
+    name: "Firmware emulation"
+    type: sequential
+    steps:
+      - id: emulation_plan
+        name: "Determine emulation approach"
+        tool: python3
+        args: ["-c", "import sys,os; f=sys.argv[1]; print(f'Emulation options for {f}:\\n1. Firmadyne (full system emulation)\\n2. QEMU user-mode (single binary)\\n3. QEMU system-mode (full kernel + rootfs)\\n4. Renode (embedded/IoT emulation)\\n5. Unicorn (binary-only CPU emulation)\\n6. Avatar2 (hybrid emulation)')",
+               "{firmware_file}"]
+        save: "{case_dir}/emulation-plan.txt"
+        timeout: 15
+
+  # Phase 7: OTA & update mechanism testing
+  - id: ota_test
+    name: "OTA update mechanism testing"
+    type: sequential
+    steps:
+      - id: ota_check
+        name: "Analyze OTA update process"
+        tool: python3
+        args: ["-c", "import sys; print(f'OTA update security checklist:\\n- Is update channel HTTPS?\\n- Is firmware signed?\\n- Is signature verified before flash?\\n- Can update be downgraded?\\n- Is there a rollback protection?\\n- Are update servers authenticated?\\n- Is the update manifest validated?\\n- Can we MITM the update process?')"]
+        save: "{case_dir}/ota-security.txt"
+        timeout: 15
+
+  # Phase 8: Debug interface testing
+  - id: debug_iface
+    name: "Debug interface testing"
+    type: sequential
+    steps:
+      - id: debug_check
+        name: "Check for debug interfaces"
+        tool: python3
+        args: ["-c", "import sys; print(f'Debug interface checks:\\n- UART/serial console (usually 115200 8N1)\\n- JTAG/SWD debug ports\\n- Telnet/SSH enabled by default\\n- Debug API endpoints (device IP:port)\\n- USB gadget mode / ADB enabled\\n- Bootloader console (uboot, grub, CFE)\\n- OEM maintenance modes')"]
+        save: "{case_dir}/debug-interfaces.txt"
+        timeout: 15
+
+  # Phase 9: Report
+  - id: report
+    name: "Firmware analysis report"
+    type: report
+    format: markdown
+    title: "IoT Firmware Analysis — {firmware_file}"
+    output: "{case_dir}/firmware-analysis-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Firmware: {firmware_file}\n- Type: {firmware_type}\n- Case: {case_id}"
+      - heading: "Identification"
+        body: "- File type: {case_dir}/firmware-filetype.txt\n- Entropy: {case_dir}/firmware-entropy.txt"
+      - heading: "Extraction"
+        body: "- Extracted: {extraction_dir}\n- Files: {case_dir}/extracted-files.txt"
+      - heading: "Filesystem Analysis"
+        body: "- SUID: {case_dir}/suid-binaries.txt\n- World-writable: {case_dir}/world-writable.txt\n- Credentials: {case_dir}/hardcoded-creds.txt\n- Configs: {case_dir}/config-files.txt"
+      - heading: "Binary Analysis"
+        body: "- Mitigations: {case_dir}/binary-mitigations.txt\n- Dangerous funcs: {case_dir}/dangerous-funcs.txt"
+      - heading: "Vulnerabilities"
+        body: "- Versions: {case_dir}/version-info.txt\n- Backdoors: {case_dir}/backdoor-candidates.txt\n- Crypto: {case_dir}/crypto-materials.txt"
+      - heading: "Emulation/OTA/Debug"
+        body: "- Emulation: {case_dir}/emulation-plan.txt\n- OTA: {case_dir}/ota-security.txt\n- Debug: {case_dir}/debug-interfaces.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Firmware analysis complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "IoT firmware analysis finished for {firmware_file}. Report at {case_dir}/firmware-analysis-report.md"

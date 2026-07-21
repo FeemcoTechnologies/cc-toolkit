@@ -1,6 +1,6 @@
 name: "HTTP Request Smuggling"
-description: "HTTP request smuggling attacks: CL.TE, TE.CL, TE.TE, transfer-encoding obfuscation, and connection-based desync detection"
-version: "1.0"
+description: "HTTP request smuggling attacks: CL.TE, TE.CL, TE.TE, transfer-encoding obfuscation, HTTP/2 downgrade smuggling, and connection-based desync detection"
+version: "2.0"
 
 vars:
   wordlist: "/wordlists/webcontent-top-10000.txt"
@@ -183,13 +183,30 @@ steps:
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "HTTP smuggling note"
+    name: "HTTP smuggling report"
+    type: report
+    format: markdown
+    title: "HTTP Request Smuggling Report — {target}"
+    output: "{case_dir}/smuggling-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Technology Detection"
+        body: "- Server headers: {case_dir}/smuggle_headers.txt\n- WAF/LB: {case_dir}/whatweb-smuggle.txt\n- HTTP/2: {case_dir}/http2_check.txt"
+      - heading: "CL.TE"
+        body: "- Basic probe: {case_dir}/smuggle_clte_basic.txt\n- Grab prefix: {case_dir}/smuggle_clte_gp.txt"
+      - heading: "TE.CL"
+        body: "- Basic probe: {case_dir}/smuggle_tecl_basic.txt\n- Time-based: {case_dir}/smuggle_tecl_time.txt"
+      - heading: "TE.TE Obfuscation"
+        body: "- Case: {case_dir}/smuggle_te_case.txt\n- Multi-header: {case_dir}/smuggle_te_multi.txt\n- Tab: {case_dir}/smuggle_te_tab.txt\n- Space: {case_dir}/smuggle_te_space.txt"
+      - heading: "HTTP/2 & Desync"
+        body: "- h2c upgrade: {case_dir}/smuggle_h2c.txt\n- Baseline: {case_dir}/desync_baseline.txt\n- Desync test: {case_dir}/desync_test.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      HTTP request smuggling assessment complete for {target}.
-      Results in {case_dir}/:
-      - CL.TE: smuggle_clte_basic.txt, smuggle_clte_gp.txt
-      - TE.CL: smuggle_tecl_basic.txt, smuggle_tecl_time.txt
-      - TE.TE obfuscation: smuggle_te_case.txt, smuggle_te_multi.txt, smuggle_te_tab.txt
-      - HTTP/2: smuggle_h2c.txt
-      - Desync: desync_baseline.txt, desync_test.txt
+    message: "HTTP smuggling assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "HTTP request smuggling scan finished for {target}. Results in {case_dir}"

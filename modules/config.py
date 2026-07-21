@@ -78,6 +78,20 @@ if OBSIDIAN_DIR:
 else:
     PENTEST_NOTES_DIR = Path("")
 
+# ── Sync Compatibility Aliases ──────────────────────────────────────────────
+# Code synced from the working repo imports these symbols from modules.config.
+# They are aliases for the primary env-var-driven values above.
+CASES_DIR = PENTEST_DIR
+CC_DIR = WORKSPACE
+PLAYBOOKS_DIR = WORKSPACE / "playbooks"
+TEMPLATES_DIR = WORKSPACE / "templates"
+MODULES_DIR = WORKSPACE / "modules"
+SCRIPTS_DIR = WORKSPACE
+NUCLEI_TEMPLATES_DIR = WORKSPACE / "nuclei-templates"
+YARA_RULES_DIR = WORKSPACE / "rules" / "yara"
+SIGMA_RULES_DIR = WORKSPACE / "rules" / "sigma"
+SEMGREP_RULES_DIR = WORKSPACE / "rules" / "semgrep"
+
 
 def load_config_file(path=None):
     """Merge settings from a JSON config file (overrides env vars)."""

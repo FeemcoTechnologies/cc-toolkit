@@ -1,93 +1,119 @@
-# v2 runbook — cloud service enumeration (AWS, Azure, GCP)
-name: "Cloud Service Enumeration"
-description: "Enumerate public cloud assets: S3 buckets, Azure blobs, GCP storage, CloudFront, DNS"
-version: "2.0"
-
+name: Cloud Service Enumeration
+description: 'Enumerate public cloud assets: S3 buckets, Azure blobs, GCP storage,
+  CloudFront, DNS'
+version: '2.0'
 vars:
-  cloud_org: ""
-
+  cloud_org: ''
 steps:
-  - id: preamble
-    type: log
-    message: "Cloud enumeration for {target} (org: {cloud_org})"
+- id: preamble
+  type: log
+  message: 'Cloud enumeration for {target} (org: {cloud_org})'
+  name: Preamble
+- id: dns_recon
+  name: Subdomain & DNS enumeration
+  type: parallel
+  steps:
+  - id: subfinder
+    name: Subfinder
+    tool: subfinder
+    args:
+    - -silent
+    - -d
+    - '{target}'
+    - -o
+    - '{case_dir}/cloud-subdomains.txt'
+    artifacts:
+    - '{case_dir}/cloud-subdomains.txt'
+    type: tool
+  - id: dnsrecon
+    name: DNS record types
+    tool: dnsrecon
+    args:
+    - -d
+    - '{target}'
+    - -t
+    - std
+    - --csv
+    - '{case_dir}/dnsrecon.csv'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/dnsrecon.csv'
+    type: tool
+- id: s3_enum
+  name: S3 bucket enumeration
+  type: parallel
+  steps:
+  - id: s3scanner
+    name: S3Scanner
+    tool: s3scanner
+    args:
+    - --buckets-file
+    - '{case_dir}/cloud-subdomains.txt'
+    - --out-file
+    - '{case_dir}/s3-buckets.txt'
+    artifacts:
+    - '{case_dir}/s3-buckets.txt'
+    type: tool
+  - id: cloud_enum
+    name: Cloud_enum (multi-cloud)
+    tool: cloud_enum
+    args:
+    - -k
+    - '{target}'
+    - -l
+    - '{case_dir}/cloud-enum.txt'
+    timeout: 300
+    artifacts:
+    - '{case_dir}/cloud-enum.txt'
+    type: tool
+- id: s3_open_notify
+  type: notify
+  level: critical
+  message: Check S3 results — public buckets may be open
+  condition:
+    file_exists: '{case_dir}/s3-buckets.txt'
+  name: S3 Open Notify
+- id: aws_check
+  name: AWS-specific enumeration
+  type: conditional
+  condition:
+    file_exists: '{case_dir}/cloud-enum.txt'
+  then:
+  - id: aws_s3_ls
+    name: List discovered S3 buckets
+    tool: awscli
+    args:
+    - s3
+    - ls
+    - s3://{target}/
+    - --no-sign-request
+    timeout: 60
+    type: tool
+- id: cloud_report
+  name: Generate cloud report
+  type: report
+  format: markdown
+  title: Cloud Enumeration — {target}
+  output: '{case_dir}/cloud-report.md'
+  sections:
+  - heading: Target
+    body: '- Organization: {cloud_org}
 
-  # ---- Phase 1: DNS / subdomain discovery ----
-  - id: dns_recon
-    name: "Subdomain & DNS enumeration"
-    type: parallel
-    steps:
-      - id: subfinder
-        name: "Subfinder"
-        tool: subfinder
-        args: ["-silent", "-d", "{target}", "-o", "{case_dir}/cloud-subdomains.txt"]
-        artifacts: ["{case_dir}/cloud-subdomains.txt"]
-
-      - id: dnsrecon
-        name: "DNS record types"
-        tool: dnsrecon
-        args: ["-d", "{target}", "-t", "std", "--csv", "{case_dir}/dnsrecon.csv"]
-        timeout: 120
-        artifacts: ["{case_dir}/dnsrecon.csv"]
-
-  # ---- Phase 2: S3 bucket enumeration ----
-  - id: s3_enum
-    name: "S3 bucket enumeration"
-    type: parallel
-    steps:
-      - id: s3scanner
-        name: "S3Scanner"
-        tool: s3scanner
-        args: ["--buckets-file", "{case_dir}/cloud-subdomains.txt",
-               "--out-file", "{case_dir}/s3-buckets.txt"]
-        artifacts: ["{case_dir}/s3-buckets.txt"]
-
-      - id: cloud_enum
-        name: "Cloud_enum (multi-cloud)"
-        tool: cloud_enum
-        args: ["-k", "{target}", "-l", "{case_dir}/cloud-enum.txt"]
-        timeout: 300
-        artifacts: ["{case_dir}/cloud-enum.txt"]
-
-  - id: s3_open_notify
-    type: notify
-    level: critical
-    message: "Check S3 results — public buckets may be open"
-    condition:
-      file_exists: "{case_dir}/s3-buckets.txt"
-
-  # ---- Phase 3: AWS-specific checks ----
-  - id: aws_check
-    name: "AWS-specific enumeration"
-    type: conditional
-    condition:
-      file_exists: "{case_dir}/cloud-enum.txt"
-    then:
-      - id: aws_s3_ls
-        name: "List discovered S3 buckets"
-        tool: awscli
-        args: ["s3", "ls", "s3://{target}/", "--no-sign-request"]
-        timeout: 60
-
-  - id: cloud_report
-    name: "Generate cloud report"
-    type: report
-    format: markdown
-    title: "Cloud Enumeration — {target}"
-    output: "{case_dir}/cloud-report.md"
-    sections:
-      - heading: "Target"
-        body: "- Organization: {cloud_org}\n- Domain: {target}"
-      - heading: "Subdomains"
-        body: "See {case_dir}/cloud-subdomains.txt"
-      - heading: "S3 Buckets"
-        body: "See {case_dir}/s3-buckets.txt"
-
+      - Domain: {target}'
+  - heading: Subdomains
+    body: See {case_dir}/cloud-subdomains.txt
+  - heading: S3 Buckets
+    body: See {case_dir}/s3-buckets.txt
 postflight:
-  - id: prompt_deeper
-    type: prompt
-    message: "Run PACU (AWS exploitation framework) against discovered assets?"
-    then:
-      - id: pacu_scan
-        name: "PACU enumeration"
-        tool: pacu
-        args: ["--module", "iam__enum_users_roles_policies_profiles"]
+- id: prompt_deeper
+  type: prompt
+  message: Run PACU (AWS exploitation framework) against discovered assets?
+  then:
+  - id: pacu_scan
+    name: PACU enumeration
+    tool: pacu
+    args:
+    - --module
+    - iam__enum_users_roles_policies_profiles
+    type: tool
+  name: Prompt Deeper

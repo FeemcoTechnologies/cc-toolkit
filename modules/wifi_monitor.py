@@ -943,20 +943,21 @@ class WifiMonitorSession:
                     existing_texts.add(s["text"])
 
     def _save_data(self):
-        self.data_path.write_text(json.dumps({
-            "session_id": self.session_id,
-            "started": self.started,
-            "stopped": self.stopped,
-            "iface": self.iface,
-            "target_bssid": self.target_bssid,
-            "target_essid": self.target_essid,
-            "status": self.status,
-            "aps": list(self.aps.values()),
-            "clients": list(self.clients.values()),
-            "signal_history": self.signal_history,
-            "captures": self.captures,
-            "stats": self.stats,
-        }, indent=2, default=str))
+        with self._lock:
+            self.data_path.write_text(json.dumps({
+                "session_id": self.session_id,
+                "started": self.started,
+                "stopped": self.stopped,
+                "iface": self.iface,
+                "target_bssid": self.target_bssid,
+                "target_essid": self.target_essid,
+                "status": self.status,
+                "aps": list(self.aps.values()),
+                "clients": list(self.clients.values()),
+                "signal_history": self.signal_history,
+                "captures": self.captures,
+                "stats": self.stats,
+            }, indent=2, default=str))
 
     def load(self) -> bool:
         """Reload session data from disk."""

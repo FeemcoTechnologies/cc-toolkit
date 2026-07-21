@@ -13,20 +13,25 @@
 </style>
 {% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-4">
-    <div class="flex items-center gap-4">
-        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
-        <h1 class="text-lg font-semibold flex items-center gap-2">
-            <i data-lucide="columns" class="w-5 h-5 text-indigo-400"></i>
-            Kanban Board — {{ case.case_id }}
-        </h1>
-    </div>
-    <div class="text-xs text-gray-500">
-        Drag findings between columns to update status
-    </div>
-</div>
+{% set active_section = 'board' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Board</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+<h1 class="text-lg font-semibold flex items-center gap-2 mb-4">
+    <i data-lucide="columns" class="w-5 h-5 text-indigo-400"></i>
+    Kanban Board — {{ case.case_id }}
+</h1>
 <div id="board-container" class="grid grid-cols-4 gap-3" style="min-height: calc(100vh - 160px);">
     <div class="text-gray-500 col-span-4 text-center py-12">Loading...</div>
+</div>
+</div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -82,11 +87,13 @@ function openFinding(id) {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify({finding_id: findingId, status: newStatus}),
-                            });
+                            }).catch(function() {});
                         },
                     });
                 });
                 lucide.createIcons();
+            }).catch(function(e) {
+                document.getElementById('board-container').innerHTML = '<div class="text-red-400 text-center py-12">Failed to load board: ' + e.message + '</div>';
             });
     }
 
@@ -108,6 +115,7 @@ function openFinding(id) {
             (cve ? '<span class="font-mono text-indigo-400">' + cve + '</span>' : '') +
             (age ? '<span>' + age + '</span>' : '') +
             '</div>' +
+            (f.tags && f.tags.length ? '<div class="flex gap-1 mt-1 flex-wrap">' + f.tags.slice(0, 3).map(function(t) { return '<span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300">' + escapeHtml(t) + '</span>'; }).join('') + (f.tags.length > 3 ? '<span class="text-[10px] text-gray-500">+' + (f.tags.length - 3) + '</span>' : '') + '</div>' : '') +
             (f.description ? '<div class="mt-1 text-gray-500 truncate">' + escapeHtml(f.description) + '</div>' : '') +
             '</div>';
     }

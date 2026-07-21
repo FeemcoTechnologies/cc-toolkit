@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}CC / Burp Scans{% endblock %}
+{% block head %}
+<style>
+    .badge { @apply text-xs px-2 py-0.5 rounded-full font-medium; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="activity" class="w-5 h-5 text-green-400"></i> Burp Scans</h1>
+    <div class="flex gap-2">
+        <a href="/burp" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> Back</a>
+    </div>
+</div>
+
+<div id="toast" class="hidden fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium max-w-md"></div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <h2 class="text-sm font-semibold mb-3">Start New Scan</h2>
+        <label class="block text-xs text-gray-400 mb-1">Target URLs (comma-separated)</label>
+        <textarea id="scan-urls" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3" rows="3" placeholder="https://example.com, https://api.example.com"></textarea>
+        <button id="scan-start-btn" onclick="doStartScan()" class="bg-red-700 hover:bg-red-600 disabled:opacity-50 text-xs px-4 py-2 rounded flex items-center gap-2">
+            <span id="btn-text">Start Scan</span>
+            <span id="btn-spinner" class="hidden"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg></span>
+        </button>
+    </div>
+
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <h2 class="text-sm font-semibold mb-3">Check Scan Status</h2>
+        <label class="block text-xs text-gray-400 mb-1">Scan ID</label>
+        <div class="flex gap-2">
+            <input id="scan-id-input" class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm" placeholder="e.g. 13">
+            <button onclick="checkStatus()" class="bg-gray-700 hover:bg-gray-600 text-xs px-4 py-2 rounded">Check</button>
+        </div>
+        <pre id="scan-result" class="bg-gray-950 rounded p-3 text-xs font-mono mt-3 max-h-96 overflow-auto hidden"></pre>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function toast(msg, err) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium max-w-md ' +
+        (err ? 'bg-red-900 border-red-700 text-red-200' : 'bg-green-900 border-green-700 text-green-200');
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 5000);
+}
+async function doStartScan() {
+    const urls = document.getElementById('scan-urls').value.trim();
+    if (!urls) { toast('Enter at least one URL', true); return; }
+    const btn = document.getElementById('scan-start-btn');
+    const txt = document.getElementById('btn-text');
+    const spin = document.getElementById('btn-spinner');
+    btn.disabled = true;
+    txt.textContent = 'Starting...';
+    spin.classList.remove('hidden');
+    try {
+        const r = await (await fetch('/api/burp/scan/start', {method:'POST', body:JSON.stringify({urls})})).json();
+        if (r.error) { toast('Error: ' + r.error, true); return; }
+        toast('Scan started! ID: ' + r.scan_id + ' — paste it in "Check Scan Status" to track progress', false);
+        document.getElementById('scan-urls').value = '';
+        document.getElementById('scan-id-input').value = r.scan_id;
+        checkStatus();
+    } catch(e) {
+        toast('Network error: ' + e.message, true);
+    } finally {
+        btn.disabled = false;
+        txt.textContent = 'Start Scan';
+        spin.classList.add('hidden');
+    }
+}
+async function checkStatus() {
+    const sid = document.getElementById('scan-id-input').value.trim();
+    if (!sid) return;
+    const el = document.getElementById('scan-result');
+    el.classList.remove('hidden');
+    el.textContent = 'Loading...';
+    try {
+        const r = await (await fetch(`/api/burp/scans/${sid}`)).json();
+        el.textContent = JSON.stringify(r, null, 2);
+    } catch(e) {
+        el.textContent = 'Error: ' + e.message;
+    }
+}
+</script>
+{% endblock %}

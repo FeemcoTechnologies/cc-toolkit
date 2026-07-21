@@ -1,0 +1,175 @@
+name: "Physical Security Assessment"
+description: >
+  Physical security penetration testing covering access control systems,
+  electronic locking mechanisms, badge cloning (RFID/NFC), biometric
+  bypass, lock picking, surveillance system compromise, alarm bypass,
+  social engineering, and tailgating.
+version: "2.0"
+target_required: true
+
+vars:
+  facility_name: ""
+  badge_type: "rfid"
+  lock_type: ""
+  alarm_system: ""
+  camera_model: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Physical security assessment — {facility_name} ({target}) case: {case_id}"
+
+steps:
+  # Phase 1: Reconnaissance
+  - id: recon
+    name: "Physical recon"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: perimeter_review
+        name: "Perimeter security review"
+        tool: python3
+        args: ["-c", "import sys; print(f'Perimeter security checklist for {sys.argv[1]}:\\n- Fencing/gates: height, barbed wire, anti-climb\\n- Lighting: coverage, motion sensor, IR\\n- CCTV: blind spots, camera angles, PTZ coverage\\n- Entry points: doors, windows, loading docks, roof\\n- Signage: security warning signs, no trespassing\\n- Nearby structures: overlooking buildings, tunnels\\n- Guard presence: patrol routes, checkpoints, response time')",
+               "{facility_name}"]
+        save: "{case_dir}/perimeter-review.txt"
+        timeout: 15
+
+      - id: social_prep
+        name: "Social engineering prep"
+        tool: python3
+        args: ["-c", "import sys; print(f'Social engineering prep for {sys.argv[1]}:\\n- Identify: employee names from LinkedIn/OSINT\\n- Identify: uniform/vendor dress code\\n- Identify: visitor registration process\\n- Identify: emergency procedures (can we trigger?)\\n- Prep: pretext (tech support, cleaner, delivery, inspector)\\n- Prep: fake ID badge printing\\n- Prep: delivery uniform/props')",
+               "{facility_name}"]
+        save: "{case_dir}/social-engineering.txt"
+        timeout: 15
+
+  # Phase 2: Access control systems
+  - id: access_control
+    name: "Access control testing"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: badge_cloning
+        name: "RFID badge cloning"
+        tool: python3
+        args: ["-c", "import sys; t=sys.argv[1]; print(f'RFID badge cloning at {t}:\\n1. Identify frequency: 125kHz (Low-Freq) vs 13.56MHz (High-Freq)\\n2. Read badge: proxmark3 -c \\\"lf search\\\" (125kHz) or hf search (13.56MHz)\\n3. Clone to writable tag (T5577 for LF, Magic Mifare for HF)\\n4. Tools: Proxmark3, Flipper Zero, ChameleonMini, RFIDler\\n5. Known weak: HID Prox (no encryption), EM4102 (readable+cloneable)\\n6. Mifare Classic: crack with mfoc/mfcuk (crypto-1 weakness)\\n7. DESFire: check for default keys or legacy mode\\n8. NFC: write NDEF records for access control')",
+               "{facility_name}"]
+        save: "{case_dir}/badge-cloning.txt"
+        timeout: 15
+
+      - id: biometric_bypass
+        name: "Biometric bypass testing"
+        tool: python3
+        args: ["-c", "import sys; print('Biometric bypass techniques:\\n1. Fingerprint: gelatin/play-doh/silicone fake fingers\\n2. Fingerprint: latent print lifting (tape + powder)\\n3. Fingerprint: partial print via high-res photo\\n4. Face recognition: photo, video replay, 3D mask\\n5. Iris: high-res photo, contact lenses\\n6. Vein: infrared bypass (wax hand)\\n7. Liveness detection bypass (gif/video loopback)\\n8. Thermal camera after touch\\n9. Known: many optical sensors fail with basic liveness tests\\n10. Known: residual heat prints on capacitive sensors')"]
+        save: "{case_dir}/biometric-bypass.txt"
+        timeout: 15
+
+      - id: keypad_mf
+        name: "Keypad / PIN bypass"
+        tool: python3
+        args: ["-c", "import sys; print('Keypad/PIN bypass:\\n1. Shoulder surfing\\n2. Thermal camera after PIN entry\\n3. Keypad wear pattern analysis\\n4. Default codes: 0000, 1234, 1111, 2580, 9999\\n5. Oil/grease residue on frequently pressed keys\\n6. Tape over keys: capture order, not values\\n7. Brute-force if no lockout\\n8. Hidden bypass code (manufacturer override)')"]
+        save: "{case_dir}/keypad-bypass.txt"
+        timeout: 15
+
+      - id: tailgating
+        name: "Tailgating / piggybacking"
+        tool: python3
+        args: ["-c", "import sys; print('Tailgating vectors:\\n1. Follow employee through door (social norms)\\n2. Wait for access while carrying boxes/equipment\\n3. Use delivery/contractor access window\\n4. Request door hold for \\\"colleague\\\"\\n5. Exploit fire exit (alarmed? can we prop open?)\\n6. Use handicap button for extended door time\\n7. Multi-person entry (follow in group)\\n8. Brief hallway conversation then enter')"]
+        save: "{case_dir}/tailgating.txt"
+        timeout: 15
+
+  # Phase 3: Electronic locking mechanisms
+  - id: locks
+    name: "Lock bypass testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: lock_picking
+        name: "Mechanical lock picking"
+        tool: python3
+        args: ["-c", "import sys; print('Lock picking overview for {f}:\\n- Pin tumbler: pick guns, raking, single pin picking (SPP)\\n- Wafer locks: jiggler keys, comb picks\\n- Tubular locks: tubular lock pick, decoders\\n- Disc detainer: disc detainer pick, tension\\n- Padlocks: shims, bypass (master lock combos)\\n- Smart locks: NFC relay, Bluetooth replay, firmware attacks\\n- Electric strikes: voltage manipulation, wedges\\n- Tools: picks (Sparrows, SouthOrd, Peterson), snap gun, bump key, bypass tools')"]
+        save: "{case_dir}/lock-picking.txt"
+        timeout: 15
+
+      - id: electronic_lock
+        name: "Electronic lock attacks"
+        tool: python3
+        args: ["-c", "import sys; print('Electronic lock attacks:\\n1. Magnetic lock: magnet bypass (neodymium)\\n2. Electric strike: voltage manipulation (12V/24V)\\n3. RFID relay attack: proxmark + antenna at door\\n4. Bluetooth lock: BLE MITM, replay attack\\n5. WiFi lock: deauth + re-provision\\n6. Z-wave lock: SDR replay, network key brute\\n7. NFC lock: tag cloning, NDEF manipulation\\n8. Keypad lock: voltage glitching to reset')"]
+        save: "{case_dir}/electronic-lock.txt"
+        timeout: 15
+
+  # Phase 4: CCTV & surveillance
+  - id: cameras
+    name: "CCTV/surveillance testing"
+    type: sequential
+    steps:
+      - id: camera_scan
+        name: "Network camera scanning"
+        tool: nmap
+        args:
+          ["-sV", "-Pn", "-p", "80,443,554,8080,8554",
+           "{target}", "-oN", "{case_dir}/camera-ports.txt"]
+        timeout: 120
+
+      - id: camera_attacks
+        name: "Camera-specific attacks"
+        tool: python3
+        args: ["-c", "import sys; print('CCTV attack vectors:\\n1. Default credentials (admin:admin, admin:12345, root:pass)\\n2. RTSP stream without auth (rtsp://{t}:554/stream1)\\n3. ONVIF device discovery\\n4. DVR/NVR brute-force (port 37777/9392)\\n5. Camera firmware extraction\\n6. IR LED disable (schedule noise/jammer)\\n7. PTZ control abuse\\n8. Video feed injection (live forgery)\\n9. Network DoS on camera (packet of death)\\n10. Physical: lens spray, laser blinding, jumpering')",
+               "{target}"]
+        save: "{case_dir}/camera-attacks.txt"
+        timeout: 15
+
+  # Phase 5: Alarm systems
+  - id: alarms
+    name: "Alarm system testing"
+    type: sequential
+    steps:
+      - id: alarm_bypass
+        name: "Alarm bypass techniques"
+        tool: python3
+        args: ["-c", "import sys; print('Alarm bypass vectors:\\n1. Alarm panel code guessing (defaults: 1111, 2222, 1234)\\n2. Phone line cutting (cellular backup?)\\n3. Jamming: RF jamming on wireless sensor frequency\\n4. Protocol: SDR capture/replay of disarm signal\\n5. Sensor bypass: magnet on reed switch (door/window)\\n6. Glass break sensor: frequency analysis, bypass tone\\n7. PIR motion: IR shielding (umbrella, mylar blanket)\\n8. Panic button: locate and disable\\n9. Alarm panel: manufacturer reset code (DSC, Honeywell, Bosch)\\n10. Strobe/siren: disable power source')"]
+        save: "{case_dir}/alarm-bypass.txt"
+        timeout: 15
+
+  # Phase 6: Environmental controls
+  - id: environmental
+    name: "Environmental security"
+    type: sequential
+    steps:
+      - id: env_controls
+        name: "Data center / server room security"
+        tool: python3
+        args: ["-c", "import sys; print('Data center security:\\n1. Raised floor access: tile lifter\\n2. Cable management: accessible fiber/cat6 runs\\n3. HVAC: temperature manipulation (shutdown servers)\\n4. Power: UPS shutdown, PDU access\\n5. Fire suppression: discharge test (sprinkler, gas)\\n6. Wiring closets: unlocked = full network access\\n7. MDF/IDF rooms: usually lowest physical security\\n8. Environmental monitoring bypass: temp/humidity sensors')"]
+        save: "{case_dir}/env-controls.txt"
+        timeout: 15
+
+  # Phase 7: Report
+  - id: report
+    name: "Physical security report"
+    type: report
+    format: markdown
+    title: "Physical Security Assessment — {facility_name}"
+    output: "{case_dir}/physical-security-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Facility: {facility_name}\n- Location: {target}\n- Badge type: {badge_type}\n- Case: {case_id}"
+      - heading: "Reconnaissance"
+        body: "- Perimeter: {case_dir}/perimeter-review.txt\n- Social engineering: {case_dir}/social-engineering.txt"
+      - heading: "Access Control"
+        body: "- Badge cloning: {case_dir}/badge-cloning.txt\n- Biometrics: {case_dir}/biometric-bypass.txt\n- Keypad: {case_dir}/keypad-bypass.txt\n- Tailgating: {case_dir}/tailgating.txt"
+      - heading: "Locks"
+        body: "- Picking: {case_dir}/lock-picking.txt\n- Electronic: {case_dir}/electronic-lock.txt"
+      - heading: "Surveillance"
+        body: "- Cameras: {case_dir}/camera-ports.txt\n- Attacks: {case_dir}/camera-attacks.txt"
+      - heading: "Alarms"
+        body: "- Bypass: {case_dir}/alarm-bypass.txt"
+      - heading: "Environmental"
+        body: "- Controls: {case_dir}/env-controls.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Physical security assessment complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Physical security assessment finished. Report at {case_dir}/physical-security-report.md"

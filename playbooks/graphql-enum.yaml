@@ -1,6 +1,6 @@
 name: "GraphQL Enumeration"
 description: "GraphQL endpoint discovery, introspection, batching attacks, deep-query DoS, and authorization testing"
-version: "1.0"
+version: "2.0"
 
 vars:
   wordlist: "/wordlists/webcontent-top-10000.txt"
@@ -132,8 +132,28 @@ steps:
 
   # ---- Phase 5: Report ----
   - id: report
-    name: "GraphQL assessment note"
+    name: "GraphQL assessment report"
+    type: report
+    format: markdown
+    title: "GraphQL Security Assessment — {target}"
+    output: "{case_dir}/graphql-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Endpoint Discovery"
+        body: "- FFuF results: {case_dir}/ffuf-graphql.json\n- Engine fingerprint: {case_dir}/graphw00f.json\n- Technology: {case_dir}/whatweb-graphql.txt"
+      - heading: "Introspection"
+        body: "- Full schema: {case_dir}/graphql-schema.json\n- Limited: {case_dir}/graphql-schema-limited.json\n- Aliased bypass: {case_dir}/graphql-aliased.json"
+      - heading: "DoS & Batching"
+        body: "- Deep query: {case_dir}/graphql-deep.json\n- Batch auth: {case_dir}/graphql-batch-auth.json\n- Aliased DoS: {case_dir}/graphql-aliased-dos.json"
+      - heading: "Authorization"
+        body: "- No-auth probe: {case_dir}/graphql-noauth.json\n- Field access: {case_dir}/graphql-field-auth.json\n- Mutation auth: {case_dir}/graphql-mutation-auth.json"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      GraphQL enumeration complete for {target}.
-      Check {case_dir}/ for schema dumps, introspection results, DoS tests, and auth bypass attempts.
+    message: "GraphQL assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "GraphQL enumeration finished for {target}. Results in {case_dir}"

@@ -1,6 +1,6 @@
 name: "LLMNR / NetBIOS / MDNS Poisoning (Responder)"
 description: "Poison LLMNR, NetBIOS, and mDNS traffic with Responder to capture NTLMv2 hashes, then relay or crack them"
-version: "1.0"
+version: "2.0"
 
 vars:
   interface: "eth0"
@@ -106,13 +106,28 @@ steps:
 
   # ---- Phase 5: Report ----
   - id: report
-    name: "Responder capture note"
+    name: "Responder attack report"
+    type: report
+    format: markdown
+    title: "LLMNR/NetBIOS/mDNS Poisoning Report — {interface}"
+    output: "{case_dir}/responder-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Interface: {interface}"
+      - heading: "Analysis"
+        body: "- Responder analysis: {case_dir}/responder_analyze.log\n- LLMNR nmap: {case_dir}/llmnr_nmap.txt\n- NetBIOS scan: {case_dir}/nbtscan_netbios.txt"
+      - heading: "Poisoning Results"
+        body: "- Poison log: {case_dir}/responder_poison.log\n- Captured hashes: {case_dir}/responder_captures/*.txt"
+      - heading: "Relay (if configured)"
+        body: "- Responder relay: {case_dir}/responder_relay.log\n- ntlmrelayx output: {case_dir}/ntlmrelayx_output*"
+      - heading: "Cracked Hashes"
+        body: "- Cracked: {case_dir}/responder_cracked.txt\n- Run: hashcat -m 5600 <hashfile> /wordlists/rockyou.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      LLMNR/NetBIOS poisoning complete on {interface}.
-      Results in {case_dir}/:
-      - Analysis: responder_analyze.log, llmnr_nmap.txt
-      - Captured hashes: responder_captures/*.txt
-      - Cracked: responder_cracked.txt
-      - Relay output: ntlmrelayx_output* (if relay target set)
-      Crack NTLMv2 hashes with: hashcat -m 5600 <hashfile> /wordlists/rockyou.txt
+    message: "Responder poisoning complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "LLMNR/NetBIOS/mDNS poisoning finished on {interface}. Results in {case_dir}"

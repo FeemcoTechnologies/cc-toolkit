@@ -1,100 +1,138 @@
-# v2 runbook — internal network / Active Directory assessment
-name: "Internal Network & AD Enumeration"
-description: "Enumerate SMB, LDAP, Kerberos, RPC, and check for common AD vulnerabilities"
-version: "2.0"
-
+name: Internal Network & AD Enumeration
+description: Enumerate SMB, LDAP, Kerberos, RPC, and check for common AD vulnerabilities
+version: '2.0'
 vars: {}
-
 steps:
-  - id: setup
-    type: log
-    message: "Starting AD assessment on {target}"
-
-  - id: quick_scan
-    name: "Quick port scan (AD-relevant ports)"
-    tool: nmap
-    args: ["-sS", "-sV", "-Pn", "-p", "53,88,135,139,389,445,464,593,636,3268,3269,3389,5985,5986",
-           "--open", "-oN", "{case_dir}/ad-ports.txt", "{target}"]
-    timeout: 300
-    artifacts: ["{case_dir}/ad-ports.txt"]
-
-  - id: smb_enum
-    name: "SMB enumeration"
-    type: parallel
-    steps:
-      - id: crackmapexec
-        name: "CrackMapExec SMB"
-        tool: crackmapexec
-        args: ["smb", "{target}"]
-        timeout: 60
-        when:
-          contains: "/445/tcp"
-          ref: quick_scan
-
-      - id: smb_shares
-        name: "List SMB shares"
-        tool: smbclient
-        args: ["-L", "//{target}/", "-N", "-g"]
-        timeout: 30
-        when:
-          contains: "/445/tcp"
-          ref: quick_scan
-
-  - id: ldap_enum
-    name: "LDAP enumeration"
-    tool: ldapsearch
-    args: ["-x", "-H", "ldap://{target}",
-           "-b", "", "-s", "base", "namingContexts"]
-    timeout: 30
+- id: setup
+  type: log
+  message: Starting AD assessment on {target}
+  name: Setup
+- id: quick_scan
+  name: Quick port scan (AD-relevant ports)
+  tool: nmap
+  args:
+  - -sS
+  - -sV
+  - -Pn
+  - -p
+  - 53,88,135,139,389,445,464,593,636,3268,3269,3389,5985,5986
+  - --open
+  - -oN
+  - '{case_dir}/ad-ports.txt'
+  - '{target}'
+  timeout: 300
+  artifacts:
+  - '{case_dir}/ad-ports.txt'
+  type: tool
+- id: smb_enum
+  name: SMB enumeration
+  type: parallel
+  steps:
+  - id: crackmapexec
+    name: CrackMapExec SMB
+    tool: crackmapexec
+    args:
+    - smb
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/cme-smb.txt'
     when:
-      or:
-        - on_port:389
-        - on_port:636
-
-  - id: kerberos_check
-    name: "Kerberos scan"
-    type: conditional
-    condition:
-      or:
-        - on_port:88
-        - on_port:464
-    then:
-      - id: kerb_users
-        name: "Enumerate users via Kerberos"
-        tool: nmap
-        args: ["--script", "krb5-enum-users", "-p", "88", "{target}",
-               "-oN", "{case_dir}/kerberos-users.txt"]
-        timeout: 120
-      - id: asrep
-        name: "AS-REP roast check"
-        tool: impacket-GetNPUsers
-        args: ["-dc-ip", "{target}", "-request", "DOMAIN/"]
-
-  - id: rpc_enum
-    name: "RPC enumeration"
-    tool: rpcdump
-    args: ["-p", "135", "{target}"]
+      contains: /445/tcp
+      ref: quick_scan
+    type: tool
+  - id: smb_shares
+    name: List SMB shares
+    tool: smbclient
+    args:
+    - -L
+    - //{target}/
+    - -N
+    - -g
     timeout: 30
-    when: "on_port:135"
-
-  - id: winrm_check
-    type: notify
-    level: warn
-    message: "WinRM (5985/5986) open — check for remote management access"
-    condition:
-      or:
-        - on_port:5985
-        - on_port:5986
-
-  - id: report
-    name: "Generate AD report"
-    type: report
-    format: markdown
-    title: "AD Assessment — {target}"
-    output: "{case_dir}/ad-report.md"
-
+    save: '{case_dir}/smb-shares.txt'
+    when:
+      contains: /445/tcp
+      ref: quick_scan
+    type: tool
+- id: ldap_enum
+  name: LDAP enumeration
+  tool: ldapsearch
+  args:
+  - -x
+  - -H
+  - ldap://{target}
+  - -b
+  - ''
+  - -s
+  - base
+  - namingContexts
+  timeout: 30
+  save: '{case_dir}/ldap-naming-contexts.txt'
+  when:
+    or:
+    - on_port:389
+    - on_port:636
+  type: tool
+- id: kerberos_check
+  name: Kerberos scan
+  type: conditional
+  condition:
+    or:
+    - on_port:88
+    - on_port:464
+  then:
+  - id: kerb_users
+    name: Enumerate users via Kerberos
+    tool: nmap
+    args:
+    - --script
+    - krb5-enum-users
+    - -p
+    - '88'
+    - '{target}'
+    - -oN
+    - '{case_dir}/kerberos-users.txt'
+    timeout: 120
+    type: tool
+  - id: asrep
+    name: AS-REP roast check
+    tool: impacket-GetNPUsers
+    args:
+    - -dc-ip
+    - '{target}'
+    - -request
+    - DOMAIN/
+    save: '{case_dir}/asrep-hashes.txt'
+    type: tool
+- id: rpc_enum
+  name: RPC enumeration
+  tool: rpcdump
+  args:
+  - -p
+  - '135'
+  - '{target}'
+  timeout: 30
+  save: '{case_dir}/rpc-dump.txt'
+  when: on_port:135
+  type: tool
+- id: winrm_check
+  type: notify
+  level: warn
+  message: WinRM (5985/5986) open — check for remote management access
+  condition:
+    or:
+    - on_port:5985
+    - on_port:5986
+  name: Winrm Check
+- id: report
+  name: Generate AD report
+  type: report
+  format: markdown
+  title: AD Assessment — {target}
+  output: '{case_dir}/ad-report.md'
 postflight:
-  - id: done
-    type: notify
-    level: success
-    message: "AD enumeration complete — {case_dir}"
+- id: done
+  type: notify
+  level: success
+  message: AD enumeration complete — {case_dir}
+  name: Done

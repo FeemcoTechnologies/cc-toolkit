@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}{{ finding.id }} — {{ case.case_id }}{% endblock %}
 {% block content %}
+{% set active_section = 'findings' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Finding</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
 <div class="flex items-center justify-between mb-6">
     <div class="flex items-center gap-3">
         <i data-lucide="bug" class="w-6 h-6 text-indigo-400"></i>
@@ -8,8 +19,6 @@
     </div>
     <div class="flex gap-2">
         <a href="/findings" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">All Findings</a>
-        <a href="/case/{{ case.case_id }}" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Dashboard</a>
-        <a href="/case/{{ case.case_id }}/board" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Board</a>
         <button onclick="deleteFinding()" class="bg-red-800 hover:bg-red-700 px-3 py-1.5 rounded text-sm">Delete</button>
     </div>
 </div>
@@ -32,7 +41,7 @@
         </div>
     </div>
 
-    <!-- Severity & Identifiers -->
+    <!-- Severity, CVSS & Identifiers -->
     <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
             <label class="text-xs text-gray-500 block mb-1">Severity</label>
@@ -45,6 +54,21 @@
             </select>
         </div>
         <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">CVSS Score</label>
+            <input name="cvss_score" type="number" step="0.1" min="0" max="10" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.cvss_score or '' }}" placeholder="0-10">
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">CVSS Vector</label>
+            <input name="cvss_vector" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono" value="{{ finding.cvss_vector or '' }}" placeholder="CVSS:3.1/AV:N/AC:L/...">
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <label class="text-xs text-gray-500 block mb-1">Source</label>
+            <input name="source" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.source or '' }}">
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
             <label class="text-xs text-gray-500 block mb-1">CVE</label>
             <input name="cve" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.cve or '' }}" placeholder="CVE-xxxx-xxxx">
         </div>
@@ -53,8 +77,8 @@
             <input name="cwe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.cwe or '' }}" placeholder="CWE-xxx">
         </div>
         <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
-            <label class="text-xs text-gray-500 block mb-1">Source</label>
-            <input name="source" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.source or '' }}">
+            <label class="text-xs text-gray-500 block mb-1">Affected Host(s)</label>
+            <input name="affected_hosts" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ finding.affected_hosts or '' }}" placeholder="IP, hostname, or URL">
         </div>
     </div>
 
@@ -79,7 +103,13 @@
     <!-- PoC -->
     <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
         <label class="text-xs text-gray-500 block mb-1">Proof of Concept</label>
-        <textarea name="poc" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono min-h-[80px]">{{ finding.poc or '' }}</textarea>
+        <textarea name="poc" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono min-h-[80px]" placeholder="Command output, request/response details, or step-by-step PoC">{{ finding.poc or '' }}</textarea>
+    </div>
+
+    <!-- Command Output -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <label class="text-xs text-gray-500 block mb-1">Command Output (optional, separate code block)</label>
+        <textarea name="command_output" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 font-mono min-h-[80px]" placeholder="Raw terminal output, tool results">{{ finding.command_output or '' }}</textarea>
     </div>
 
     <!-- References -->
@@ -88,17 +118,63 @@
         <input name="references" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" value="{{ (finding.references or []) | join(', ') }}" placeholder="Comma-separated URLs">
     </div>
 
-    <!-- Evidence links -->
-    {% if finding.evidence_refs %}
+    <!-- Tags -->
     <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
-        <h2 class="text-sm font-semibold text-gray-300 mb-2">Linked Evidence</h2>
-        <ul class="text-sm space-y-1">
-            {% for ref in (finding.evidence_refs or []) %}
-            <li><a href="/cases/{{ case.case_id }}/evidence/{{ ref }}" class="text-indigo-400 hover:text-indigo-300 underline" target="_blank">{{ ref }}</a></li>
+        <label class="text-xs text-gray-500 block mb-2">Tags</label>
+        <div class="flex flex-wrap gap-1.5 mb-2" id="tag-list">
+            {% for tag in (finding.tags or []) %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-indigo-900/50 text-indigo-200 border border-indigo-700/50" data-tag="{{ tag }}">
+                <span class="tag-label">{{ tag }}</span>
+                <button type="button" onclick="removeTag('{{ tag }}')" class="text-indigo-300 hover:text-indigo-100 ml-0.5">&times;</button>
+            </span>
             {% endfor %}
-        </ul>
+        </div>
+        <div class="flex gap-2">
+            <div class="relative flex-1">
+                <input id="tag-input" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="Type namespace:value (e.g. cwe:79)" oninput="onTagInput(this)">
+                <div id="tag-autocomplete" class="absolute z-20 top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-lg max-h-48 overflow-y-auto hidden"></div>
+            </div>
+            <button type="button" onclick="addTag()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded text-sm">Add</button>
+        </div>
+        <div class="flex gap-2 mt-2">
+            <select id="tag-ns-preset" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+                <option value="">Quick-add namespace...</option>
+                <option value="cwe">CWE</option>
+                <option value="mitre-attack">MITRE ATT&CK</option>
+                <option value="owasp-web">OWASP Web</option>
+                <option value="owasp-ai">OWASP AI</option>
+                <option value="capec">CAPEC</option>
+                <option value="d3fend">D3FEND</option>
+            </select>
+            <input id="tag-preset-id" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 flex-1" placeholder="ID (e.g. 79, T1078.001)">
+            <button type="button" onclick="addPresetTag()" class="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs">+</button>
+        </div>
     </div>
-    {% endif %}
+
+    <!-- Evidence links with upload -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-300 mb-2">Evidence</h2>
+        <div id="evidence-refs-list" class="text-sm space-y-1 mb-3">
+            {% for ref in (finding.evidence_refs or []) %}
+            <div class="flex items-center justify-between group">
+                <a href="/case/{{ case.case_id }}/evidence" class="text-indigo-400 hover:text-indigo-300 underline text-xs" title="View in evidence page">{{ ref }}</a>
+                <button type="button" onclick="unlinkEvidence('{{ ref }}')" class="text-gray-600 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition">&times;</button>
+            </div>
+            {% endfor %}
+            {% if not finding.evidence_refs %}
+            <div class="text-gray-600 text-xs" id="no-evidence-msg">No evidence linked</div>
+            {% endif %}
+        </div>
+        <div id="evidence-upload-zone" class="border-2 border-dashed border-gray-700 hover:border-indigo-500/50 rounded-lg p-4 text-center cursor-pointer transition"
+             ondragover="event.preventDefault(); this.classList.add('border-indigo-400')"
+             ondragleave="this.classList.remove('border-indigo-400')"
+             ondrop="handleEvidenceDrop(event)">
+            <i data-lucide="upload" class="w-5 h-5 mx-auto text-gray-500 mb-1"></i>
+            <p class="text-xs text-gray-500">Drop file here or <span class="text-indigo-400 underline">browse</span></p>
+            <input type="file" id="evidence-file-input" class="hidden" onchange="handleEvidenceFileSelect(event)">
+        </div>
+        <div id="evidence-upload-status" class="text-xs mt-1 hidden"></div>
+    </div>
 
     <div class="flex gap-3">
         <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Save</button>
@@ -106,9 +182,82 @@
     </div>
     <div id="save-status" class="text-sm text-green-400 hidden">Saved!</div>
 </form>
+</div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
+var _tags = {{ (finding.tags or []) | tojson }};
+
+function tagHtml(tag) {
+    return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-indigo-900/50 text-indigo-200 border border-indigo-700/50" data-tag="' + tag.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '">' +
+        '<span class="tag-label">' + tag.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' +
+        '<button type="button" onclick="removeTag(\'' + tag.replace(/'/g,"\\'") + '\')" class="text-indigo-300 hover:text-indigo-100 ml-0.5">&times;</button>' +
+        '</span>';
+}
+
+function renderTags() {
+    var el = document.getElementById('tag-list');
+    el.innerHTML = _tags.map(tagHtml).join('');
+}
+
+async function onTagInput(input) {
+    var ac = document.getElementById('tag-autocomplete');
+    var q = input.value.trim();
+    if (q.length < 2) { ac.classList.add('hidden'); return; }
+    try {
+        var r = await fetch('/api/tags/search?q=' + encodeURIComponent(q));
+        var results = await r.json();
+        if (!results.length) { ac.classList.add('hidden'); return; }
+        ac.innerHTML = results.map(function(t) {
+            return '<div class="px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700 cursor-pointer" onclick="selectTag(\'' + t.tag.replace(/'/g,"\\'") + '\')">' +
+                '<span class="text-indigo-300">' + t.tag.replace(/</g,'&lt;') + '</span> ' +
+                '<span class="text-gray-500 text-xs">' + t.title.replace(/</g,'&lt;') + '</span>' +
+                '</div>';
+        }).join('');
+        ac.classList.remove('hidden');
+    } catch(e) { ac.classList.add('hidden'); }
+}
+
+function selectTag(tag) {
+    if (_tags.indexOf(tag) === -1) _tags.push(tag);
+    renderTags();
+    document.getElementById('tag-autocomplete').classList.add('hidden');
+    document.getElementById('tag-input').value = '';
+}
+
+function addTag() {
+    var input = document.getElementById('tag-input');
+    var tag = input.value.trim();
+    if (!tag) return;
+    if (_tags.indexOf(tag) === -1) _tags.push(tag);
+    renderTags();
+    input.value = '';
+    document.getElementById('tag-autocomplete').classList.add('hidden');
+}
+
+function removeTag(tag) {
+    _tags = _tags.filter(function(t) { return t !== tag; });
+    renderTags();
+}
+
+function addPresetTag() {
+    var ns = document.getElementById('tag-ns-preset').value;
+    var id = document.getElementById('tag-preset-id').value.trim();
+    if (!ns || !id) return;
+    var tag = ns + ':' + id;
+    if (_tags.indexOf(tag) === -1) _tags.push(tag);
+    renderTags();
+    document.getElementById('tag-preset-id').value = '';
+}
+
+document.addEventListener('click', function(e) {
+    var ac = document.getElementById('tag-autocomplete');
+    if (ac && !e.target.closest('#tag-input') && !e.target.closest('#tag-autocomplete')) {
+        ac.classList.add('hidden');
+    }
+});
+
 async function deleteFinding() {
     if (!confirm('PERMANENTLY delete this finding? This cannot be undone.')) return;
     if (!confirm('Are you sure?')) return;
@@ -141,10 +290,13 @@ async function saveFinding() {
         data.forEach(function(v, k) {
             if (k === 'references') {
                 payload[k] = v ? v.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+            } else if (k === 'cvss_score') {
+                payload[k] = v ? parseFloat(v) : null;
             } else {
                 payload[k] = v;
             }
         });
+        payload.tags = _tags;
         const r = await fetch('/api/case/{{ case.case_id }}/finding/{{ finding.id }}/update', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -170,6 +322,78 @@ async function saveFinding() {
         status.className = 'text-sm text-red-400';
         status.classList.remove('hidden');
     }
+}
+
+/* Evidence upload */
+document.getElementById('evidence-upload-zone').addEventListener('click', function() {
+    document.getElementById('evidence-file-input').click();
+});
+
+function handleEvidenceDrop(ev) {
+    ev.preventDefault();
+    document.getElementById('evidence-upload-zone').classList.remove('border-indigo-400');
+    var files = ev.dataTransfer.files;
+    if (files.length) uploadEvidence(files[0]);
+}
+
+function handleEvidenceFileSelect(ev) {
+    var files = ev.target.files;
+    if (files.length) uploadEvidence(files[0]);
+    ev.target.value = '';
+}
+
+async function uploadEvidence(file) {
+    var status = document.getElementById('evidence-upload-status');
+    status.className = 'text-xs mt-1 text-yellow-400';
+    status.textContent = 'Uploading ' + file.name + '...';
+    status.classList.remove('hidden');
+    var m = document.querySelector('meta[name="csrf-token"]');
+    var fd = new FormData();
+    fd.append('file', file);
+    fd.append('description', 'Finding evidence');
+    fd.append('csrf_token', m ? m.getAttribute('content') : '');
+    try {
+        var r = await fetch('/api/case/{{ case.case_id }}/evidence/upload', { method: 'POST', body: fd });
+        var data = await r.json();
+        if (data.filename) {
+            // Link to finding
+            var r2 = await fetch('/api/case/{{ case.case_id }}/finding/{{ finding.id }}/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ evidence_refs: ({{ (finding.evidence_refs or []) | tojson }}).concat([data.filename]) })
+            });
+            var result = await r2.json();
+            if (result.status === 'ok') {
+                status.textContent = 'Uploaded ' + file.name;
+                status.className = 'text-xs mt-1 text-green-400';
+                setTimeout(function() { status.classList.add('hidden'); }, 2000);
+                location.reload();
+            } else {
+                status.textContent = 'Upload OK but link failed: ' + (result.error || '');
+                status.className = 'text-xs mt-1 text-orange-400';
+            }
+        } else {
+            status.textContent = 'Upload failed: ' + (data.error || 'Unknown');
+            status.className = 'text-xs mt-1 text-red-400';
+        }
+    } catch(e) {
+        status.textContent = 'Upload error: ' + e.message;
+        status.className = 'text-xs mt-1 text-red-400';
+    }
+}
+
+async function unlinkEvidence(filename) {
+    if (!confirm('Unlink "' + filename + '" from this finding?')) return;
+    var current = {{ (finding.evidence_refs or []) | tojson }};
+    var updated = current.filter(function(f) { return f !== filename; });
+    var r = await fetch('/api/case/{{ case.case_id }}/finding/{{ finding.id }}/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ evidence_refs: updated })
+    });
+    var result = await r.json();
+    if (result.status === 'ok') location.reload();
+    else alert('Failed to unlink: ' + (result.error || ''));
 }
 </script>
 {% endblock %}

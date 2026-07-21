@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block title %}CC / Flashcards{% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Flashcards</span>
+</nav>
 <div class="flex items-center justify-between mb-4">
     <div class="flex items-center gap-3">
         <i data-lucide="brain" class="w-6 h-6 text-purple-400"></i>
@@ -108,8 +114,14 @@ let blastQIndex = 0;
 let bubbleInterval = null;
 
 async function loadDecks() {
-    const r = await fetch('/api/flashcards');
-    decks = await r.json();
+    try {
+        const r = await fetch('/api/flashcards');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        decks = await r.json();
+    } catch(e) {
+        document.getElementById('deck-list').innerHTML = '<p class="text-red-400 text-xs">Failed to load decks: ' + e.message + '</p>';
+        return;
+    }
     const el = document.getElementById('deck-list');
     if (decks.length === 0) { el.innerHTML = '<p class="text-gray-500 text-xs">No decks found</p>'; return; }
     el.innerHTML = decks.map((d, i) =>

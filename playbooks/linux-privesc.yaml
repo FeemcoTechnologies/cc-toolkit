@@ -22,32 +22,36 @@ steps:
       - id: uname
         name: "Kernel version"
         tool: uname
-        args: ["-a", "-o", "{case_dir}/uname.txt"]
+        args: ["-a"]
         timeout: 30
-        artifacts: ["{case_dir}/uname.txt"]
+        save: "{case_dir}/uname.txt"
 
       - id: release
         name: "OS release"
         tool: cat
-        args: ["/etc/os-release", "-o", "{case_dir}/os-release.txt"]
+        args: ["/etc/os-release"]
         timeout: 30
+        save: "{case_dir}/os-release.txt"
 
       - id: hostname
         name: "Hostname"
         tool: hostname
         args: []
+        save: "{case_dir}/hostname.txt"
 
       - id: env_vars
         name: "Environment variables"
         tool: env
-        args: ["-o", "{case_dir}/env.txt"]
+        args: []
         timeout: 30
+        save: "{case_dir}/env.txt"
 
       - id: cpu_info
         name: "CPU info"
         tool: lscpu
-        args: ["-o", "{case_dir}/cpu.txt"]
+        args: []
         timeout: 30
+        save: "{case_dir}/cpu.txt"
 
   # Phase 2: User enumeration
   - id: user_enum
@@ -58,26 +62,30 @@ steps:
       - id: id_current
         name: "Current user & groups"
         tool: id
-        args: ["-o", "{case_dir}/id.txt"]
+        args: []
         timeout: 30
+        save: "{case_dir}/id.txt"
 
       - id: passwd_users
         name: "All users (/etc/passwd)"
         tool: cat
-        args: ["/etc/passwd", "-o", "{case_dir}/passwd.txt"]
+        args: ["/etc/passwd"]
         timeout: 30
+        save: "{case_dir}/passwd.txt"
 
       - id: sudoers
         name: "Sudoers list"
         tool: cat
-        args: ["/etc/sudoers", "-o", "{case_dir}/sudoers.txt"]
+        args: ["/etc/sudoers"]
         timeout: 30
+        save: "{case_dir}/sudoers.txt"
 
       - id: sudo_l
         name: "Sudo -l (current user)"
-        tool: sudo
-        args: ["-l", "-o", "{case_dir}/sudo_l.txt"]
+        tool: bash
+        args: ["-c", "sudo -l"]
         timeout: 30
+        save: "{case_dir}/sudo_l.txt"
 
   # Phase 3: SUID / SGID
   - id: suid_sgid
@@ -86,20 +94,17 @@ steps:
     steps:
       - id: suid
         name: "SUID binaries"
-        tool: find
-        args: ["/", "-perm", "-4000", "-type", "f",
-               "2>/dev/null",
-               "-o", "{case_dir}/suid.txt"]
+        tool: bash
+        args: ["-c", "find / -perm -4000 -type f 2>/dev/null"]
         timeout: 120
-        artifacts: ["{case_dir}/suid.txt"]
+        save: "{case_dir}/suid.txt"
 
       - id: sgid
         name: "SGID binaries"
-        tool: find
-        args: ["/", "-perm", "-2000", "-type", "f",
-               "2>/dev/null",
-               "-o", "{case_dir}/sgid.txt"]
+        tool: bash
+        args: ["-c", "find / -perm -2000 -type f 2>/dev/null"]
         timeout: 120
+        save: "{case_dir}/sgid.txt"
 
   # Phase 4: Capabilities
   - id: capabilities
@@ -108,10 +113,10 @@ steps:
     steps:
       - id: getcap
         name: "File capabilities"
-        tool: getcap
-        args: ["-r", "/", "2>/dev/null",
-               "-o", "{case_dir}/capabilities.txt"]
+        tool: bash
+        args: ["-c", "getcap -r / 2>/dev/null"]
         timeout: 120
+        save: "{case_dir}/capabilities.txt"
 
   # Phase 5: Cron jobs
   - id: cron
@@ -121,22 +126,23 @@ steps:
       - id: cron_tabs
         name: "User crontabs"
         tool: ls
-        args: ["-la", "/var/spool/cron/",
-               "-o", "{case_dir}/cron_tabs.txt"]
+        args: ["-la", "/var/spool/cron/"]
         timeout: 30
+        save: "{case_dir}/cron_tabs.txt"
 
       - id: cron_sys
         name: "System crontabs"
         tool: cat
-        args: ["/etc/crontab", "-o", "{case_dir}/cron_system.txt"]
+        args: ["/etc/crontab"]
         timeout: 30
+        save: "{case_dir}/cron_system.txt"
 
       - id: cron_d
         name: "Cron.d files"
         tool: ls
-        args: ["-la", "/etc/cron.d/",
-               "-o", "{case_dir}/cron_d.txt"]
+        args: ["-la", "/etc/cron.d/"]
         timeout: 30
+        save: "{case_dir}/cron_d.txt"
 
   # Phase 6: Service enumeration
   - id: services
@@ -147,31 +153,30 @@ steps:
       - id: running_services
         name: "Running services"
         tool: systemctl
-        args: ["list-units", "--type=service", "--state=running",
-               "-o", "{case_dir}/services.txt"]
+        args: ["list-units", "--type=service", "--state=running"]
         timeout: 60
+        save: "{case_dir}/services.txt"
 
       - id: writable_services
         name: "Writable service files"
-        tool: find
-        args: ["/etc/systemd", "-type", "f", "-writable",
-               "2>/dev/null",
-               "-o", "{case_dir}/writable_services.txt"]
+        tool: bash
+        args: ["-c", "find /etc/systemd -type f -writable 2>/dev/null"]
         timeout: 60
+        save: "{case_dir}/writable_services.txt"
 
       - id: exposed_ports
         name: "Listening ports"
         tool: ss
-        args: ["-tlnp",
-               "-o", "{case_dir}/listening_ports.txt"]
+        args: ["-tlnp"]
         timeout: 30
+        save: "{case_dir}/listening_ports.txt"
 
       - id: docker_check
         name: "Docker group membership"
-        tool: groups
-        args: ["|", "grep", "docker",
-               "-o", "{case_dir}/docker_group.txt"]
+        tool: bash
+        args: ["-c", "groups | grep docker || echo 'not in docker group'"]
         timeout: 30
+        save: "{case_dir}/docker_group.txt"
 
   # Phase 7: Writable files & directories
   - id: writable_paths
@@ -180,38 +185,24 @@ steps:
     steps:
       - id: writable_etc
         name: "Writable files in /etc"
-        tool: find
-        args: ["/etc", "-type", "f", "-writable",
-               "2>/dev/null",
-               "-o", "{case_dir}/writable_etc.txt"]
+        tool: bash
+        args: ["-c", "find /etc -type f -writable 2>/dev/null"]
         timeout: 120
+        save: "{case_dir}/writable_etc.txt"
 
       - id: writable_path
         name: "Writable PATH directories"
-        tool: find
-        args: ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
-               "/usr/bin", "/sbin", "/bin",
-               "-writable", "-type", "d",
-               "2>/dev/null",
-               "-o", "{case_dir}/writable_path.txt"]
+        tool: bash
+        args: ["-c", "find /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin -writable -type d 2>/dev/null"]
         timeout: 60
+        save: "{case_dir}/writable_path.txt"
 
       - id: interesting_files
         name: "Interesting files"
-        tool: find
-        args: ["/", "-type", "f",
-               "(", "-name", "*.kdbx",
-               "-o", "-name", ".ssh",
-               "-o", "-name", "id_rsa",
-               "-o", "-name", "*.pem",
-               "-o", "-name", "*.ovpn",
-               "-o", "-name", "*.gpg",
-               "-o", "-name", "*.bak",
-               "-o", "-name", "*.old",
-               ")",
-               "2>/dev/null",
-               "-o", "{case_dir}/interesting_files.txt"]
+        tool: bash
+        args: ["-c", "find / -type f \\( -name '*.kdbx' -o -name '.ssh' -o -name 'id_rsa' -o -name '*.pem' -o -name '*.ovpn' -o -name '*.gpg' -o -name '*.bak' -o -name '*.old' \\) 2>/dev/null"]
         timeout: 120
+        save: "{case_dir}/interesting_files.txt"
 
   # Phase 8: Kernel exploit check
   - id: kernel_exploit
@@ -222,10 +213,9 @@ steps:
         name: "Linux Exploit Suggester"
         tool: perl
         args: ["/usr/share/linux-exploit-suggester/linux-exploit-suggester.pl",
-               "--uname", "{case_dir}/uname.txt",
-               "-o", "{case_dir}/kernel_exploits.txt"]
+               "--uname", "{case_dir}/uname.txt"]
         timeout: 60
-        artifacts: ["{case_dir}/kernel_exploits.txt"]
+        save: "{case_dir}/kernel_exploits.txt"
 
   # Phase 9: Network & lateral movement
   - id: network_enum
@@ -235,31 +225,30 @@ steps:
       - id: ifconfig
         name: "Network interfaces"
         tool: ip
-        args: ["addr",
-               "-o", "{case_dir}/interfaces.txt"]
+        args: ["addr"]
         timeout: 30
+        save: "{case_dir}/interfaces.txt"
 
       - id: hosts_file
         name: "Hosts file"
         tool: cat
-        args: ["/etc/hosts",
-               "-o", "{case_dir}/hosts.txt"]
+        args: ["/etc/hosts"]
         timeout: 30
+        save: "{case_dir}/hosts.txt"
 
       - id: known_hosts
         name: "SSH known_hosts"
         tool: cat
-        args: ["~/.ssh/known_hosts",
-               "-o", "{case_dir}/known_hosts.txt"]
+        args: ["~/.ssh/known_hosts"]
         timeout: 30
+        save: "{case_dir}/known_hosts.txt"
 
       - id: bash_history
         name: "Bash history"
         tool: cat
-        args: ["~/.bash_history",
-               "-o", "{case_dir}/bash_history.txt"]
+        args: ["~/.bash_history"]
         timeout: 30
-        artifacts: ["{case_dir}/bash_history.txt"]
+        save: "{case_dir}/bash_history.txt"
 
   # Phase 10: Report
   - id: report

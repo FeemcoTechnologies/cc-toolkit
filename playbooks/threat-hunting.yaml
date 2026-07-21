@@ -1,0 +1,191 @@
+name: "Threat Hunting"
+description: >
+  Hypothesis-driven threat hunting methodology covering detection of
+  advanced persistent threats, ransomware precursors, living-off-the-land
+  binaries (LOLBins), fileless malware, C2 beaconing, data exfiltration,
+  internal reconnaissance, and privilege escalation. Mapped to MITRE
+  ATT&CK framework with actionable detection queries.
+version: "2.0"
+target_required: true
+
+vars:
+  hunt_focus: "general"
+  timeframe_days: 30
+  environment_type: "hybrid"
+  mitre_technique: ""
+  known_ioc: ""
+  splunk_index: ""
+  elastic_index: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Threat hunting — {target} focus: {hunt_focus} case: {case_id}"
+
+steps:
+  # Phase 1: Hypothesis development
+  - id: hypothesis
+    name: "Hunt hypothesis development"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: threat_model
+        name: "Threat model analysis"
+        tool: python3
+        args: ["-c", "import sys; f=sys.argv[1]; h={'general':'Anomalous logins, unusual processes, data staging','ransomware':'Mass file encryption, volume shadow delete, ransom notes, C2 beaconing','apt':'DLL sideloading, long-term C2, stealth persistence, living-off-the-land','insider':'Abnormal access times, mass data access, USB activity, email forwarding','supply_chain':'Unsigned binaries, unexpected software updates, curious DNS queries'}; print(h.get(f,f'Custom hunt: {f}'))",
+               "{hunt_focus}"]
+        save: "{case_dir}/hunt-hypothesis.txt"
+        timeout: 15
+
+      - id: baseline
+        name: "Establish environmental baseline"
+        tool: python3
+        args: ["-c", "import sys; print(f'Environmental baseline for {sys.argv[1]}:\\n- Normal auth volume (logins/hr)\\n- Normal network throughput (Mbps)\\n- Normal process creation rate\\n- Normal DNS query volume\\n- Normal service account activity\\n- Normal PowerShell execution\\n- Normal WMI usage patterns\\n- Normal scheduled task frequency')",
+               "{target}"]
+        save: "{case_dir}/environment-baseline.txt"
+        timeout: 15
+
+  # Phase 2: Initial access hunting
+  - id: initial_access
+    name: "Initial access detection"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: phishing_hunt
+        name: "Phishing & credential access"
+        tool: python3
+        args: ["-c", "import sys; print('Phishing & credential access indicators:\\n1. Suspicious email: unusual sender domains, spoofed display names\\n2. Click-through: multiple failed logins from same IP after email\\n3. Office macros: unusual macro execution from email attachments\\n4. Credential harvesting: login pages on look-alike domains\\n5. Password spray: same password, many accounts (1-3 attempts/account)\\n6. MFA fatigue: repeated MFA push notifications\\n7. Evilginx/Modlishka: look-alike login portals with valid certs\\nQueries:\\n- Splunk: index=email (attachment_ext=exe OR attachment_ext=vbs)\\n- KQL: EmailEvents | where AttachmentType in (\"exe\",\"vbs\",\"js\")')"]
+        save: "{case_dir}/phishing-hunt.txt"
+        timeout: 15
+
+      - id: external_hunt
+        name: "External-facing service abuse"
+        tool: python3
+        args: ["-c", "import sys; print('External service abuse hunting:\\n1. VPN: unusual geo-locations, impossible travel\\n2. RDP: brute-force + success from same IP\\n3. SSH: key-based auth from new source\\n4. Web: webshell detection (POST to .asp/.php without referrer)\\n5. Exchange: suspicious mail forwarding rules created\\n6. OAuth: unusual consent grants to apps\\n7. API: anomalous API endpoint access timing\\nQueries:\\n- KQL: SigninLogs | where Location != previous_location within 1h\\n- EQL: process where parent_process in (w3wp.exe, nginx.exe) and process_path contains suspicious strings')"]
+        save: "{case_dir}/external-hunt.txt"
+        timeout: 15
+
+  # Phase 3: Execution & persistence hunting
+  - id: execution
+    name: "Execution & persistence hunting"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: lolbas_hunt
+        name: "Living-off-the-land binaries"
+        tool: python3
+        args: ["-c", "import sys; print('LOLBin execution detection:\\n1. PowerShell: -enc, -e, -Command with base64, download cradle (Net.WebClient)\\n2. WMI: wmic process call create, Invoke-WmiMethod persistence\\n3. MSHTA: mshta.exe http://malicious\\n4. Rundll32: rundll32.exe javascript:\\\"...\\\"\\n5. Regsvr32: regsvr32 /s /u /i:http://malicious\\n6. Certutil: certutil -urlcache -f http://malicious\\n7. BITSAdmin: bitsadmin /transfer job http://malicious\\n8. Cscript/Wscript: .js/.vbs execution from temp/downloads\\n9. Msbuild: msbuild.exe malicious.xml\\n10. InstallUtil: InstallUtil.exe /logfile= /LogToConsole=false /U malicious.dll')"]
+        save: "{case_dir}/lolbas-hunt.txt"
+        timeout: 15
+
+      - id: persistence_hunt
+        name: "Persistence mechanism detection"
+        tool: python3
+        args: ["-c", "import sys; print('Persistence hunting:\\n1. Registry Run keys: HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\\n2. Scheduled tasks: schtasks with hidden flags\\n3. Services: new services with suspicious binary paths\\n4. WMI: __FilterToConsumerBinding subscriptions\\n5. Startup folder: exe/lnk in Startup for all users\\n6. DLL hijacking: search order abuse (missing DLL in app dir)\\n7. COM hijacking: CLSID references to malicious DLL\\n8. Browser extensions: Chrome/Edge extension with broad permissions\\n9. Bootkit: early launch anti-malware (ELAM) bypass\\n10. Kernel drivers: loading unsigned drivers')"]
+        save: "{case_dir}/persistence-hunt.txt"
+        timeout: 15
+
+      - id: fileless_hunt
+        name: "Fileless malware detection"
+        tool: python3
+        args: ["-c", "import sys; print('Fileless malware indicators:\\n1. PowerShell: .NET assemblies loaded reflectively\\n2. Process hollowing: legitimate exe with abnormal memory\\n3. Process doppelganging: TxF transaction abuse\\n4. AtomBombing: atom table + APC injection\\n5. Registry resident: data stored in registry values\\n6. WMI permanent events: __EventFilter + __FilterToConsumerBinding\\n7. Memory only: no disk writes, only process injection\\nDetection: scan process memory, monitor API calls, ETW tracing')"]
+        save: "{case_dir}/fileless-hunt.txt"
+        timeout: 15
+
+  # Phase 4: C2 & network hunting
+  - id: c2_hunt
+    name: "C2 & network detection"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: beacon_detect
+        name: "C2 beaconing detection"
+        tool: python3
+        args: ["-c", "import sys; print('C2 beaconing pattern detection:\\n1. Periodic HTTP/S requests at regular intervals (>30s)\\n2. JA3/JA3S TLS fingerprint analysis\\n3. JARM fingerprint anomalies\\n4. High DNS query count (DGA or tunnel)\\n5. Unusual User-Agent strings\\n6. POST to uncommon endpoints (non-existent paths)\\n7. Traffic to known bad ASNs/newly registered domains\\n8. Beacon jitter analysis (periodic with variance)\\n9. HTTP headers in unusual order\\n10. Uncommon TLS cipher suites (e.g., Cobalt Strike defaults)')"]
+        save: "{case_dir}/beacon-detection.txt"
+        timeout: 15
+
+      - id: dns_hunt
+        name: "DNS anomaly detection"
+        tool: python3
+        args: ["-c", "import sys; print('DNS-based threat hunting:\\n1. DGA detection: high entropy domain names\\n2. DNS tunneling: large TXT record responses\\n3. DNS MX: unusual MX queries (exfil indicator)\\n4. Fast flux: rapid IP changes for same domain\\n5. Double DNS: CNAME pointing to external\\n6. DNSSEC: tunneling via DNSKEY/RRSIG records\\n7. DoH/DoT: DNS over HTTPS to unknown resolvers\\n8. Subdomain brute force: reconnaissance via DNS queries\\nDetection: analyze DNS logs, entropy analysis, passive DNS']"]
+        save: "{case_dir}/dns-hunt.txt"
+        timeout: 15
+
+      - id: data_exfil_hunt
+        name: "Data exfiltration detection"
+        tool: python3
+        args: ["-c", "import sys; print('Data exfiltration indicators:\\n1. Large outbound data transfers (steady upload >10MB)\\n2. Unusual protocol for data leaving network (DNS, ICMP, NTP)\\n3. Cloud storage uploads (Drive, OneDrive, S3, Dropbox)\\n4. Email with large attachments to external addresses\\n5. HTTP PUT/POST with large body sizes\\n6. FTP/SCP transfers to new destinations\\n7. Archive file creation (zip/rar/7z) in quick succession\\n8. Data staging: files collected in temp folder before exfil\\n9. PrintNightmare: print spooler to external SMB share']"]
+        save: "{case_dir}/exfil-hunt.txt"
+        timeout: 15
+
+  # Phase 5: Lateral movement hunting
+  - id: lateral_hunt
+    name: "Lateral movement detection"
+    type: sequential
+    steps:
+      - id: lateral_detect
+        name: "Lateral movement indicators"
+        tool: python3
+        args: ["-c", "import sys; print('Lateral movement detection:\\n1. Pass-the-Hash: NTLM auth with administrative account from non-DC\\n2. Pass-the-Ticket: Kerberos ticket use from multiple workstations\\n3. RDP: lateral movement via RDP from unusual source\\n4. SMB/WMI: service creation on remote machine (psexec, wmiexec)\\n5. WinRM: PowerShell remoting session to many hosts\\n6. PSExec: service named with standard strings\\n7. Admin shares: ADMIN$, IPC$ accessed from non-admin workstation\\n8. Scheduled task: remote task creation (schtasks /create /s)\\n9. DCOM: MMC20.Application or ShellBrowserWindow remote activation\\n10. SSH: SSH key hopping between servers']"]
+        save: "{case_dir}/lateral-hunt.txt"
+        timeout: 15
+
+  # Phase 6: Endpoint & log analysis
+  - id: endpoint
+    name: "Endpoint log analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: event_logs
+        name: "Windows event log hunting"
+        tool: python3
+        args: ["-c", "import sys; print('Windows Event ID hunting:\\n- 4624: Logon - check for service accounts logging in from workstations\\n- 4625: Failed logon - brute-force attempts\\n- 4648: Explicit credential use (RunAs)\\n- 4672: Admin logon\\n- 4688: Process creation - watch for LOLBins\\n- 4698: Scheduled task creation\\n- 4702: Scheduled task update\\n- 4720: User account creation\\n- 4732: User added to security group\\n- 5140: File share access\\n- 5145: File share detailed access\\n- 7045: Service installation\\n- 4103: PowerShell module logging\\n- 4104: PowerShell script block logging']"]
+        save: "{case_dir}/event-log-hunt.txt"
+        timeout: 15
+
+      - id: sysmon_hunt
+        name: "Sysmon event hunting"
+        tool: python3
+        args: ["-c", "import sys; print('Sysmon Event ID hunting:\\n- 1: Process creation - command line anomalies\\n- 3: Network connection - unusual outbound\\n- 7: Image loaded - DLL load anomalies\\n- 8: CreateRemoteThread - process injection\\n- 10: Process accessed - LSASS access (mimikatz)\\n- 11: File create - dropped executables\\n- 13: Registry value set - persistence\\n- 15: FileCreateStreamHash - NTFS ADS\\n- 17/18: Pipe event - named pipe C2\\n- 22: DNS query - DNS anomalies\\n- 25: Process change - process tampering\\n- 26: File delete - volume shadow copy deletion']"]
+        save: "{case_dir}/sysmon-hunt.txt"
+        timeout: 15
+
+      - id: linux_hunt
+        name: "Linux/Unix hunting"
+        tool: python3
+        args: ["-c", "import sys; print('Linux threat hunting:\\n1. auth.log: failed SSH + success pattern\\n2. /var/log: unexpected cron/logrotate entries\\n3. .bash_history: unusual commands (wget, curl to IP)\\n4. netstat: LISTEN on unexpected ports\\n5. ps: processes hiding from procfs\\n6. lsmod: kernel rootkit detection\\n7. find / -perm -4000: new SUID binaries\\n8. auditd: file integrity monitoring alerts\\n9. /proc/$PID/fd: process file descriptor analysis\\n10. sysdig/chkrootkit/rkhunter: rootkit scans']"]
+        save: "{case_dir}/linux-hunt.txt"
+        timeout: 15
+
+  # Phase 7: Report
+  - id: report
+    name: "Threat hunting report"
+    type: report
+    format: markdown
+    title: "Threat Hunting — {target}"
+    output: "{case_dir}/threat-hunting-report.md"
+    sections:
+      - heading: "Hunt Overview"
+        body: "- Target: {target}\n- Focus: {hunt_focus}\n- Environment: {environment_type}\n- Case: {case_id}"
+      - heading: "Hypothesis"
+        body: "- {case_dir}/hunt-hypothesis.txt\n- {case_dir}/environment-baseline.txt"
+      - heading: "Initial Access"
+        body: "- Phishing: {case_dir}/phishing-hunt.txt\n- External: {case_dir}/external-hunt.txt"
+      - heading: "Execution & Persistence"
+        body: "- LOLBins: {case_dir}/lolbas-hunt.txt\n- Persistence: {case_dir}/persistence-hunt.txt\n- Fileless: {case_dir}/fileless-hunt.txt"
+      - heading: "C2 & Network"
+        body: "- Beaconing: {case_dir}/beacon-detection.txt\n- DNS: {case_dir}/dns-hunt.txt\n- Exfil: {case_dir}/exfil-hunt.txt"
+      - heading: "Lateral Movement"
+        body: "- Detection: {case_dir}/lateral-hunt.txt"
+      - heading: "Endpoint Analysis"
+        body: "- Event logs: {case_dir}/event-log-hunt.txt\n- Sysmon: {case_dir}/sysmon-hunt.txt\n- Linux: {case_dir}/linux-hunt.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Threat hunting complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Threat hunting finished for {target}. Report at {case_dir}/threat-hunting-report.md"

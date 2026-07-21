@@ -1,0 +1,334 @@
+name: "Windows Package Testing"
+description: >
+  Static and simulation-based testing of Windows executable packages:
+  PE executables (.exe/.dll), MSI installers (.msi), script-based packages
+  (.ps1/.bat/.vbs), and installer bundles (InnoSetup, NSIS, InstallShield).
+  Runs entirely from Linux using PE analysis tools, Wine sandbox execution,
+  YARA scanning, and malware indicator detection.
+version: "1.0"
+
+vars:
+  package_path: ""
+  case_dir: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Windows package analysis — {package_path} (case: {case_id})"
+
+steps:
+  # ─────────────────────────────────────────────
+  # Phase 1: File identification & extraction
+  # ─────────────────────────────────────────────
+  - id: file_id_extract
+    name: "File identification & extraction"
+    type: parallel
+    max_workers: 6
+    steps:
+      - id: file_type
+        name: "File type identification"
+        tool: file
+        args: ["{package_path}"]
+        timeout: 30
+        save: "{case_dir}/filetype.txt"
+
+      - id: file_checksums
+        name: "Checksums (MD5, SHA1, SHA256)"
+        tool: python3
+        args: ["-c", "import hashlib,sys; d=open(sys.argv[1],'rb').read(); print(f'MD5: {hashlib.md5(d).hexdigest()}\\nSHA1: {hashlib.sha1(d).hexdigest()}\\nSHA256: {hashlib.sha256(d).hexdigest()}\\nSize: {len(d)} bytes')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/checksums.txt"
+
+      - id: exiftool
+        name: "EXIF / metadata"
+        tool: exiftool
+        args: ["{package_path}"]
+        timeout: 60
+        save: "{case_dir}/exiftool.txt"
+
+      - id: strings_all
+        name: "Strings extraction (all)"
+        tool: strings
+        args: ["{package_path}", "-n4"]
+        timeout: 120
+        save: "{case_dir}/strings_all.txt"
+
+      - id: strings_suspicious
+        name: "Suspicious string grep"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); patterns=['CreateRemoteThread','WriteProcessMemory','VirtualAllocEx','URLDownloadToFile','WinExec','ShellExecute','RegSetValue','StartService','ConnectNamedPipe','WSAStartup','socket(','send(','recv(','InternetOpen','HttpSendRequest','GetTempPath','WriteFile','ReadFile','CryptDecrypt','VirtualProtect','NtUnmapViewOfSection','QueueUserAPC','SetWindowsHook']; found=[(p,d.count(p)) for p in patterns if p.lower() in d.lower()]; [print(f'{f}: {cnt}') for f,cnt in found]; [print(f'NOT FOUND: {p}') for p in patterns if p.lower() not in d.lower()]",
+               "{case_dir}/strings_all.txt"]
+        timeout: 30
+        save: "{case_dir}/suspicious_strings.txt"
+
+      - id: entropy
+        name: "File entropy calculation"
+        tool: python3
+        args: ["-c", "import sys,math; d=open(sys.argv[1],'rb').read(); freq=[0]*256; [freq.__setitem__(b,freq[b]+1) for b in d]; ent=-sum((c/len(d))*math.log2(c/len(d)) for c in freq if c); print(f'File entropy: {ent:.4f} (max 8.0)'); print('High entropy > 7.5 suggests packed/encrypted content')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/entropy.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 2: PE analysis
+  # ─────────────────────────────────────────────
+  - id: pe_analysis
+    name: "PE binary analysis"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: pe_headers
+        name: "PE header analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'rb').read(); print('=== DOS Header ==='); print(f'e_magic: {d[0:2]}'); pe_offset=int.from_bytes(d[0x3C:0x40],'little'); print(f'PE offset: {hex(pe_offset)}'); print(f'PE signature: {d[pe_offset:pe_offset+4]}'); opt_hdr_start=pe_offset+24; machine=('x86','x64','ARM','IA64').get(int.from_bytes(d[pe_offset+4:pe_offset+6],'little'),'UNKNOWN'); print(f'Machine: {machine}'); sections=int.from_bytes(d[pe_offset+6:pe_offset+8],'little'); print(f'Number of sections: {sections}'); flags=int.from_bytes(d[pe_offset+22:pe_offset+24],'little'); print(f'Characteristics: {hex(flags)}'); is_dll='IMAGE_FILE_DLL' if flags & 0x2000 else ''; is_exe='IMAGE_FILE_EXECUTABLE' if flags & 0x2 else ''; print(f'Type: {is_exe} {is_dll}')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pe_headers.txt"
+
+      - id: pe_sections
+        name: "PE section analysis"
+        tool: python3
+        args: ["-c", "import sys,math; d=open(sys.argv[1],'rb').read(); pe_off=int.from_bytes(d[0x3C:0x40],'little')+24; num=int.from_bytes(d[pe_off+6:pe_off+8],'little'); opt=int.from_bytes(d[pe_off+16:pe_off+18],'little'); sec_start=pe_off+24+opt; sus_names=['.upx','.packed','.themida','.vmp','.enigma','.armadillo','.ASPack','.nsp0','.nsp1','.nsp2','.pecr','.mew','.petite','.yc','.binga']; print(f'{\"Name\":<12} {\"VSize\":<10} {\"VAddr\":<10} {\"RSize\":<10} {\"ROff\":<10} {\"Entropy\":<10} Flags'); print('-'*72); for i in range(num): off=sec_start+i*40; name=d[off:off+8].rstrip(b'\\x00').decode('ascii',errors='replace'); vsize=int.from_bytes(d[off+8:off+12],'little'); vaddr=int.from_bytes(d[off+12:off+16],'little'); rsize=int.from_bytes(d[off+16:off+20],'little'); roff=int.from_bytes(d[off+20:off+24],'little'); sdata=d[roff:roff+rsize] if rsize>0 else b''; ent=0 if not sdata else -sum((c/len(sdata))*math.log2(c/len(sdata)) for c in [sdata.count(b) for b in range(256)] if c); chars=int.from_bytes(d[off+36:off+40],'little'); flags=''; flags+='X' if chars&0x20 else ''; flags+='W' if chars&0x80000000 else ''; flags+='R' if chars&0x40000000 else ''; sus=' <-- SUSPICIOUS' if name.lower() in [s.lower() for s in sus_names] else ''; print(f'{name:<12} {hex(vsize):<10} {hex(vaddr):<10} {hex(rsize):<10} {hex(roff):<10} {ent:<10.2f} {flags}{sus}')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pe_sections.txt"
+        artifacts: ["{case_dir}/pe_sections.txt"]
+
+      - id: pe_imports
+        name: "PE import analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'rb').read(); pe_off=int.from_bytes(d[0x3C:0x40],'little')+24; num=int.from_bytes(d[pe_off+6:pe_off+8],'little'); opt=int.from_bytes(d[pe_off+16:pe_off+18],'little'); sec_start=pe_off+24+opt; sus_dlls=['ws2_32','wininet','urlmon','crypt32','ntdll','advapi32','psapi']; sus_funcs=['CreateRemoteThread','WriteProcessMemory','VirtualAllocEx','WinExec','ShellExecute','RegSetValue']; found_imps=[]; print(f'{\"DLL\":<20} {\"Function\":<30}'); print('-'*50); # simplified import dir parsing; import_dir_rva=int.from_bytes(d[pe_off+24+80:pe_off+24+84],'little') if opt==0xF0 else 0; print(f'Import directory RVA: {hex(import_dir_rva)}'); # try pefile for full import resolution",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pe_imports.txt"
+
+      - id: pe_resources
+        name: "PE resource analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'rb').read(); print(f'File size: {len(d)} bytes'); print(f'Embedded PE resources found: {d.count(b\"MZ\")}'); print(f'RTF/MS Office signatures: {d.count(b\"{\\\\\rtf\")}'); dns=d.count(b'.exe')+d.count(b'.dll')+d.count(b'.scr')+d.count(b'.bat')+d.count(b'.ps1'); print(f'Embedded executable references: {dns}'); urls=d.count(b'http://')+d.count(b'https://'); print(f'URL strings: {urls}')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pe_resources.txt"
+
+      - id: pe_compile_time
+        name: "PE compile timestamp"
+        tool: python3
+        args: ["-c", "import sys,datetime; d=open(sys.argv[1],'rb').read(); pe_off=int.from_bytes(d[0x3C:0x40],'little'); ts=int.from_bytes(d[pe_off+8:pe_off+12],'little'); dt=datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc) if ts>0 else None; print(f'Compile timestamp: {dt if dt else \"None/set to zero\"}'); print(f'Raw: {hex(ts)}'); future=dt>datetime.datetime.now(datetime.timezone.utc) if dt else False; print(f'Future timestamp (possible tampering): {future}')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pe_compile_time.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 3: Installer-specific analysis
+  # ─────────────────────────────────────────────
+  - id: installer_analysis
+    name: "Installer-specific analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: detect_installer
+        name: "Detect installer type"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); types={'InnoSetup':'Inno','NSIS':'Nullsoft','InstallShield':'InstallShield','Advanced Installer':'Advanced Installer','WISE':'Wise','WinRAR':'rar!','7-Zip':\"'\\x37\\x7A\"}; found=[t for t in types if types[t].lower() in d.lower()[:2000]]; print(f'Detected installer type: {\", \".join(found) if found else \"Unknown/standard PE\"}')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/installer_type.txt"
+
+      - id: extract_msi
+        name: "Extract MSI installer contents"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]; is_msi=open(p,'rb').read(2)==b'\\xD0\\xCF' and b'msi' in open(p,'rb').read(100).lower(); print('MSI detected' if is_msi else 'Not a standard MSI'); os.makedirs(d+'/msi_extract',exist_ok=True) if is_msi else None; sp.run(['7z','x',p,'-o'+d+'/msi_extract','-y'],capture_output=True) if is_msi else None; sp.run(['msiextract','--directory',d+'/msi_extract',p],capture_output=True) if is_msi else None",
+               "{package_path}", "{case_dir}"]
+        timeout: 120
+        artifacts: ["{case_dir}/msi_extract"]
+
+      - id: extract_inno
+        name: "Extract InnoSetup installer (innoextract)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['innoextract','-l',p],capture_output=True,timeout=30); print('InnoSetup contents:' if r.returncode==0 else 'Not InnoSetup or innoextract not available'); print(r.stdout.decode(errors='replace')[:2000])",
+               "{package_path}"]
+        timeout: 60
+        save: "{case_dir}/inno_contents.txt"
+
+      - id: extract_nsis
+        name: "NSIS installer analysis"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['7z','l',p],capture_output=True,timeout=30); out=r.stdout.decode(errors='replace'); is_nsis='NSIS' in out[:500]; print('NSIS script found' if is_nsis else 'Not identified as NSIS'); sp.run(['7z','x',p,'-o'+sys.argv[2]+'/nsis_extract','-y'],capture_output=True) if is_nsis else None; [print(l) for l in out.split('\\n')[:80]]",
+               "{package_path}", "{case_dir}"]
+        timeout: 120
+        save: "{case_dir}/nsis_contents.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 4: Script-based package analysis (.ps1 / .bat / .vbs)
+  # ─────────────────────────────────────────────
+  - id: script_analysis
+    name: "Script-based package analysis"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: powershell_analysis
+        name: "PowerShell script analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); indicators=['IEX(','Invoke-Expression','Invoke-WebRequest','DownloadFile','DownloadString','FromBase64String','-EncodedCommand','-E ','-WindowStyle Hidden','Add-MpPreference','Set-MpPreference','New-Object Net.WebClient','Start-Process -WindowStyle Hidden','$env:','CRYPT','Reflection.Assembly','LoadFile','Invoke-Mimikatz','Invoke-ReflectivePEInjection','VirtualAlloc','CreateThread','Win32API']; print('=== PowerShell indicator scan ==='); [print(f'[!] {i}: found') for i in indicators if i.lower() in d.lower()]; print(f'\\nTotal length: {len(d)} chars'); base64_count=sum(1 for l in d.split('\\n') if len(l.strip())>100 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in l.strip())); print(f'Possible base64 payload lines: {base64_count}')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/powershell_analysis.txt"
+
+      - id: bat_analysis
+        name: "Batch script analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); indicators=['powershell','certutil','bitsadmin','wmic','wget','curl','rundll32','mshta','cscript','wscript','regsvr32','cmstp','msiexec','ftp','net user','net localgroup','schtasks','sc create','vssadmin','bcdedit','reg add']; print('=== Batch/Cmd indicator scan ==='); [print(f'[!] {i}: found') for i in indicators if i.lower() in d.lower()]",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/bat_analysis.txt"
+
+      - id: vbs_analysis
+        name: "VBScript analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); indicators=['CreateObject','WScript.Shell','Shell.Application','FileSystemObject','ADODB.Stream','XMLHTTP','WinHttp','Run ','Exec ','WriteLine','CreateTextFile','RegRead','RegWrite','Eval(']; print('=== VBScript indicator scan ==='); [print(f'[!] {i}: found') for i in indicators if i.lower() in d.lower()]",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/vbs_analysis.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 5: Signature & authenticity
+  # ─────────────────────────────────────────────
+  - id: signature_checks
+    name: "Signature & authenticity checks"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: authenticode_check
+        name: "Authenticode signature check (osslsigncode)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['osslsigncode','verify',p],capture_output=True,timeout=30); out=r.stdout.decode()+r.stderr.decode(); print(out[:2000] if out else 'osslsigncode not available or no signature')",
+               "{package_path}"]
+        timeout: 60
+        save: "{case_dir}/authenticode.txt"
+
+      - id: sigthief
+        name: "Signature stolen check"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; d=open(p,'rb').read(); cert_table_off=0; pe_off=int.from_bytes(d[0x3C:0x40],'little'); opt=int.from_bytes(d[pe_off+24+16:pe_off+24+18],'little'); if opt==0x10B: cert_off=pe_off+24+0x80+16*0+4; cert_table_rva=int.from_bytes(d[cert_off:cert_off+4],'little'); cert_table_size=int.from_bytes(d[cert_off+4:cert_off+8],'little'); print(f'Certificate table: RVA={hex(cert_table_rva)}, Size={cert_table_size}'); print('Manual sigcheck: readelf -n is PE only')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/signature_check.txt"
+
+      - id: pesigcheck
+        name: "PE signature structure"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['pesigcheck',p],capture_output=True,timeout=30); print(r.stdout.decode(errors='replace')[:2000] if r.returncode==0 else 'pesigcheck not available')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pesigcheck.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 6: YARA & malware indicator scanning
+  # ─────────────────────────────────────────────
+  - id: yara_malware_scan
+    name: "YARA & malware indicator scanning"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: yara_scan
+        name: "YARA scan (generic malware rules)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,glob; p=sys.argv[1]; yara_dirs=['/usr/share/yara-rules','/usr/local/share/yara']; rules=[]; [rules.extend(glob.glob(d+'/*.yar')+glob.glob(d+'/*.yara')) for d in yara_dirs if __import__('os').path.exists(d)]; print(f'Found {len(rules)} YARA rule files'); [print(f'  Rule: {r}') for r in rules[:10]]; [sp.run(['yara',r,p],capture_output=True,timeout=60) for r in rules[:5]]; print('To scan: yara -r /usr/share/yara-rules/rules.yar {package_path}')",
+               "{package_path}"]
+        timeout: 60
+        save: "{case_dir}/yara_scan.txt"
+
+      - id: pe_indicators
+        name: "PE-specific malware indicators"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'rb').read(); checks={'Has overlay data (appended after signature)':len(d)>0x1000,'Section count > 40':d[0x100:0x102] if len(d)>0x100 else b'','Entry point outside text section':False}; print('=== PE malware indicator check ==='); # section entropy check; pe_off=int.from_bytes(d[0x3C:0x40],'little')+24; sec_start=pe_off+24+(248 if d[pe_off+24+16]==0x0B else 0); ep_off=pe_off+24+16+16+8; ep=int.from_bytes(d[ep_off:ep_off+4],'little'); print(f'Entry point RVA: {hex(ep)}'); num_secs=int.from_bytes(d[pe_off+6:pe_off+8],'little'); sec_end=sec_start+num_secs*40; print(f'Sections: {num_secs}'); suspicious=num_secs<3 or num_secs>20; print(f'Few/many sections (packed?): {suspicious}'); # check for TLS callbacks; print('To check TLS: readelf -a or dumpbin')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/pe_indicators.txt"
+
+      - id: clamav_scan
+        name: "ClamAV scan (if available)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['clamscan','--stdout','--no-summary',p],capture_output=True,timeout=120); out=r.stdout.decode(); print(out[:3000] if out else 'Clean or ClamAV not available')",
+               "{package_path}"]
+        timeout: 120
+        save: "{case_dir}/clamav_scan.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 7: Wine-based simulation (optional)
+  # ─────────────────────────────────────────────
+  - id: wine_simulation
+    name: "Wine-based dynamic simulation"
+    type: sequential
+    steps:
+      - id: wine_check
+        name: "Check Wine availability"
+        tool: python3
+        args: ["-c", "import subprocess as sp; r=sp.run(['wine','--version'],capture_output=True); print(f'Wine: {r.stdout.decode().strip() if r.returncode==0 else \"NOT AVAILABLE\"}')"]
+        timeout: 30
+        save: "{case_dir}/wine_check.txt"
+
+      - id: wine_sandbox
+        name: "Run package in Wine sandbox (capture output)"
+        condition:
+          ref: wine_check
+          expected: "NOT AVAILABLE"
+          negate: true
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]; os.environ['WINEPREFIX']=d+'/wineprefix'; os.makedirs(d+'/wineprefix',exist_ok=True); sp.run(['wineboot','-u'],capture_output=True,timeout=30); r=sp.run(['wine',p,'/silent','/verysilent','/sp-'],capture_output=True,timeout=120); print('STDOUT:',r.stdout.decode(errors='replace')[:2000]); print('STDERR:',r.stderr.decode(errors='replace')[:2000]); # process listing; p2=sp.run(['wine','tasklist'],capture_output=True,timeout=30); print('\\nProcesses:',p2.stdout.decode(errors='replace')[:1000])",
+               "{package_path}", "{case_dir}"]
+        timeout: 300
+        save: "{case_dir}/wine_output.txt"
+
+      - id: wine_registry
+        name: "Check Wine registry changes"
+        condition:
+          ref: wine_check
+          expected: "NOT AVAILABLE"
+          negate: true
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; d=sys.argv[1]; r=sp.run(['wine','reg','query','HKLM\\\\Software','/s'],capture_output=True,timeout=30); print(r.stdout.decode(errors='replace')[:2000])",
+               "{case_dir}", "{package_path}"]
+        timeout: 60
+        save: "{case_dir}/wine_registry.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 8: Report
+  # ─────────────────────────────────────────────
+  - id: report
+    name: "Generate Windows package analysis report"
+    type: report
+    format: markdown
+    title: "Windows Package Analysis — {package_path}"
+    output: "{case_dir}/windows-package-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Package: {package_path}\n- Size: see {case_dir}/checksums.txt\n- Case: {case_id}"
+
+      - heading: "File Identification"
+        body: "- Type: {case_dir}/filetype.txt\n- Metadata: {case_dir}/exiftool.txt\n- Entropy: {case_dir}/entropy.txt\n- Suspicious strings: {case_dir}/suspicious_strings.txt"
+
+      - heading: "PE Structure"
+        body: "- Headers: {case_dir}/pe_headers.txt\n- Sections: {case_dir}/pe_sections.txt\n- Imports: {case_dir}/pe_imports.txt\n- Resources: {case_dir}/pe_resources.txt\n- Compile time: {case_dir}/pe_compile_time.txt"
+
+      - heading: "Installer Analysis"
+        body: "- Installer type: {case_dir}/installer_type.txt\n- MSI/Nsis/Inno contents: {case_dir}/*contents.txt\n- Extracted files: {case_dir}/msi_extract/"
+
+      - heading: "Script Analysis"
+        body: "- PowerShell indicators: {case_dir}/powershell_analysis.txt\n- Batch indicators: {case_dir}/bat_analysis.txt\n- VBScript indicators: {case_dir}/vbs_analysis.txt"
+
+      - heading: "Signature & Authenticity"
+        body: "- Authenticode: {case_dir}/authenticode.txt\n- Certificate table: {case_dir}/signature_check.txt"
+
+      - heading: "Malware Indicators"
+        body: "- YARA: {case_dir}/yara_scan.txt\n- PE indicators: {case_dir}/pe_indicators.txt\n- ClamAV: {case_dir}/clamav_scan.txt"
+
+      - heading: "Wine Simulation"
+        body: "- Wine available: {case_dir}/wine_check.txt\n- Runtime output: {case_dir}/wine_output.txt\n- Registry changes: {case_dir}/wine_registry.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Windows package analysis complete — {case_dir}/windows-package-report.md"

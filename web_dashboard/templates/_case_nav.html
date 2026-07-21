@@ -1,0 +1,31 @@
+<nav class="case-sidebar bg-gray-900 border border-gray-800 rounded-lg overflow-hidden shrink-0">
+    <div class="px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+        <a href="/case/{{ case.case_id }}" class="text-sm font-semibold text-gray-200 hover:text-indigo-400 transition-colors flex items-center gap-2">
+            <i data-lucide="folder" class="w-4 h-4 text-indigo-400"></i>
+            {{ case.case_id }}
+        </a>
+        <span class="text-xs text-gray-500">{{ case.type }}</span>
+    </div>
+    <div class="py-1 space-y-0.5">
+        {% set sections = [
+            ("overview",  "/case/" + case.case_id,              "layout-dashboard", "Overview"),
+            ("board",     "/case/" + case.case_id + "/board",   "columns",          "Board"),
+            ("gantt",     "/case/" + case.case_id + "/gantt",   "calendar",         "Timeline"),
+            ("findings",  "/case/" + case.case_id + "/findings","search-circle",           "Findings"),
+            ("notes",     "/case/" + case.case_id + "/notes",   "file-text",        "Notes"),
+            ("evidence",  "/case/" + case.case_id + "/evidence","shield",           "Evidence"),
+            ("files",     "/case/" + case.case_id + "/files",   "folder-open",      "Files"),
+            ("topology",  "/case/" + case.case_id + "/topology","network",          "Topology"),
+            ("runbook",   "/case/" + case.case_id + "/runbook", "book-open",        "Runbook"),
+            ("edit",      "/case/" + case.case_id + "/edit",    "edit",             "Settings"),
+            ("report",    "/case/" + case.case_id + "/report",  "file-text",        "Report"),
+        ] %}
+        {% for key, href, icon, label in sections %}
+        <a href="{{ href }}" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            {{ 'text-indigo-400 bg-indigo-900/20 border-r-2 border-indigo-400' if active_section == key else 'text-gray-400 hover:text-gray-200 hover:bg-gray-800' }}">
+            <i data-lucide="{{ icon }}" class="w-4 h-4 shrink-0"></i>
+            <span>{{ label }}</span>
+        </a>
+        {% endfor %}
+    </div>
+</nav>

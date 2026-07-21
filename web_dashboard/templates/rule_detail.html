@@ -6,6 +6,14 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/rules" class="hover:text-gray-300">Rules</a>
+  <span>/</span>
+  <span class="text-gray-400">Rule</span>
+</nav>
 <div class="flex items-center justify-between mb-6">
     <div class="flex items-center gap-3">
         <i data-lucide="{{ rule.format_meta.icon or 'shield' }}" class="w-6 h-6 text-indigo-400"></i>
@@ -13,14 +21,13 @@
         <span class="text-xs font-mono text-gray-500">{{ rule.id }}</span>
     </div>
     <div class="flex gap-2">
-        {% if rule.format in ('nuclei', 'yara', 'semgrep') %}
+        {% if rule.format in ('nuclei', 'yara', 'semgrep', 'codeql') %}
         <button onclick="openScanModal()" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 rounded text-sm flex items-center gap-1">
             <i data-lucide="play" class="w-4 h-4"></i> Scan
         </button>
         {% endif %}
         <a href="/rules/{{ rule.format }}/{{ rule.id }}/edit" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Edit</a>
-        <a href="/rules" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">&larr; All Rules</a>
-    </div>
+        </div>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -83,7 +90,7 @@
     <pre class="bg-gray-950 text-gray-300 text-sm p-4 rounded overflow-x-auto" style="max-height: 70vh;"><code>{{ rule.raw }}</code></pre>
 </div>
 
-{% if rule.format in ('nuclei', 'yara', 'semgrep') %}
+{% if rule.format in ('nuclei', 'yara', 'semgrep', 'codeql') %}
 <!-- Scan Modal -->
 <div id="scanModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
     <div class="bg-gray-900 rounded-xl border border-gray-700 p-6 w-full max-w-lg mx-4">

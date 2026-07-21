@@ -19,6 +19,7 @@ RULE_ROOTS = {
     "yara":      SCRIPTS_DIR / "aislop" / "rules" / "yara",
     "suricata":  SCRIPTS_DIR / "aislop" / "rules" / "suricata",
     "nuclei":    SCRIPTS_DIR / "nuclei",
+    "codeql":    SCRIPTS_DIR / "ai-combined-tools" / "rules" / "codeql",
 }
 
 # Additional flat directories for rules that don't fit the aislop layout
@@ -179,6 +180,16 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
                 nuclei_files.append({"path": f, "family": ""})
     result["nuclei"] = nuclei_files
 
+    # --- CodeQL (.ql under language subdirs) ---
+    codeql_files = []
+    codeql_root = RULE_ROOTS.get("codeql")
+    if codeql_root and codeql_root.exists():
+        for f in sorted(codeql_root.rglob("*.ql")):
+            if f.is_file():
+                lang_dir = f.relative_to(codeql_root).parts[0] if len(f.relative_to(codeql_root).parts) > 1 else ""
+                codeql_files.append({"path": f, "family": lang_dir})
+    result["codeql"] = codeql_files
+
     return result
 
 
@@ -316,12 +327,62 @@ def _extract_nuclei(path: Path) -> Optional[dict]:
         }
 
 
+def _extract_codeql(path: Path) -> Optional[dict]:
+    """Extract metadata from a CodeQL .ql query file.
+
+    Parses the JSDoc-style metadata block at the top:
+      /**
+       * @name Query Name
+       * @description What it detects
+       * @kind problem
+       * @problem.severity error
+       * @id lang/query-id
+       * @tags security
+       */
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    meta = {"name": path.stem, "description": "", "severity": "info",
+            "kind": "", "id": path.stem, "tags": ""}
+
+    # Extract JSDoc comment block at the top
+    m = re.match(r'/\*\*([^*]|\*[^/])*\*/', text, re.DOTALL)
+    if m:
+        block = m.group(0)
+        for line in block.splitlines():
+            line = line.strip().lstrip("*").strip()
+            if line.startswith("@name"):
+                meta["name"] = line.split(maxsplit=1)[1] if " " in line else path.stem
+            elif line.startswith("@description"):
+                meta["description"] = line.split(maxsplit=1)[1] if " " in line else ""
+            elif line.startswith("@problem.severity"):
+                raw = line.split(maxsplit=1)[1] if " " in line else ""
+                sev_map = {"error": "high", "warning": "medium", "recommendation": "low"}
+                meta["severity"] = sev_map.get(raw.lower(), raw.lower())
+            elif line.startswith("@kind"):
+                meta["kind"] = line.split(maxsplit=1)[1] if " " in line else ""
+            elif line.startswith("@id"):
+                meta["id"] = line.split(maxsplit=1)[1] if " " in line else path.stem
+            elif line.startswith("@tags"):
+                meta["tags"] = line.split(maxsplit=1)[1] if " " in line else ""
+
+    return {
+        "rule_id": meta["id"],
+        "title": meta["name"],
+        "description": meta["description"],
+        "severity": meta["severity"],
+        "author": "",
+        "kind": meta["kind"],
+        "tags": meta["tags"],
+    }
+
+
 EXTRACTORS = {
     "semgrep":  _extract_semgrep,
     "sigma":    _extract_sigma,
     "yara":     _extract_yara,
     "suricata": _extract_suricata,
     "nuclei":   _extract_nuclei,
+    "codeql":   _extract_codeql,
 }
 
 FORMAT_META = {
@@ -335,6 +396,8 @@ FORMAT_META = {
                  "description": "Suricata IDS/IPS signatures"},
     "nuclei":   {"label": "Nuclei", "icon": "zap", "extensions": ".yaml",
                  "description": "Nuclei vulnerability templates"},
+    "codeql":   {"label": "CodeQL", "icon": "code", "extensions": ".ql",
+                 "description": "CodeQL security queries"},
 }
 
 
@@ -458,6 +521,9 @@ class RuleManager:
                 elif rule_format == "suricata":
                     if not re.search(r"sid:\d+", content):
                         raise ValueError("Invalid Suricata rule — missing sid")
+                elif rule_format == "codeql":
+                    if not re.search(r"select\s", content, re.IGNORECASE):
+                        raise ValueError("Invalid CodeQL query — missing 'select' clause")
                 path.write_text(content, encoding="utf-8")
                 self._refresh()
                 return {"status": "saved", "filepath": str(path)}
@@ -498,6 +564,16 @@ class RuleManager:
         elif rule_format == "suricata":
             m = re.search(r"sid:(\d+)", content)
             fname = f"rule_{m.group(1) if m else 'new'}.rules"
+        elif rule_format == "codeql":
+            # Extract @id from metadata block, or use first @name
+            id_m = re.search(r'@id\s+(\S+)', content)
+            name_m = re.search(r'@name\s+(.+)', content)
+            if id_m:
+                fname = id_m.group(1).replace("/", "_") + ".ql"
+            elif name_m:
+                fname = re.sub(r"[^a-zA-Z0-9_-]", "_", name_m.group(1)).strip("_") + ".ql"
+            else:
+                fname = "new_query.ql"
         else:
             fname = "new-rule.txt"
 
@@ -532,6 +608,7 @@ class RuleManager:
             "yara": """rule my_rule {\n    meta:\n        description = "Describe what this detects"\n        author = ""\n        severity = "medium"\n    strings:\n        $s1 = "malicious_string" ascii nocase\n    condition:\n        $s1\n}\n""",
             "suricata": """alert tcp any any -> any any (\n    msg:"My Alert - suspicious activity";\n    content:"bad stuff";\n    sid:1000001;\n    rev:1;\n)\n""",
             "nuclei": """id: my-template\ninfo:\n  name: My Template Name\n  author: you\n  severity: medium\n  description: Detects something\nrequests:\n  - method: GET\n    path:\n      - "{{BaseURL}}"\n    matchers:\n      - type: word\n        words:\n          - "vulnerable"\n""",
+            "codeql": """/**\n * @name My Security Query\n * @description Detects a potential security vulnerability\n * @kind problem\n * @problem.severity error\n * @id my/security-query\n * @tags security\n */\n\nimport python\n\nfrom ...\nwhere ...\nselect ...\n""",
         }
         return templates.get(rule_format, "# New rule\n")
 
@@ -609,7 +686,7 @@ class RuleManager:
 
         ext_map = {
             "semgrep": ".yml", "sigma": ".yml", "yara": ".yar",
-            "suricata": ".rules", "nuclei": ".yaml",
+            "suricata": ".rules", "nuclei": ".yaml", "codeql": ".ql",
         }
         allowed = ext_map.get(rule_format, ".txt")
 
@@ -654,7 +731,7 @@ class RuleManager:
         stats = {}
         for fmt, name in [("semgrep", "Semgrep"), ("sigma", "Sigma"),
                           ("yara", "YARA"), ("suricata", "Suricata"),
-                          ("nuclei", "Nuclei")]:
+                          ("nuclei", "Nuclei"), ("codeql", "CodeQL")]:
             rules = self.list_rules(rule_format=fmt)
             by_sev = {}
             for r in rules:

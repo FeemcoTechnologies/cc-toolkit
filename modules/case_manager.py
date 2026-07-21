@@ -54,6 +54,32 @@ class CaseManager:
         "wordlists": "Custom wordlists for this case",
     }
 
+    # Allowed parent directories for source files in add_evidence
+    _ALLOWED_SOURCE_DIRS = None
+
+    @classmethod
+    def _allowed_src_dirs(cls) -> List[Path]:
+        if cls._ALLOWED_SOURCE_DIRS is None:
+            dirs = [Path.cwd()]
+            for env_var in ("TMPDIR", "TEMP", "TMP"):
+                val = os.environ.get(env_var)
+                if val:
+                    dirs.append(Path(val))
+            cls._ALLOWED_SOURCE_DIRS = dirs
+        return cls._ALLOWED_SOURCE_DIRS
+
+    @classmethod
+    def _is_allowed_source(cls, path: Path) -> bool:
+        """Check that a source file path is within an allowed directory."""
+        resolved = path.resolve()
+        for base in cls._allowed_src_dirs():
+            try:
+                if os.path.commonpath([str(resolved), str(base.resolve())]) == str(base.resolve()):
+                    return True
+            except (ValueError, OSError):
+                continue
+        return False
+
     def __init__(self, cases_dir: Optional[Path] = None):
         self.cases_dir = Path(cases_dir or CASES_DIR)
         self.cases_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +109,14 @@ class CaseManager:
     def _manifest_path(self, case_id: str) -> Path:
         return self._case_path(case_id) / "case.json"
 
+    def _write_manifest(self, case_id: str, manifest: dict):
+        """Atomically write manifest to case.json via tmp+replace."""
+        mf = self._manifest_path(case_id)
+        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        tmp = mf.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(manifest, indent=2, default=str))
+        tmp.replace(mf)
+
     def _update_manifest(self, case_id: str, updater) -> Optional[dict]:
         """Atomically read, modify, and write case.json. updater(manifest) is called under lock."""
         with self._lock:
@@ -91,8 +125,7 @@ class CaseManager:
                 return None
             manifest = json.loads(mf.read_text())
             result = updater(manifest)
-            manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            mf.write_text(json.dumps(manifest, indent=2, default=str))
+            self._write_manifest(case_id, manifest)
             return result if result is not None else manifest
 
     def list_cases(self) -> List[dict]:
@@ -101,7 +134,10 @@ class CaseManager:
             if d.is_dir():
                 mf = d / "case.json"
                 if mf.exists():
-                    c = json.loads(mf.read_text())
+                    try:
+                        c = json.loads(mf.read_text())
+                    except (json.JSONDecodeError, ValueError):
+                        c = {"case_id": d.name, "status": "corrupt"}
                     cases.append(c)
                 else:
                     cases.append({
@@ -215,20 +251,29 @@ class CaseManager:
         if not mf.exists():
             return None
         manifest = json.loads(mf.read_text())
-        src = Path(filepath)
+        src = Path(filepath).resolve()
         if not src.exists():
             return None
-        case_dir = self._case_path(case_id)
-        ev_dir = case_dir / category
+        case_dir = self._case_path(case_id).resolve()
+        # Reject source files outside allowed directories (prevents arbitrary file read)
+        if not str(src).startswith(str(case_dir)) and not self._is_allowed_source(src):
+            return None
+        ev_dir = (case_dir / category).resolve()
         ev_dir.mkdir(parents=True, exist_ok=True)
-        dest = ev_dir / src.name
-        shutil.copy2(str(src), str(dest))
-        data = dest.read_bytes()
+        dest = (ev_dir / src.name).resolve()
+        # If source is already inside the case directory, register in-place
+        # rather than copying (avoids SameFileError from shutil.copy2).
+        if str(src).startswith(str(case_dir)):
+            stored_path = src
+        else:
+            shutil.copy2(str(src), str(dest))
+            stored_path = dest
+        data = stored_path.read_bytes()
         sha256 = hashlib.sha256(data).hexdigest()
         md5 = hashlib.md5(data).hexdigest()
         record = {
-            "original_path": str(src.resolve()),
-            "stored_path": str(dest),
+            "original_path": str(src),
+            "stored_path": str(stored_path),
             "filename": src.name,
             "size": src.stat().st_size,
             "sha256": sha256,
@@ -238,9 +283,22 @@ class CaseManager:
             "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         manifest["evidence"].append(record)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return record
+
+    def delete_evidence(self, case_id: str, filename: str) -> bool:
+        """Remove an evidence record from the manifest by filename. Returns True if found and removed."""
+        mf = self._manifest_path(case_id)
+        if not mf.exists():
+            return False
+        manifest = json.loads(mf.read_text())
+        ev_list = manifest.get("evidence", [])
+        new_list = [e for e in ev_list if e.get("filename") != filename]
+        if len(new_list) == len(ev_list):
+            return False
+        manifest["evidence"] = new_list
+        self._write_manifest(case_id, manifest)
+        return True
 
     def verify_evidence(self, case_id: str) -> List[dict]:
         """Rehash all evidence files and compare against manifest. Return discrepancies."""
@@ -384,8 +442,7 @@ class CaseManager:
             "tags": tags or [],
         }
         manifest["notes"].append(note)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return note
 
     def close(self, case_id: str) -> Optional[dict]:
@@ -411,8 +468,7 @@ class CaseManager:
         if mf.exists():
             manifest = json.loads(mf.read_text())
             manifest["status"] = "closed"
-            manifest["modified"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            mf.write_text(json.dumps(manifest, indent=2))
+            self._write_manifest(case_id, manifest)
             self.ir_timeline_add(case_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                  "Case archived", severity="info", source="system")
 
@@ -454,8 +510,7 @@ class CaseManager:
         if mf.exists():
             manifest = json.loads(mf.read_text())
             manifest["status"] = "archived"
-            manifest["modified"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            mf.write_text(json.dumps(manifest, indent=2))
+            self._write_manifest(case_id, manifest)
             self.ir_timeline_add(case_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                  "Case unarchived", severity="info", source="system")
 
@@ -498,8 +553,7 @@ class CaseManager:
         if "goals" not in manifest:
             manifest["goals"] = []
         manifest["goals"].append(goal)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return {"case_id": case_id, "goals": manifest["goals"]}
 
     def goal_remove(self, case_id: str, index: int = -1) -> Optional[dict]:
@@ -514,8 +568,7 @@ class CaseManager:
             removed = goals.pop(index)
         else:
             removed = goals.pop()
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return {"removed": removed, "goals": goals}
 
     def goal_list(self, case_id: str) -> List[str]:
@@ -543,8 +596,7 @@ class CaseManager:
             "logged": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         manifest["ir_timeline"].append(entry)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return entry
 
     def ir_timeline_list(self, case_id: str) -> List[dict]:
@@ -571,8 +623,7 @@ class CaseManager:
             "logged": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         manifest["ir_ttps"].append(entry)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return entry
 
     def ir_ttp_list(self, case_id: str) -> List[dict]:
@@ -600,8 +651,7 @@ class CaseManager:
             "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         manifest["ir_containment"].append(entry)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return entry
 
     def ir_containment_update(self, case_id: str, containment_id: str,
@@ -614,8 +664,7 @@ class CaseManager:
             if entry.get("id") == containment_id:
                 entry["status"] = status
                 entry["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                mf.write_text(json.dumps(manifest, indent=2))
+                self._write_manifest(case_id, manifest)
                 return entry
         return None
 
@@ -687,8 +736,7 @@ class CaseManager:
         if "strengths" not in manifest:
             manifest["strengths"] = []
         manifest["strengths"].append(text)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return {"case_id": case_id, "strengths": manifest["strengths"]}
 
     def remove_strength(self, case_id: str, index: int = -1) -> Optional[dict]:
@@ -703,8 +751,7 @@ class CaseManager:
             removed = strengths.pop(index)
         else:
             removed = strengths.pop()
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return {"removed": removed, "strengths": strengths}
 
     def list_strengths(self, case_id: str) -> List[str]:
@@ -722,8 +769,7 @@ class CaseManager:
         if "weaknesses" not in manifest:
             manifest["weaknesses"] = []
         manifest["weaknesses"].append(text)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return {"case_id": case_id, "weaknesses": manifest["weaknesses"]}
 
     def remove_weakness(self, case_id: str, index: int = -1) -> Optional[dict]:
@@ -738,8 +784,7 @@ class CaseManager:
             removed = weaknesses.pop(index)
         else:
             removed = weaknesses.pop()
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mf.write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         return {"removed": removed, "weaknesses": weaknesses}
 
     def list_weaknesses(self, case_id: str) -> List[str]:

@@ -1,291 +1,375 @@
-# v2 runbook — Windows forensics: remote acquisition via SSH + SCP
-name: "Windows Forensics Acquisition"
-description: "Collect Windows forensic artifacts: live response, event logs, registry hives, KAPE, prefetch, memory"
-version: "2.0"
-
+name: Windows Forensics Acquisition
+description: 'Collect Windows forensic artifacts: live response, event logs, registry
+  hives, KAPE, prefetch, memory'
+version: '2.0'
 vars:
-  target_host: ""
-  target_user: "Administrator"
-  target_pass: ""
+  target_host: ''
+  target_user: Administrator
+  target_pass: ''
   remote_port: 22
-  remote_temp: "C:\\temp"
-
+  remote_temp: C:\temp
 preflight:
-  - id: preamble
-    type: log
-    message: "Windows forensics acquisition — target: {target_host} (case: {case_id})"
-
+- id: preamble
+  type: log
+  message: 'Windows forensics acquisition — target: {target_host} (case: {case_id})'
+  name: Preamble
 steps:
-  # ---- Phase 1: Live response collection (remote) ----
-  - id: live_collect
-    name: "Live system information"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: remote_systeminfo
-        name: "System info"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "systeminfo"]
-        timeout: 60
-
-      - id: remote_tasklist
-        name: "Process list"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "tasklist /V"]
-        timeout: 60
-
-      - id: remote_netstat
-        name: "Network connections"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "netstat -ano"]
-        timeout: 60
-
-      - id: remote_loggedon
-        name: "Logged-on users"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "query user"]
-        timeout: 30
-
-  # ---- Phase 2: Event log collection (remote + SCP) ----
-  - id: event_logs
-    name: "Windows Event Log collection"
-    type: parallel
-    steps:
-      - id: export_security
-        name: "Export Security event log"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "wevtutil epl Security {remote_temp}\\{case_id}\\security.evtx"]
-        timeout: 120
-
-      - id: export_system
-        name: "Export System event log"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "wevtutil epl System {remote_temp}\\{case_id}\\system.evtx"]
-        timeout: 120
-
-      - id: export_powershell
-        name: "Export PowerShell log"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "wevtutil epl Microsoft-Windows-PowerShell/Operational {remote_temp}\\{case_id}\\powershell.evtx"]
-        timeout: 120
-
-  # ---- Phase 2b: SCP event logs back to case ----
-  - id: scp_evtx
-    name: "Copy event logs to case"
-    type: parallel
-    steps:
-      - id: scp_security
-        name: "SCP security.evtx"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\security.evtx",
-               "{case_dir}/security.evtx"]
-        timeout: 120
-        artifacts: ["{case_dir}/security.evtx"]
-
-      - id: scp_system
-        name: "SCP system.evtx"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\system.evtx",
-               "{case_dir}/system.evtx"]
-        timeout: 120
-        artifacts: ["{case_dir}/system.evtx"]
-
-      - id: scp_powershell
-        name: "SCP powershell.evtx"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\powershell.evtx",
-               "{case_dir}/powershell.evtx"]
-        timeout: 120
-        artifacts: ["{case_dir}/powershell.evtx"]
-
-  # ---- Phase 3: Registry hive acquisition (remote + SCP) ----
-  - id: registry_hives
-    name: "Registry hive acquisition"
-    type: parallel
-    steps:
-      - id: save_sam
-        name: "Save SAM hive"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "reg save HKLM\\SAM {remote_temp}\\{case_id}\\SAM /y"]
-        timeout: 30
-
-      - id: save_system
-        name: "Save SYSTEM hive"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "reg save HKLM\\SYSTEM {remote_temp}\\{case_id}\\SYSTEM /y"]
-        timeout: 30
-
-      - id: save_software
-        name: "Save SOFTWARE hive"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "reg save HKLM\\SOFTWARE {remote_temp}\\{case_id}\\SOFTWARE /y"]
-        timeout: 30
-
-  - id: scp_hives
-    name: "Copy registry hives to case"
-    type: parallel
-    steps:
-      - id: scp_sam
-        name: "SCP SAM"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\SAM",
-               "{case_dir}/SAM"]
-        timeout: 60
-        artifacts: ["{case_dir}/SAM"]
-
-      - id: scp_system_hive
-        name: "SCP SYSTEM"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\SYSTEM",
-               "{case_dir}/SYSTEM"]
-        timeout: 60
-        artifacts: ["{case_dir}/SYSTEM"]
-
-      - id: scp_software
-        name: "SCP SOFTWARE"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\SOFTWARE",
-               "{case_dir}/SOFTWARE"]
-        timeout: 60
-        artifacts: ["{case_dir}/SOFTWARE"]
-
-  - id: ntds_check
-    name: "NTDS.dit (if Domain Controller)"
-    type: conditional
-    condition:
-      contains: "Domain Controller"
-      ref: remote_systeminfo
-    then:
-      - id: export_ntds
-        name: "Export NTDS via ntdsutil"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "ntdsutil \"ac i ntds\" \"ifm\" \"create full {remote_temp}\\{case_id}\\ntds\" q q"]
-        timeout: 300
-      - id: scp_ntds
-        name: "SCP NTDS dump"
-        tool: scp
-        args: ["-r", "{target_user}@{target_host}:{remote_temp}\\{case_id}\\ntds",
-               "{case_dir}/ntds"]
-        timeout: 300
-        artifacts: ["{case_dir}/ntds"]
-
-  # ---- Phase 4: KAPE collection (remote + SCP) ----
-  - id: kape_collect
-    name: "KAPE artifact collection"
+- id: live_collect
+  name: Live system information
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: remote_systeminfo
+    name: System info
     tool: ssh
-    args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-           "kape.exe --tsource C: --tdest {remote_temp}\\{case_id}\\kape --target !BasicCollection --gui 0"]
-    timeout: 600
-
-  - id: scp_kape
-    name: "SCP KAPE results"
-    tool: scp
-    args: ["-r", "{target_user}@{target_host}:{remote_temp}\\{case_id}\\kape",
-           "{case_dir}/kape"]
-    timeout: 600
-    artifacts: ["{case_dir}/kape"]
-
-  # ---- Phase 5: Prefetch & ShimCache ----
-  - id: prefetch_collect
-    name: "Prefetch and ShimCache collection"
-    type: parallel
-    steps:
-      - id: copy_prefetch
-        name: "Copy prefetch files"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "cmd /c mkdir {remote_temp}\\{case_id}\\prefetch & copy C:\\Windows\\Prefetch\\*.pf {remote_temp}\\{case_id}\\prefetch\\"]
-        timeout: 60
-
-      - id: save_shimcache
-        name: "Save ShimCache"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "reg save HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\AppCompatCache {remote_temp}\\{case_id}\\shimcache /y"]
-        timeout: 30
-
-  - id: scp_prefetch
-    name: "Copy prefetch + shimcache to case"
-    type: parallel
-    steps:
-      - id: scp_prefetch_files
-        name: "SCP prefetch"
-        tool: scp
-        args: ["-r", "{target_user}@{target_host}:{remote_temp}\\{case_id}\\prefetch",
-               "{case_dir}/prefetch"]
-        timeout: 120
-        artifacts: ["{case_dir}/prefetch"]
-
-      - id: scp_shimcache
-        name: "SCP shimcache"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\shimcache",
-               "{case_dir}/shimcache"]
-        timeout: 60
-        artifacts: ["{case_dir}/shimcache"]
-
-  # ---- Phase 6: Memory acquisition ----
-  - id: ask_memory
-    type: prompt
-    message: "Acquire memory dump from remote host? (requires WinPmem or Magnet RAM Capture on Windows VM)"
-    then:
-      - id: memory_dump
-        name: "Remote memory acquisition"
-        tool: ssh
-        args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-               "winpmem_mini_x64_rc2.exe {remote_temp}\\{case_id}\\memory.raw"]
-        timeout: 600
-
-      - id: scp_memory
-        name: "SCP memory dump"
-        tool: scp
-        args: ["{target_user}@{target_host}:{remote_temp}\\{case_id}\\memory.raw",
-               "{case_dir}/memory.raw"]
-        timeout: 600
-        artifacts: ["{case_dir}/memory.raw"]
-
-  # ---- Phase 7: Hash collected artifacts ----
-  - id: hash_artifacts
-    name: "Hash collected artifacts (SHA256)"
-    tool: bash
-    args: ["-c", "find {case_dir} -type f -name '*.evtx' -o -name 'SAM' -o -name 'SYSTEM' -o -name 'SOFTWARE' -o -name '*.raw' | sort | while read f; do echo $(sha256sum \"$f\" | cut -d' ' -f1) $f; done > {case_dir}/hashes.txt"]
-    timeout: 120
-
-  # ---- Phase 8: Report ----
-  - id: report
-    name: "Generate forensics report"
-    type: report
-    format: markdown
-    title: "Windows Forensics Acquisition — {target_host}"
-    output: "{case_dir}/windows-forensics-report.md"
-    sections:
-      - heading: "Target"
-        body: "- Host: {target_host}\n- Case: {case_id}"
-      - heading: "Artifacts Collected"
-        body: "- Live response (systeminfo, tasklist, netstat, logged-on users)\n- Event logs (Security, System, PowerShell)\n- Registry hives (SAM, SYSTEM, SOFTWARE)\n- Prefetch files\n- KAPE !BasicCollection\n- Memory dump (if acquired)"
-      - heading: "Evidence Integrity"
-        body: "SHA256 hashes for all collected files in {case_dir}/hashes.txt"
-
-postflight:
-  - id: cleanup
-    name: "Clean up remote temp"
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - systeminfo
+    timeout: 60
+    type: tool
+  - id: remote_tasklist
+    name: Process list
     tool: ssh
-    args: ["{target_user}@{target_host}", "-p", "{remote_port}",
-           "rmdir /s /q {remote_temp}\\{case_id}"]
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - tasklist /V
+    timeout: 60
+    type: tool
+  - id: remote_netstat
+    name: Network connections
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - netstat -ano
+    timeout: 60
+    type: tool
+  - id: remote_loggedon
+    name: Logged-on users
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - query user
     timeout: 30
+    type: tool
+- id: event_logs
+  name: Windows Event Log collection
+  type: parallel
+  steps:
+  - id: export_security
+    name: Export Security event log
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - wevtutil epl Security {remote_temp}\{case_id}\security.evtx
+    timeout: 120
+    type: tool
+  - id: export_system
+    name: Export System event log
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - wevtutil epl System {remote_temp}\{case_id}\system.evtx
+    timeout: 120
+    type: tool
+  - id: export_powershell
+    name: Export PowerShell log
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - wevtutil epl Microsoft-Windows-PowerShell/Operational {remote_temp}\{case_id}\powershell.evtx
+    timeout: 120
+    type: tool
+- id: scp_evtx
+  name: Copy event logs to case
+  type: parallel
+  steps:
+  - id: scp_security
+    name: SCP security.evtx
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\security.evtx'
+    - '{case_dir}/security.evtx'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/security.evtx'
+    type: tool
+  - id: scp_system
+    name: SCP system.evtx
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\system.evtx'
+    - '{case_dir}/system.evtx'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/system.evtx'
+    type: tool
+  - id: scp_powershell
+    name: SCP powershell.evtx
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\powershell.evtx'
+    - '{case_dir}/powershell.evtx'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/powershell.evtx'
+    type: tool
+- id: registry_hives
+  name: Registry hive acquisition
+  type: parallel
+  steps:
+  - id: save_sam
+    name: Save SAM hive
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - reg save HKLM\SAM {remote_temp}\{case_id}\SAM /y
+    timeout: 30
+    type: tool
+  - id: save_system
+    name: Save SYSTEM hive
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - reg save HKLM\SYSTEM {remote_temp}\{case_id}\SYSTEM /y
+    timeout: 30
+    type: tool
+  - id: save_software
+    name: Save SOFTWARE hive
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - reg save HKLM\SOFTWARE {remote_temp}\{case_id}\SOFTWARE /y
+    timeout: 30
+    type: tool
+- id: scp_hives
+  name: Copy registry hives to case
+  type: parallel
+  steps:
+  - id: scp_sam
+    name: SCP SAM
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\SAM'
+    - '{case_dir}/SAM'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/SAM'
+    type: tool
+  - id: scp_system_hive
+    name: SCP SYSTEM
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\SYSTEM'
+    - '{case_dir}/SYSTEM'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/SYSTEM'
+    type: tool
+  - id: scp_software
+    name: SCP SOFTWARE
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\SOFTWARE'
+    - '{case_dir}/SOFTWARE'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/SOFTWARE'
+    type: tool
+- id: ntds_check
+  name: NTDS.dit (if Domain Controller)
+  type: conditional
+  condition:
+    contains: Domain Controller
+    ref: remote_systeminfo
+  then:
+  - id: export_ntds
+    name: Export NTDS via ntdsutil
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - ntdsutil "ac i ntds" "ifm" "create full {remote_temp}\{case_id}\ntds" q q
+    timeout: 300
+    type: tool
+  - id: scp_ntds
+    name: SCP NTDS dump
+    tool: scp
+    args:
+    - -r
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\ntds'
+    - '{case_dir}/ntds'
+    timeout: 300
+    artifacts:
+    - '{case_dir}/ntds'
+    type: tool
+- id: kape_collect
+  name: KAPE artifact collection
+  tool: ssh
+  args:
+  - '{target_user}@{target_host}'
+  - -p
+  - '{remote_port}'
+  - 'kape.exe --tsource C: --tdest {remote_temp}\{case_id}\kape --target !BasicCollection
+    --gui 0'
+  timeout: 600
+  type: tool
+- id: scp_kape
+  name: SCP KAPE results
+  tool: scp
+  args:
+  - -r
+  - '{target_user}@{target_host}:{remote_temp}\{case_id}\kape'
+  - '{case_dir}/kape'
+  timeout: 600
+  artifacts:
+  - '{case_dir}/kape'
+  type: tool
+- id: prefetch_collect
+  name: Prefetch and ShimCache collection
+  type: parallel
+  steps:
+  - id: copy_prefetch
+    name: Copy prefetch files
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - cmd /c mkdir {remote_temp}\{case_id}\prefetch & copy C:\Windows\Prefetch\*.pf
+      {remote_temp}\{case_id}\prefetch\
+    timeout: 60
+    type: tool
+  - id: save_shimcache
+    name: Save ShimCache
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - reg save HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache
+      {remote_temp}\{case_id}\shimcache /y
+    timeout: 30
+    type: tool
+- id: scp_prefetch
+  name: Copy prefetch + shimcache to case
+  type: parallel
+  steps:
+  - id: scp_prefetch_files
+    name: SCP prefetch
+    tool: scp
+    args:
+    - -r
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\prefetch'
+    - '{case_dir}/prefetch'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/prefetch'
+    type: tool
+  - id: scp_shimcache
+    name: SCP shimcache
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\shimcache'
+    - '{case_dir}/shimcache'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/shimcache'
+    type: tool
+- id: ask_memory
+  type: prompt
+  message: Acquire memory dump from remote host? (requires WinPmem or Magnet RAM Capture
+    on Windows VM)
+  then:
+  - id: memory_dump
+    name: Remote memory acquisition
+    tool: ssh
+    args:
+    - '{target_user}@{target_host}'
+    - -p
+    - '{remote_port}'
+    - winpmem_mini_x64_rc2.exe {remote_temp}\{case_id}\memory.raw
+    timeout: 600
+    type: tool
+  - id: scp_memory
+    name: SCP memory dump
+    tool: scp
+    args:
+    - '{target_user}@{target_host}:{remote_temp}\{case_id}\memory.raw'
+    - '{case_dir}/memory.raw'
+    timeout: 600
+    artifacts:
+    - '{case_dir}/memory.raw'
+    type: tool
+  name: Ask Memory
+- id: hash_artifacts
+  name: Hash collected artifacts (SHA256)
+  tool: bash
+  args:
+  - -c
+  - find {case_dir} -type f -name '*.evtx' -o -name 'SAM' -o -name 'SYSTEM' -o -name
+    'SOFTWARE' -o -name '*.raw' | sort | while read f; do echo $(sha256sum "$f" |
+    cut -d' ' -f1) $f; done > {case_dir}/hashes.txt
+  timeout: 120
+  type: tool
+- id: report
+  name: Generate forensics report
+  type: report
+  format: markdown
+  title: Windows Forensics Acquisition — {target_host}
+  output: '{case_dir}/windows-forensics-report.md'
+  sections:
+  - heading: Target
+    body: '- Host: {target_host}
 
-  - id: done
-    type: notify
-    level: success
-    message: "Windows forensics acquisition complete — {case_dir}"
+      - Case: {case_id}'
+  - heading: Artifacts Collected
+    body: '- Live response (systeminfo, tasklist, netstat, logged-on users)
+
+      - Event logs (Security, System, PowerShell)
+
+      - Registry hives (SAM, SYSTEM, SOFTWARE)
+
+      - Prefetch files
+
+      - KAPE !BasicCollection
+
+      - Memory dump (if acquired)'
+  - heading: Evidence Integrity
+    body: SHA256 hashes for all collected files in {case_dir}/hashes.txt
+postflight:
+- id: cleanup
+  name: Clean up remote temp
+  tool: ssh
+  args:
+  - '{target_user}@{target_host}'
+  - -p
+  - '{remote_port}'
+  - rmdir /s /q {remote_temp}\{case_id}
+  timeout: 30
+  type: tool
+- id: done
+  type: notify
+  level: success
+  message: Windows forensics acquisition complete — {case_dir}
+  name: Done

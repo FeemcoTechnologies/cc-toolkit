@@ -27,25 +27,24 @@ steps:
         tool: evil-winrm
         args: ["-i", "{target_host}",
                "-u", "{target_user}",
-               "-p", "{target_pass}",
-               "-o", "{case_dir}/winrm_session.log"]
+               "-p", "{target_pass}"]
         timeout: 30
-        artifacts: ["{case_dir}/winrm_session.log"]
+        save: "{case_dir}/winrm_session.log"
 
       - id: wmic_conn
         name: "WMIC remote connection"
         tool: impacket-wmiexec
-        args: ["{target_user}:{target_pass}@{target_host}",
-               "-o", "{case_dir}/wmic_check.txt"]
+        args: ["{target_user}:{target_pass}@{target_host}"]
         timeout: 30
+        save: "{case_dir}/wmic_check.txt"
 
       - id: psexec_check
         name: "PsExec access check"
         tool: impacket-psexec
         args: ["{target_user}:{target_pass}@{target_host}",
-               "whoami",
-               "-o", "{case_dir}/psexec_check.txt"]
+               "whoami"]
         timeout: 30
+        save: "{case_dir}/psexec_check.txt"
 
   # Phase 2: System information
   - id: system_info
@@ -57,26 +56,25 @@ steps:
         name: "System info"
         tool: powershell
         args: ["-Command",
-               "Get-CimInstance Win32_OperatingSystem | Select Caption,Version,BuildNumber,OSArchitecture; Get-CimInstance Win32_ComputerSystem | Select Manufacturer,Model,TotalPhysicalMemory; Get-CimInstance Win32_Processor | Select Name,NumberOfCores",
-               "-o", "{case_dir}/system_info.txt"]
+               "Get-CimInstance Win32_OperatingSystem | Select Caption,Version,BuildNumber,OSArchitecture; Get-CimInstance Win32_ComputerSystem | Select Manufacturer,Model,TotalPhysicalMemory; Get-CimInstance Win32_Processor | Select Name,NumberOfCores"]
         timeout: 30
-        artifacts: ["{case_dir}/system_info.txt"]
+        save: "{case_dir}/system_info.txt"
 
       - id: hotfixes
         name: "Installed hotfixes"
         tool: powershell
         args: ["-Command",
-               "Get-HotFix | Select HotFixID,InstalledOn,Description",
-               "-o", "{case_dir}/hotfixes.txt"]
+               "Get-HotFix | Select HotFixID,InstalledOn,Description"]
         timeout: 30
+        save: "{case_dir}/hotfixes.txt"
 
       - id: pathtouse
         name: "Watson / Sherlock check"
         tool: powershell
         args: ["-Command",
-               "$patches=@(); Get-HotFix | ForEach-Object {$patches+=$_.HotFixID}; Write-Output $patches",
-               "-o", "{case_dir}/installed_patches.txt"]
+               "$patches=@(); Get-HotFix | ForEach-Object {$patches+=$_.HotFixID}; Write-Output $patches"]
         timeout: 30
+        save: "{case_dir}/installed_patches.txt"
 
   # Phase 3: Service abuse
   - id: services
@@ -88,35 +86,33 @@ steps:
         name: "Weak service permissions"
         tool: powershell
         args: ["-Command",
-               "Get-CimInstance Win32_Service | Where-Object {$_.StartName -eq 'LocalSystem'} | Select Name,DisplayName,PathName,State,StartMode",
-               "-o", "{case_dir}/services_system.txt"]
+               "Get-CimInstance Win32_Service | Where-Object {$_.StartName -eq 'LocalSystem'} | Select Name,DisplayName,PathName,State,StartMode"]
         timeout: 30
-        artifacts: ["{case_dir}/services_system.txt"]
+        save: "{case_dir}/services_system.txt"
 
       - id: svc_path
         name: "Unquoted service paths"
         tool: powershell
         args: ["-Command",
-               "Get-CimInstance Win32_Service | Where-Object {$_.PathName -match '^[^\"].* .*[^\"].exe'} | Select Name,PathName",
-               "-o", "{case_dir}/unquoted_services.txt"]
+               "Get-CimInstance Win32_Service | Where-Object {$_.PathName -match '^[^\"].* .*[^\"].exe'} | Select Name,PathName"]
         timeout: 30
-        artifacts: ["{case_dir}/unquoted_services.txt"]
+        save: "{case_dir}/unquoted_services.txt"
 
       - id: svc_writable
         name: "Writable service binaries"
         tool: powershell
         args: ["-Command",
-               "Get-CimInstance Win32_Service | ForEach-Object {$p=$_.PathName -replace '\"',''; if(Test-Path $p) { $a=Get-Acl $p -ErrorAction SilentlyContinue; if($a -and ($a.Access|Where-Object {$_.FileSystemRights -match 'Write|Modify|FullControl' -and $_.IdentityReference -match 'BUILTIN\\\\Users|Everyone'})) {[PSCustomObject]@{Name=$_.Name;Path=$p}}} }",
-               "-o", "{case_dir}/writable_service_bins.txt"]
+               "Get-CimInstance Win32_Service | ForEach-Object {$p=$_.PathName -replace '\"',''; if(Test-Path $p) { $a=Get-Acl $p -ErrorAction SilentlyContinue; if($a -and ($a.Access|Where-Object {$_.FileSystemRights -match 'Write|Modify|FullControl' -and $_.IdentityReference -match 'BUILTIN\\\\Users|Everyone'})) {[PSCustomObject]@{Name=$_.Name;Path=$p}}} }"]
         timeout: 60
+        save: "{case_dir}/writable_service_bins.txt"
 
       - id: svc_mod
         name: "Modifiable services (sc config)"
         tool: powershell
         args: ["-Command",
-               "Get-CimInstance Win32_Service | Where-Object {$_.PathName -match '^(?!.*system32).*' -and $_.State -eq 'Stopped'} | Select Name,PathName,StartMode",
-               "-o", "{case_dir}/modifiable_services.txt"]
+               "Get-CimInstance Win32_Service | Where-Object {$_.PathName -match '^(?!.*system32).*' -and $_.State -eq 'Stopped'} | Select Name,PathName,StartMode"]
         timeout: 30
+        save: "{case_dir}/modifiable_services.txt"
 
   # Phase 4: Token & privilege abuse
   - id: tokens
@@ -127,28 +123,25 @@ steps:
       - id: whoami_priv
         name: "Current privileges"
         tool: powershell
-        args: ["-Command",
-               "whoami /priv",
-               "-o", "{case_dir}/whoami_priv.txt"]
+        args: ["-Command", "whoami /priv"]
         timeout: 15
-        artifacts: ["{case_dir}/whoami_priv.txt"]
+        save: "{case_dir}/whoami_priv.txt"
 
       - id: token_seimpersonate
         name: "SeImpersonate / SeAssignToken check"
         tool: powershell
         args: ["-Command",
-               "whoami /priv | Select-String -Pattern 'SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege|SeTcbPrivilege|SeBackupPrivilege|SeRestorePrivilege|SeTakeOwnershipPrivilege|SeLoadDriverPrivilege|SeDebugPrivilege'",
-               "-o", "{case_dir}/juicy_privs.txt"]
+               "whoami /priv | Select-String -Pattern 'SeImpersonatePrivilege|SeAssignPrimaryTokenPrivilege|SeTcbPrivilege|SeBackupPrivilege|SeRestorePrivilege|SeTakeOwnershipPrivilege|SeLoadDriverPrivilege|SeDebugPrivilege'"]
         timeout: 15
-        artifacts: ["{case_dir}/juicy_privs.txt"]
+        save: "{case_dir}/juicy_privs.txt"
 
       - id: token_juicy
         name: "JuicyPotato / PrintSpoofer check"
         tool: python3
         args: ["-c",
-               "\"privs=open('{case_dir}/juicy_privs.txt').read();\nif 'SeImpersonate' in privs:\n print('VULNERABLE: SeImpersonate -> JuicyPotato/RoguePotato/PrintSpoofer/GodPotato')\nif 'SeAssignPrimary' in privs:\n print('VULNERABLE: SeAssignPrimaryToken -> JuicyPotato')\nif 'SeBackup' in privs:\n print('VULNERABLE: SeBackupPrivilege -> backup SAM/SYSTEM')\nif 'SeRestore' in privs:\n print('VULNERABLE: SeRestorePrivilege -> write arbitrary files')\nif 'SeTakeOwnership' in privs:\n print('VULNERABLE: SeTakeOwnership -> take ownership of files')\nif 'SeDebug' in privs:\n print('VULNERABLE: SeDebugPrivilege -> process injection')\nif 'SeLoadDriver' in privs:\n print('VULNERABLE: SeLoadDriverPrivilege -> capcom.sys')\nif 'SeTcb' in privs:\n print('VULNERABLE: SeTcbPrivilege -> ActAsPartOfTheOperatingSystem')\n\"",
-               "-o", "{case_dir}/token_exploit_check.txt"]
+               "import sys\nprivs=open('{case_dir}/juicy_privs.txt').read()\nif 'SeImpersonate' in privs:\n print('VULNERABLE: SeImpersonate -> JuicyPotato/RoguePotato/PrintSpoofer/GodPotato')\nif 'SeAssignPrimary' in privs:\n print('VULNERABLE: SeAssignPrimaryToken -> JuicyPotato')\nif 'SeBackup' in privs:\n print('VULNERABLE: SeBackupPrivilege -> backup SAM/SYSTEM')\nif 'SeRestore' in privs:\n print('VULNERABLE: SeRestorePrivilege -> write arbitrary files')\nif 'SeTakeOwnership' in privs:\n print('VULNERABLE: SeTakeOwnership -> take ownership of files')\nif 'SeDebug' in privs:\n print('VULNERABLE: SeDebugPrivilege -> process injection')\nif 'SeLoadDriver' in privs:\n print('VULNERABLE: SeLoadDriverPrivilege -> capcom.sys')\nif 'SeTcb' in privs:\n print('VULNERABLE: SeTcbPrivilege -> ActAsPartOfTheOperatingSystem')"]
         timeout: 15
+        save: "{case_dir}/token_exploit_check.txt"
 
   # Phase 5: UAC bypass
   - id: uac
@@ -159,18 +152,17 @@ steps:
         name: "Check UAC level"
         tool: powershell
         args: ["-Command",
-               "(Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System).EnableLUA; (Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System).ConsentPromptBehaviorAdmin",
-               "-o", "{case_dir}/uac_status.txt"]
+               "(Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System).EnableLUA; (Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System).ConsentPromptBehaviorAdmin"]
         timeout: 15
-        artifacts: ["{case_dir}/uac_status.txt"]
+        save: "{case_dir}/uac_status.txt"
 
       - id: uac_bypass
         name: "UAC bypass techniques"
         tool: python3
         args: ["-c",
-               "\"uac=open('{case_dir}/uac_status.txt').read().strip();\nlines=uac.split('\\n');\nlua=lines[0].strip() if lines else '0';\nconsent=lines[1].strip() if len(lines)>1 else '0';\nif lua=='0':\n print('UAC DISABLED - run as admin directly')\nelif consent=='0':\n print('UAC: Auto-elevate (ConsentPrompt=0) - use fodhelper.exe, eventvwr.exe bypass')\nelse:\n print('UAC: Default (ConsentPrompt=2) - cmstp.exe, wmic.exe, slui.exe bypass')\nprint()\nprint('Common bypasses:')\nprint('  fodhelper.exe: HKCU\\\\Software\\\\Classes\\\\ms-settings\\\\shell\\\\open\\\\command')\nprint('  eventvwr.exe: HKCU\\\\Software\\\\Classes\\\\mscfile\\\\shell\\\\open\\\\command')\nprint('  computerdefaults.exe: HKCU\\\\Software\\\\Classes\\\\ms-settings\\\\Shell\\\\Open\\\\command')\nprint('  sdclt.exe: HKCU\\\\Software\\\\Classes\\\\exefile\\\\shell\\\\runas\\\\command')\nprint('  diskcleanup.exe: silentcleanup')\nprint('  CMSTPLUA: UAC bypass via cmstp.exe')\n\"",
-               "-o", "{case_dir}/uac_bypass_guide.txt"]
+               "import sys\nuac=open('{case_dir}/uac_status.txt').read().strip()\nlines=uac.split('\\n')\nlua=lines[0].strip() if lines else '0'\nconsent=lines[1].strip() if len(lines)>1 else '0'\nif lua=='0':\n print('UAC DISABLED - run as admin directly')\nelif consent=='0':\n print('UAC: Auto-elevate (ConsentPrompt=0) - use fodhelper.exe, eventvwr.exe bypass')\nelse:\n print('UAC: Default (ConsentPrompt=2) - cmstp.exe, wmic.exe, slui.exe bypass')\nprint()\nprint('Common bypasses:')\nprint('  fodhelper.exe: HKCU\\\\Software\\\\Classes\\\\ms-settings\\\\shell\\\\open\\\\command')\nprint('  eventvwr.exe: HKCU\\\\Software\\\\Classes\\\\mscfile\\\\shell\\\\open\\\\command')\nprint('  computerdefaults.exe: HKCU\\\\Software\\\\Classes\\\\ms-settings\\\\Shell\\\\Open\\\\command')\nprint('  sdclt.exe: HKCU\\\\Software\\\\Classes\\\\exefile\\\\shell\\\\runas\\\\command')\nprint('  diskcleanup.exe: silentcleanup')\nprint('  CMSTPLUA: UAC bypass via cmstp.exe')"]
         timeout: 15
+        save: "{case_dir}/uac_bypass_guide.txt"
 
   # Phase 6: AlwaysInstallElevated & registry
   - id: registry
@@ -182,26 +174,25 @@ steps:
         name: "AlwaysInstallElevated"
         tool: powershell
         args: ["-Command",
-               "Get-ItemProperty HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer 2>$null | Select AlwaysInstallElevated; Get-ItemProperty HKCU:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer 2>$null | Select AlwaysInstallElevated",
-               "-o", "{case_dir}/always_install_elevated.txt"]
+               "Get-ItemProperty HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer 2>$null | Select AlwaysInstallElevated; Get-ItemProperty HKCU:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer 2>$null | Select AlwaysInstallElevated"]
         timeout: 15
-        artifacts: ["{case_dir}/always_install_elevated.txt"]
+        save: "{case_dir}/always_install_elevated.txt"
 
       - id: reg_autoruns
         name: "Autorun entries"
         tool: powershell
         args: ["-Command",
-               "Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run; Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce; Get-ItemProperty HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run; Get-ItemProperty HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
-               "-o", "{case_dir}/autoruns.txt"]
+               "Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run; Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce; Get-ItemProperty HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run; Get-ItemProperty HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"]
         timeout: 15
+        save: "{case_dir}/autoruns.txt"
 
       - id: reg_sched
         name: "Scheduled tasks"
         tool: powershell
         args: ["-Command",
-               "Get-ScheduledTask | Where-Object {$_.TaskPath -notmatch 'Microsoft'} | Select TaskName,TaskPath,State,Actions",
-               "-o", "{case_dir}/scheduled_tasks.txt"]
+               "Get-ScheduledTask | Where-Object {$_.TaskPath -notmatch 'Microsoft'} | Select TaskName,TaskPath,State,Actions"]
         timeout: 30
+        save: "{case_dir}/scheduled_tasks.txt"
 
   # Phase 7: Credential hunting
   - id: credentials
@@ -213,33 +204,33 @@ steps:
         name: "Registry passwords"
         tool: powershell
         args: ["-Command",
-               "reg query HKLM /f password /t REG_SZ /s 2>$null; reg query HKCU /f password /t REG_SZ /s 2>$null",
-               "-o", "{case_dir}/registry_passwords.txt"]
+               "reg query HKLM /f password /t REG_SZ /s 2>$null; reg query HKCU /f password /t REG_SZ /s 2>$null"]
         timeout: 60
+        save: "{case_dir}/registry_passwords.txt"
 
       - id: cred_files
         name: "Interesting files"
         tool: powershell
         args: ["-Command",
-               "Get-ChildItem -Path C:\\ -Recurse -Force -ErrorAction SilentlyContinue -Include '*password*','*credential*','*secret*','*vnc*','*.kdbx','*.rdp' | Select FullName,Length,LastWriteTime",
-               "-o", "{case_dir}/interesting_files.txt"]
+               "Get-ChildItem -Path C:\\ -Recurse -Force -ErrorAction SilentlyContinue -Include '*password*','*credential*','*secret*','*vnc*','*.kdbx','*.rdp' | Select FullName,Length,LastWriteTime"]
         timeout: 120
+        save: "{case_dir}/interesting_files.txt"
 
       - id: cred_unattend
         name: "Unattended install files"
         tool: powershell
         args: ["-Command",
-               "Get-ChildItem -Path C:\\ -Recurse -Force -ErrorAction SilentlyContinue -Include 'unattend.xml','unattended.xml','autounattend.xml','sysprep.inf','sysprep.xml' | Select FullName",
-               "-o", "{case_dir}/unattend_files.txt"]
+               "Get-ChildItem -Path C:\\ -Recurse -Force -ErrorAction SilentlyContinue -Include 'unattend.xml','unattended.xml','autounattend.xml','sysprep.inf','sysprep.xml' | Select FullName"]
         timeout: 60
+        save: "{case_dir}/unattend_files.txt"
 
       - id: cred_sam
         name: "SAM/SYSTEM backup check"
         tool: powershell
         args: ["-Command",
-               "Test-Path C:\\Windows\\Repair\\SAM; Test-Path C:\\Windows\\Repair\\SYSTEM; Test-Path C:\\Windows\\System32\\config\\SAM; Test-Path C:\\Windows\\System32\\config\\SYSTEM; Get-ChildItem C:\\Windows\\System32\\config\\RegBack -ErrorAction SilentlyContinue",
-               "-o", "{case_dir}/sam_check.txt"]
+               "Test-Path C:\\Windows\\Repair\\SAM; Test-Path C:\\Windows\\Repair\\SYSTEM; Test-Path C:\\Windows\\System32\\config\\SAM; Test-Path C:\\Windows\\System32\\config\\SYSTEM; Get-ChildItem C:\\Windows\\System32\\config\\RegBack -ErrorAction SilentlyContinue"]
         timeout: 15
+        save: "{case_dir}/sam_check.txt"
 
   # Phase 8: Kernel exploit suggestions
   - id: kernel
@@ -250,17 +241,50 @@ steps:
         name: "Get build number"
         tool: powershell
         args: ["-Command",
-               "(Get-CimInstance Win32_OperatingSystem).BuildNumber",
-               "-o", "{case_dir}/build_number.txt"]
+               "(Get-CimInstance Win32_OperatingSystem).BuildNumber"]
         timeout: 15
+        save: "{case_dir}/build_number.txt"
 
       - id: kern_suggest
         name: "Kernel exploit mapping"
         tool: python3
-        args: ["-c",
-               "\"build=open('{case_dir}/build_number.txt').read().strip();\nexploits={\n '7601':['MS10-015 (Kitrap0d)','MS11-011 (Afrodita)','MS15-051 (win32k)','MS16-032 (Secondary Logon)','MS16-135 (win32k)'],\n '9200':['MS13-005 (hnd)','MS14-002 (ndproxy)','MS15-051','MS16-032'],\n '9600':['MS15-051','MS16-032','MS16-135','CVE-2018-8120','CVE-2019-0808'],\n '10240':['CVE-2015-6100','CVE-2020-0796 (SMBGhost)','CVE-2021-1732','CVE-2021-40449'],\n '10586':['CVE-2016-0099','CVE-2020-0796','CVE-2021-1732'],\n '14393':['CVE-2016-7225','CVE-2017-0101','CVE-2020-0796','CVE-2021-1732','CVE-2021-40449','CVE-2022-21882'],\n '15063':['CVE-2017-0101','CVE-2017-0213','CVE-2020-0796','CVE-2021-1732','CVE-2022-21882'],\n '16299':['CVE-2018-8120','CVE-2018-8897','CVE-2020-0796','CVE-2021-1732','CVE-2021-40449','CVE-2022-21882'],\n '17134':['CVE-2018-8120','CVE-2018-8897','CVE-2020-0796','CVE-2021-1732','CVE-2021-40449','CVE-2022-21882'],\n '17763':['CVE-2019-0808','CVE-2020-0796','CVE-2021-1732','CVE-2021-40449','CVE-2022-21882','CVE-2023-21768'],\n '18362':['CVE-2020-0796','CVE-2021-1732','CVE-2021-40449','CVE-2022-21882','CVE-2023-21768'],\n '18363':['CVE-2020-0796','CVE-2021-1732','CVE-2021-40449','CVE-2022-21882','CVE-2023-21768'],\n '19041':['CVE-2021-1732','CVE-2021-40449','CVE-2022-21882','CVE-2023-21768','CVE-2024-26234'],\n '19042':['CVE-2021-40449','CVE-2022-21882','CVE-2023-21768','CVE-2024-26234'],\n '19043':['CVE-2021-40449','CVE-2022-21882','CVE-2023-21768','CVE-2024-26234'],\n '19044':['CVE-2021-40449','CVE-2022-21882','CVE-2023-21768','CVE-2024-26234'],\n '19045':['CVE-2022-21882','CVE-2023-21768','CVE-2024-26234'],\n '20348':['CVE-2022-21882','CVE-2023-21768','CVE-2024-26234'],\n '22000':['CVE-2022-21882','CVE-2023-21768','CVE-2024-26234','CVE-2024-30088'],\n '22621':['CVE-2023-21768','CVE-2024-26234','CVE-2024-30088'],\n '22631':['CVE-2023-21768','CVE-2024-26234','CVE-2024-30088'],\n}\nif build in exploits:\n print(f'Build {build} - Suggested kernel exploits:');\n for e in exploits[build]:\n  print(f'  - {e}')\nelse:\n print(f'Build {build} - No specific mapping; search for exploits matching this build')\n\"",
-               "-o", "{case_dir}/kernel_exploit_suggestions.txt"]
+        args:
+          - "-c"
+          - |-
+            import sys
+            build = open('{case_dir}/build_number.txt').read().strip()
+            exploits = {
+             '7601': ['MS10-015 (Kitrap0d)', 'MS11-011 (Afrodita)', 'MS15-051 (win32k)', 'MS16-032 (Secondary Logon)', 'MS16-135 (win32k)'],
+             '9200': ['MS13-005 (hnd)', 'MS14-002 (ndproxy)', 'MS15-051', 'MS16-032'],
+             '9600': ['MS15-051', 'MS16-032', 'MS16-135', 'CVE-2018-8120', 'CVE-2019-0808'],
+             '10240': ['CVE-2015-6100', 'CVE-2020-0796 (SMBGhost)', 'CVE-2021-1732', 'CVE-2021-40449'],
+             '10586': ['CVE-2016-0099', 'CVE-2020-0796', 'CVE-2021-1732'],
+             '14393': ['CVE-2016-7225', 'CVE-2017-0101', 'CVE-2020-0796', 'CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882'],
+             '15063': ['CVE-2017-0101', 'CVE-2017-0213', 'CVE-2020-0796', 'CVE-2021-1732', 'CVE-2022-21882'],
+             '16299': ['CVE-2018-8120', 'CVE-2018-8897', 'CVE-2020-0796', 'CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882'],
+             '17134': ['CVE-2018-8120', 'CVE-2018-8897', 'CVE-2020-0796', 'CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882'],
+             '17763': ['CVE-2019-0808', 'CVE-2020-0796', 'CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768'],
+             '18362': ['CVE-2020-0796', 'CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768'],
+             '18363': ['CVE-2020-0796', 'CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768'],
+             '19041': ['CVE-2021-1732', 'CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234'],
+             '19042': ['CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234'],
+             '19043': ['CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234'],
+             '19044': ['CVE-2021-40449', 'CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234'],
+             '19045': ['CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234'],
+             '20348': ['CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234'],
+             '22000': ['CVE-2022-21882', 'CVE-2023-21768', 'CVE-2024-26234', 'CVE-2024-30088'],
+             '22621': ['CVE-2023-21768', 'CVE-2024-26234', 'CVE-2024-30088'],
+             '22631': ['CVE-2023-21768', 'CVE-2024-26234', 'CVE-2024-30088'],
+            }
+            if build in exploits:
+                print(f'Build {build} - Suggested kernel exploits:')
+                for e in exploits[build]:
+                    print(f'  - {e}')
+            else:
+                print(f'Build {build} - No specific mapping; search for exploits matching this build')
         timeout: 15
+        save: "{case_dir}/kernel_exploit_suggestions.txt"
+        save: "{case_dir}/kernel_exploit_suggestions.txt"
 
   # Phase 9: Automated enumeration
   - id: auto_enum

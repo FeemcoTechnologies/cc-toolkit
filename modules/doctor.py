@@ -93,7 +93,7 @@ class Doctor:
                 ver = r.stdout.strip()[:60] + r.stderr.strip()[:60]
                 version = ver[:80].replace("\n", "; ")
                 return True, f"{fp} ({version})"
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError):
                 return True, fp
         return False, "not found"
 
@@ -149,7 +149,7 @@ class Doctor:
                     "ok": active,
                     "info": r.stdout.strip(),
                 })
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError):
                 self.results["service_checks"].append({
                     "service": svc,
                     "ok": False,

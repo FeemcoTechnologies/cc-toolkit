@@ -152,34 +152,34 @@ steps:
             name: "COS buckets"
             tool: ibmcloud
             args: ["cos", "buckets",
-                   "--output", "json",
-                   "-o", "{case_dir}/ibm_cos_buckets.txt"]
+                   "--output", "json"]
             timeout: 60
+            save: "{case_dir}/ibm_cos_buckets.txt"
             artifacts: ["{case_dir}/ibm_cos_buckets.txt"]
 
           - id: ibm_iam
             name: "IAM access groups & service IDs"
             tool: ibmcloud
             args: ["iam", "access-groups",
-                   "--output", "json",
-                   "-o", "{case_dir}/ibm_iam_groups.txt"]
+                   "--output", "json"]
             timeout: 60
+            save: "{case_dir}/ibm_iam_groups.txt"
 
           - id: ibm_kms
             name: "KMS keys"
             tool: ibmcloud
             args: ["kms", "keys",
-                   "--output", "json",
-                   "-o", "{case_dir}/ibm_kms_keys.txt"]
+                   "--output", "json"]
             timeout: 60
+            save: "{case_dir}/ibm_kms_keys.txt"
 
           - id: ibm_vpc
             name: "VPCs & subnets"
             tool: ibmcloud
             args: ["is", "vpcs",
-                   "--output", "json",
-                   "-o", "{case_dir}/ibm_vpcs.txt"]
+                   "--output", "json"]
             timeout: 60
+            save: "{case_dir}/ibm_vpcs.txt"
 
   # ---- Phase 6: Akamai ----
   - id: akamai_enum

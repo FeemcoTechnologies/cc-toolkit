@@ -13,7 +13,7 @@
         <i data-lucide="cpu" class="w-5 h-5 text-indigo-400"></i> AI Infrastructure
     </h1>
     <div class="flex gap-2">
-        <button onclick="startAll()" class="bg-green-700 hover:bg-green-600 px-3 py-1.5 rounded text-sm flex items-center gap-1">
+        <button onclick="startAll(this)" class="bg-green-700 hover:bg-green-600 px-3 py-1.5 rounded text-sm flex items-center gap-1">
             <i data-lucide="play" class="w-4 h-4"></i> Start All
         </button>
         <button onclick="stopAll()" class="bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded text-sm flex items-center gap-1">
@@ -46,7 +46,7 @@
             </h2>
             <span id="status-tunnel" class="text-xs text-gray-500">...</span>
         </div>
-        <p class="text-xs text-gray-500">:11434 &rarr; kraken-pc:11434</p>
+        <p class="text-xs text-gray-500">:11434 &rarr; {{ ai_tunnel_target }}:11434</p>
         <div class="flex gap-2 mt-3">
             <button onclick="startComponent('tunnel')" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded">Start</button>
             <button onclick="stopComponent('tunnel')" class="text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded">Stop</button>
@@ -200,8 +200,10 @@ async function stopComponent(name) {
     setTimeout(refreshStatus, 2000);
 }
 
-async function startAll() {
-    const btn = event.target;
+async function startAll(btn) {
+    if (typeof btn === 'object') btn = btn;
+    else btn = document.getElementById('btn-start-all');
+    if (!btn) return;
     btn.textContent = 'Starting...'; btn.disabled = true;
     await fetch('/api/ai/start', {method:'POST'});
     setTimeout(() => { refreshStatus(); btn.textContent = 'Start All'; btn.disabled = false; }, 3000);

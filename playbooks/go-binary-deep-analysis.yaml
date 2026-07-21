@@ -1,0 +1,149 @@
+name: "Go Binary Deep Analysis"
+description: "Specialized analysis for Go binaries: symbol recovery, API endpoint extraction, env vars, TLS pinning, embedded config"
+version: "2.0"
+
+vars:
+  target: ""
+  wordlist_dir: "/wordlists"
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Go binary deep analysis — {target} (case: {case_id})"
+
+steps:
+  - id: go_specific
+    name: "Go-specific symbol analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: go_tool_nm
+        name: "Go tool nm (symbols)"
+        tool: go
+        args: ["tool", "nm", "{target}"]
+        timeout: 300
+        save: "{case_dir}/go_symbols.txt"
+        artifacts: ["{case_dir}/go_symbols.txt"]
+
+      - id: go_version
+        name: "Go build info"
+        tool: go
+        args: ["version", "{target}"]
+        timeout: 30
+        save: "{case_dir}/go_build_info.txt"
+
+      - id: go_osarch
+        name: "GOOS/GOARCH detection"
+        tool: python3
+        args: ["-c", "import subprocess,sys;r=subprocess.run(['readelf','-h',sys.argv[1]],capture_output=True,text=True);import re;m=re.search(r'Machine:\\s+(\\S+)',r.stdout);arch=m.group(1) if m else 'unknown';r2=subprocess.run(['readelf','-p','go.buildinfo',sys.argv[1]],capture_output=True,text=True);print(f'Architecture: {arch}\\nBuild info section:\\n{r2.stdout[:1000] if r2.stdout else \"no .go.buildinfo section\"}')", "{target}"]
+        timeout: 30
+        save: "{case_dir}/go_osarch.txt"
+
+  - id: api_extraction
+    name: "API endpoint & URL extraction"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: url_extract
+        name: "URL/API endpoint extraction"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'r',errors='ignore').read();urls=re.findall(r'https?://[a-zA-Z0-9._-]+\\.[a-zA-Z]{2,}(?:/[^\\s\"\\'<>]*)?',d);paths=re.findall(r'/[a-zA-Z0-9._-]+/[a-zA-Z0-9._/-]+',d);print('=== API ENDPOINTS ===');[print(u) for u in sorted(set(urls))];print('\\n=== API PATHS ===');[print(p) for p in sorted(set(p for p in paths if not any(x in p for x in ['.html','.css','.js','.png','.svg','.ico','.woff'])))][:200]", "{case_dir}/strings.txt"]
+        timeout: 60
+        save: "{case_dir}/api_endpoints.txt"
+        artifacts: ["{case_dir}/api_endpoints.txt"]
+
+      - id: env_vars
+        name: "Environment variable discovery"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'r',errors='ignore').read();env_pats=[r'[A-Z_]{3,}(?:_[A-Z_]{3,})+',r'IBMC[^\\s]+',r'IBM_[^\\s]+',r'CLOUD_[^\\s]+',r'API_KEY[^\\s]*',r'TOKEN[^\\s]*'];[print(f'{p}: {sorted(set(re.findall(p,d)))[:30]}') for p in env_pats]", "{case_dir}/strings.txt"]
+        timeout: 60
+        save: "{case_dir}/env_vars.txt"
+
+      - id: tls_certs
+        name: "Embedded TLS certificates"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'rb').read();certs=re.findall(rb'-----BEGIN[\\s\\w]+KEY[\\s\\w]*-----',d);print(f'Keys found: {len(certs)}');[print(c.decode()) for c in certs[:20]];cacerts=re.findall(rb'-----BEGIN CERTIFICATE-----',d);print(f'Certificates found: {len(cacerts)}')", "{case_dir}/strings.txt"]
+        timeout: 30
+        save: "{case_dir}/embedded_certs.txt"
+
+  - id: auth_analysis
+    name: "Authentication mechanism analysis"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: grant_types
+        name: "OAuth grant types"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'r',errors='ignore').read();grants=re.findall(r'grant_type[=:]+\\s*[a-zA-Z_:.-]+',d);auth=re.findall(r'(?:api[_-]?key|token|password|passcode|refresh_token|authorization_code|client_credentials|assume|derive|jwt|bearer)[^\\s,\"\\'<>\"]{0,20}',d,re.I);print('=== Grant types ===');[print(g) for g in sorted(set(grants))];print('\\n=== Auth-related strings ===');[print(a) for a in sorted(set(auth))[:50]]", "{case_dir}/strings.txt"]
+        timeout: 30
+        save: "{case_dir}/oauth_grants.txt"
+
+      - id: cred_patterns
+        name: "Credential/secret patterns"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'rb').read();patterns=[(rb'[A-Za-z0-9+/]{40,}={0,2}','Base64'),(rb'[0-9a-fA-F]{32,}','Hex32'),(rb'[0-9a-fA-F]{40,}','Hex40'),(rb'[0-9a-fA-F]{64,}','Hex64')];print('=== Potential secrets ===');[print(f'({name}):{m.decode()[:80]}') for pat,name in patterns for m in re.findall(pat,d[:500000])[:100]];import json;dstr=d.decode(errors='ignore');print('\\n=== Hardcoded paths ===');[print(p) for p in sorted(set(re.findall(r'/[a-z]{2,}(?:/[a-z0-9._-]+){2,10}',dstr,re.I))) if len(p)<200][:50]", "{case_dir}/strings.txt"]
+        timeout: 60
+        save: "{case_dir}/cred_patterns.txt"
+
+  - id: dynamic_analysis
+    name: "Static binary introspection"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: help_text
+        name: "Extract help text"
+        tool: strings
+        args: ["{target}", "-n10"]
+        timeout: 60
+        save: "{case_dir}/long_strings.txt"
+        artifacts: ["{case_dir}/long_strings.txt"]
+
+      - id: update_mechanism
+        name: "Update/telemetry URLs"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'r',errors='ignore').read();updates=re.findall(r'(?:update|download|check|version|latest|release)[^\\s]*https?://[^\\s\"\\'<>]+',d,re.I);print('=== Update/telemetry ===');[print(u) for u in sorted(set(updates))[:30]];telemetry=re.findall(r'(?:telemetry|segment|analytics|tracking|beacon|pixel|metrics)[^\\s\"\\'<>]{0,30}',d,re.I);print('\\n=== Telemetry ===');[print(t) for t in sorted(set(telemetry))[:30]]", "{case_dir}/strings.txt"]
+        timeout: 30
+        save: "{case_dir}/update_telemetry.txt"
+
+  - id: exploit_surface
+    name: "Exploit surface analysis"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: dangerous_go
+        name: "Dangerous Go patterns"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'r',errors='ignore').read();danger=[('exec.Command','OS command execution'),('unsafe.Pointer','Memory corruption risk'),('cgo.Insecure','CGO security bypass'),('json.Unmarshal','Unsafe deserialization'),('ioutil.ReadFile','File read primitive'),('os.OpenFile','File write primitive'),('net.Listen','Network bind'),('http.FileServer','Static file server'),('template.HTML','XSS in templates'),('sql.DB','SQL injection surface'),('os.Exec','Process execution'),('golang.org/x/crypto','Crypto operations')];print('=== Dangerous Go patterns ===');[print(f'{pat}: {desc}') for pat,desc in danger if pat in d]", "{case_dir}/strings.txt"]
+        timeout: 30
+        save: "{case_dir}/dangerous_go.txt"
+
+      - id: network_indicators
+        name: "Network indicator analysis"
+        tool: python3
+        args: ["-c", "import sys,re;d=open(sys.argv[1],'r',errors='ignore').read();ips=re.findall(r'\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(?::\\d+)?',d);ports=re.findall(r'\\b(?:port|listen|bind|proxy)[:=]\\s*(\\d+)',d,re.I);print('=== Hardcoded IPs ===');[print(ip) for ip in sorted(set(ips))[:50]];print('\\n=== Port-like numbers ===');[print(p) for p in sorted(set(ports))[:50]]", "{case_dir}/strings.txt"]
+        timeout: 30
+        save: "{case_dir}/network_indicators.txt"
+
+  - id: report
+    name: "Generate Go deep analysis report"
+    type: report
+    format: markdown
+    title: "Go Binary Deep Analysis — {target}"
+    output: "{case_dir}/go-deep-analysis-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Binary: {target}\n- Case: {case_id}"
+      - heading: "Go Build Info"
+        body: "- Symbols: {case_dir}/go_symbols.txt\n- Build info: {case_dir}/go_build_info.txt"
+      - heading: "API Endpoints"
+        body: "- URL list: {case_dir}/api_endpoints.txt"
+      - heading: "Security Analysis"
+        body: "- Dangerous patterns: {case_dir}/dangerous_go.txt\n- Auth grants: {case_dir}/oauth_grants.txt\n- Credentials: {case_dir}/cred_patterns.txt\n- Network indicators: {case_dir}/network_indicators.txt"
+      - heading: "Exploitation Notes"
+        body: "Go binary — focus on API layer vulnerabilities and embedded secrets rather than memory corruption."
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Go deep analysis complete — {case_dir}"

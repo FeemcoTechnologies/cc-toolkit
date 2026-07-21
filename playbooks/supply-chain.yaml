@@ -1,6 +1,6 @@
 name: "Software Supply Chain Security Assessment"
 description: "Supply chain attack vectors: dependency confusion, typosquatting, malicious packages, dependency hijacking, CI/CD artifact poisoning, SLSA verification"
-version: "1.0"
+version: "2.0"
 
 vars:
   package_name: ""
@@ -23,31 +23,34 @@ steps:
       - id: npm_confusion
         name: "NPM dependency confusion check"
         tool: curl
-        args: ["-s", "https://registry.npmjs.org/{package_name}",
-               "-o", "{case_dir}/supply_npm_confusion.json"]
+        args: ["-s", "https://registry.npmjs.org/{package_name}"]
         timeout: 30
+        save: "{case_dir}/supply_npm_confusion.json"
         artifacts: ["{case_dir}/supply_npm_confusion.json"]
 
       - id: pypi_confusion
         name: "PyPI dependency confusion check"
         tool: curl
-        args: ["-s", "https://pypi.org/pypi/{package_name}/json",
-               "-o", "{case_dir}/supply_pypi_confusion.json"]
+        args: ["-s", "https://pypi.org/pypi/{package_name}/json"]
         timeout: 30
+        save: "{case_dir}/supply_pypi_confusion.json"
 
       - id: gem_confusion
         name: "RubyGems dependency confusion"
         tool: curl
-        args: ["-s", "https://rubygems.org/api/v1/gems/{package_name}.json",
-               "-o", "{case_dir}/supply_gem_confusion.json"]
+        args: ["-s", "https://rubygems.org/api/v1/gems/{package_name}.json"]
         timeout: 30
+        save: "{case_dir}/supply_gem_confusion.json"
 
       - id: internal_vs_public
         name: "Compare internal package names to public registries"
         tool: grep
-        args: ["-if", "{case_dir}/internal_packages.txt",
-               "-o", "{case_dir}/supply_dep_conflict.txt"]
+        args: ["-ihf", "{case_dir}/internal_packages.txt",
+               "{case_dir}/supply_npm_confusion.json",
+               "{case_dir}/supply_pypi_confusion.json",
+               "{case_dir}/supply_gem_confusion.json"]
         timeout: 30
+        save: "{case_dir}/supply_dep_conflict.txt"
 
   # ---- Phase 2: Typosquatting ----
   - id: typosquatting
@@ -58,26 +61,26 @@ steps:
       - id: typo_common
         name: "Common typo permutations"
         tool: curl
-        args: ["-s", "https://pypi.org/pypi/{package_name}l}/json",
-               "-o", "{case_dir}/supply_typo_common.txt"]
+        args: ["-s", "https://pypi.org/pypi/{package_name}l}/json"]
         timeout: 30
+        save: "{case_dir}/supply_typo_common.txt"
         artifacts: ["{case_dir}/supply_typo_common.txt"]
 
       - id: typo_homograph
         name: "Homograph attack check"
         tool: python3
         args: ["-c",
-               "'import sys;pkg=sys.argv[1];print(pkg.translate(str.maketrans({\"a\":\"а\",\"e\":\"е\",\"o\":\"о\",\"p\":\"р\",\"c\":\"с\"})))'",
-               "{package_name}",
-               "-o", "{case_dir}/supply_homograph.txt"]
+               "import sys;pkg=sys.argv[1];print(pkg.translate(str.maketrans({'a':'\\u0430','e':'\\u0435','o':'\\u043e','p':'\\u0440','c':'\\u0441'})))",
+               "{package_name}"]
         timeout: 30
+        save: "{case_dir}/supply_homograph.txt"
 
       - id: typo_tld
         name: "Lookalike TLD registrations"
         tool: curl
-        args: ["-s", "https://pypi.org/pypi/{package_name}-beta/json",
-               "-o", "{case_dir}/supply_typo_tld.txt"]
+        args: ["-s", "https://pypi.org/pypi/{package_name}-beta/json"]
         timeout: 30
+        save: "{case_dir}/supply_typo_tld.txt"
 
   # ---- Phase 3: Malicious package indicators ----
   - id: malicious_indicators
@@ -88,34 +91,34 @@ steps:
       - id: mal_install_scripts
         name: "Check for install scripts (setup.py / postinstall)"
         tool: curl
-        args: ["-s", "https://raw.githubusercontent.com/{org_name}/{package_name}/main/setup.py",
-               "-o", "{case_dir}/supply_setup_py.txt"]
+        args: ["-s", "https://raw.githubusercontent.com/{org_name}/{package_name}/main/setup.py"]
         timeout: 30
+        save: "{case_dir}/supply_setup_py.txt"
         artifacts: ["{case_dir}/supply_setup_py.txt"]
 
       - id: mal_obfuscation
         name: "Check for obfuscated code in package"
         tool: grep
-        args: ["-rli", "(base64|eval|exec|decode|\\x[0-9a-f]{2})",
-               "{case_dir}/package_source/",
-               "-o", "{case_dir}/supply_obfuscated.txt"]
+        args: ["-rli", "(base64|eval|exec|decode|\\\\x[0-9a-f]{2})",
+               "{case_dir}/package_source/"]
         timeout: 60
+        save: "{case_dir}/supply_obfuscated.txt"
 
       - id: mal_exfiltration
         name: "Check for data exfiltration URLs"
         tool: grep
         args: ["-rli", "(http|https|requests\\.(get|post)|urllib|curl)",
-               "{case_dir}/package_source/",
-               "-o", "{case_dir}/supply_exfil_urls.txt"]
+               "{case_dir}/package_source/"]
         timeout: 60
+        save: "{case_dir}/supply_exfil_urls.txt"
 
       - id: mal_telemetry
         name: "Check for telemetry / beaconing"
         tool: grep
         args: ["-rli", "(google-analytics|telemetry|beacon|tracking|segment|amplitude)",
-               "{case_dir}/package_source/",
-               "-o", "{case_dir}/supply_telemetry.txt"]
+               "{case_dir}/package_source/"]
         timeout: 60
+        save: "{case_dir}/supply_telemetry.txt"
 
   # ---- Phase 4: Dependency confusion via private feeds ----
   - id: private_feeds
@@ -126,17 +129,17 @@ steps:
       - id: private_npm
         name: "Private NPM registry scope check"
         tool: curl
-        args: ["-s", "{target}/-/ping",
-               "-o", "{case_dir}/supply_private_npm.txt"]
+        args: ["-s", "{target}/-/ping"]
         timeout: 30
+        save: "{case_dir}/supply_private_npm.txt"
         artifacts: ["{case_dir}/supply_private_npm.txt"]
 
       - id: private_pypi
         name: "Private PyPI server"
         tool: curl
-        args: ["-s", "{target}/simple/",
-               "-o", "{case_dir}/supply_private_pypi.txt"]
+        args: ["-s", "{target}/simple/"]
         timeout: 30
+        save: "{case_dir}/supply_private_pypi.txt"
 
   # ---- Phase 5: CI/CD artifact poisoning ----
   - id: artifact_poison
@@ -147,24 +150,31 @@ steps:
       - id: sbom_check
         name: "Check for SBOM (CycloneDX/SPDX)"
         tool: curl
-        args: ["-s", "{repo_url}/releases/latest/download/sbom.json",
-               "-o", "{case_dir}/supply_sbom.json"]
+        args: ["-s", "{repo_url}/releases/latest/download/sbom.json"]
         timeout: 30
+        save: "{case_dir}/supply_sbom.json"
         artifacts: ["{case_dir}/supply_sbom.json"]
 
       - id: slsa_check
         name: "Check for SLSA provenance"
         tool: curl
-        args: ["-s", "{repo_url}/releases/latest/download/attestation.intoto.jsonl",
-               "-o", "{case_dir}/supply_slsa.json"]
+        args: ["-s", "{repo_url}/releases/latest/download/attestation.intoto.jsonl"]
         timeout: 30
+        save: "{case_dir}/supply_slsa.json"
 
       - id: checksums
         name: "Verify published checksums"
         tool: curl
-        args: ["-s", "{repo_url}/releases/latest",
-               "-o", "{case_dir}/supply_checksums.txt"]
+        args: ["-s", "{repo_url}/releases/latest"]
         timeout: 30
+        save: "{case_dir}/supply_checksums.txt"
+
+      - id: sig_pgp
+        name: "PGP signature check"
+        tool: curl
+        args: ["-s", "{target}/.asc"]
+        timeout: 30
+        save: "{case_dir}/supply_pgp_sig.txt"
 
   # ---- Phase 6: Package signer verification ----
   - id: signer_verify
@@ -172,30 +182,39 @@ steps:
     type: parallel
     max_workers: 2
     steps:
-      - id: sig_pgp
-        name: "PGP signature check"
-        tool: curl
-        args: ["-s", "{target}/.asc",
-               "-o", "{case_dir}/supply_pgp_sig.txt"]
-        timeout: 30
-
       - id: sig_slsa
         name: "Sigstore / Cosign verification"
         tool: cosign
-        args: ["verify", "{target}",
-               "-o", "{case_dir}/supply_cosign_verify.txt"]
+        args: ["verify", "{target}"]
         timeout: 60
+        save: "{case_dir}/supply_cosign_verify.txt"
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "Supply chain assessment note"
+    name: "Supply chain assessment report"
+    type: report
+    format: markdown
+    title: "Software Supply Chain Security Report — {package_name}"
+    output: "{case_dir}/supply-chain-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Package: {package_name}\n- Manager: {package_manager}\n- Repo: {repo_url}\n- Org: {org_name}"
+      - heading: "Dependency Confusion"
+        body: "- NPM: {case_dir}/supply_npm_confusion.json\n- PyPI: {case_dir}/supply_pypi_confusion.json\n- RubyGems: {case_dir}/supply_gem_confusion.json\n- Internal vs public: {case_dir}/supply_dep_conflict.txt"
+      - heading: "Typosquatting"
+        body: "- Common typos: {case_dir}/supply_typo_common.txt\n- Homograph: {case_dir}/supply_homograph.txt\n- TLD lookalike: {case_dir}/supply_typo_tld.txt"
+      - heading: "Malicious Indicators"
+        body: "- Install scripts: {case_dir}/supply_setup_py.txt\n- Obfuscation: {case_dir}/supply_obfuscated.txt\n- Exfiltration: {case_dir}/supply_exfil_urls.txt\n- Telemetry: {case_dir}/supply_telemetry.txt"
+      - heading: "Private Feeds & Integrity"
+        body: "- Private NPM: {case_dir}/supply_private_npm.txt\n- Private PyPI: {case_dir}/supply_private_pypi.txt\n- SBOM: {case_dir}/supply_sbom.json\n- SLSA: {case_dir}/supply_slsa.json\n- Checksums: {case_dir}/supply_checksums.txt"
+      - heading: "Package Signing"
+        body: "- PGP signature: {case_dir}/supply_pgp_sig.txt\n- Cosign verify: {case_dir}/supply_cosign_verify.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      Software supply chain assessment complete for {package_name}.
-      Results in {case_dir}/:
-      - Confusion: supply_npm_confusion.json, supply_pypi_confusion.json, supply_gem_confusion.json
-      - Typosquatting: supply_typo_common.txt, supply_homograph.txt
-      - Malicious indicators: supply_setup_py.txt, supply_obfuscated.txt, supply_exfil_urls.txt
-      - Private feeds: supply_private_npm.txt, supply_private_pypi.txt
-      - Integrity: supply_sbom.json, supply_slsa.json, supply_checksums.txt
-      - Signing: supply_pgp_sig.txt, supply_cosign_verify.txt
+    message: "Supply chain assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Supply chain assessment finished for {package_name}. Results in {case_dir}"

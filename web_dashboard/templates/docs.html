@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}API Docs{% endblock %}
+{% block head %}
+<style>
+    .method-badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; letter-spacing: 0.3px; }
+    .method-GET { background: #065f46; color: #6ee7b7; }
+    .method-POST { background: #1e3a5f; color: #93c5fd; }
+    .method-PUT { background: #5b2e1a; color: #fcd34d; }
+    .method-DELETE { background: #5c1a1a; color: #fca5a5; }
+    .method-PATCH { background: #3b1a5c; color: #c4a5fc; }
+    .route-row:hover { background: rgba(99,102,241,0.06); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="book-open" class="w-6 h-6 text-indigo-400"></i>
+        API Documentation
+    </h1>
+    <span id="route-count" class="text-xs text-gray-500"></span>
+</div>
+
+<!-- Search -->
+<div class="mb-4">
+    <input id="doc-search" class="w-full max-w-md bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200"
+           placeholder="Search routes..." oninput="filterRoutes()">
+</div>
+
+<div id="doc-content" class="space-y-6">
+    <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+</div>
+
+<script>
+let allRoutes = [];
+
+function loadDocs() {
+    fetch('/api/routes').then(r=>r.json()).then(data => {
+        if (!Array.isArray(data) && data.routes) data = data.routes;
+        allRoutes = data;
+        renderDocs(allRoutes);
+        lucide.createIcons();
+    }).catch(() => {
+        document.getElementById('doc-content').innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Failed to load API documentation.</div>';
+    });
+}
+
+function renderDocs(groups) {
+    const container = document.getElementById('doc-content');
+    const total = groups.reduce((s, g) => s + (g.routes || []).length, 0);
+    document.getElementById('route-count').textContent = total + ' route(s)';
+
+    if (!groups.length) {
+        container.innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No routes found.</div>';
+        return;
+    }
+
+    container.innerHTML = groups.map(g => {
+        const routes = g.routes || [];
+        if (!routes.length) return '';
+        return `<div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+            <div class="px-4 py-2 bg-gray-800/50 border-b border-gray-800">
+                <h2 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                    <i data-lucide="folder" class="w-4 h-4 text-indigo-400"></i>
+                    ${esc(g.category)}
+                    <span class="text-xs text-gray-500 font-normal">(${routes.length})</span>
+                </h2>
+            </div>
+            <div class="divide-y divide-gray-800/50">
+                ${routes.map(r => renderRoute(r)).join('')}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function renderRoute(r) {
+    const methods = Array.isArray(r.methods) ? r.methods : (r.methods ? [r.methods] : ['GET']);
+    const badges = methods.map(m => `<span class="method-badge method-${m}">${m}</span>`).join(' ');
+    const desc = r.description ? `<span class="text-gray-500 text-xs">${esc(r.description)}</span>` : '';
+    return `<div class="route-row px-4 py-2.5 flex items-start gap-3">
+        <div class="flex flex-wrap gap-1 shrink-0 min-w-[80px]">${badges}</div>
+        <div class="font-mono text-sm text-gray-300 break-all min-w-0">${esc(r.path)}</div>
+        ${desc ? `<div class="ml-auto shrink-0 hidden md:block max-w-[300px] text-right">${desc}</div>` : ''}
+    </div>`;
+}
+
+function filterRoutes() {
+    const q = document.getElementById('doc-search').value.toLowerCase().trim();
+    if (!q) {
+        renderDocs(allRoutes);
+        return;
+    }
+    const filtered = allRoutes.map(g => ({
+        category: g.category,
+        routes: (g.routes || []).filter(r =>
+            r.path.toLowerCase().includes(q) ||
+            (r.description || '').toLowerCase().includes(q) ||
+            (Array.isArray(r.methods) ? r.methods.join(',').toLowerCase() : '').includes(q)
+        )
+    })).filter(g => g.routes.length > 0);
+    renderDocs(filtered);
+}
+
+function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+}
+
+document.addEventListener('DOMContentLoaded', loadDocs);
+</script>
+{% endblock %}

@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}MCP Resources{% endblock %}
+{% block head %}
+<style>
+    .resource-card { border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; }
+    .resource-card:hover { border-color: #374151; }
+    .resource-uri { font-family: monospace; font-size: 12px; background: #111827; }
+    .param-input { font-family: monospace; font-size: 13px; }
+    .content-box { font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 500px; overflow-y: auto; background: #0d1117; border: 1px solid #1f2937; }
+    .tab-btn { padding: 6px 16px; border-radius: 6px 6px 0 0; font-size: 13px; cursor: pointer; }
+    .tab-btn.active { background: #1f2937; color: #e5e7eb; }
+    .tab-btn:not(.active) { background: transparent; color: #6b7280; }
+    .tab-btn:not(.active):hover { background: #111827; color: #9ca3af; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="database" class="w-6 h-6 text-indigo-400"></i>
+        MCP Resources
+    </h1>
+    <span id="resource-count" class="text-xs text-gray-500"></span>
+</div>
+
+<p class="text-sm text-gray-400 mb-6 max-w-2xl">
+    These <span class="font-mono text-cyan-400">cc://</span> resources are read-only data sources
+    that AI clients (like opencode) can discover and read natively through the MCP protocol.
+    Browse and read them here too.
+</p>
+
+<!-- Category tabs -->
+<div id="category-tabs" class="flex flex-wrap gap-1 mb-4 border-b border-gray-800"></div>
+
+<div id="resource-list" class="space-y-4"></div>
+
+<!-- Template: resource card -->
+<template id="tmpl-card">
+    <div class="resource-card bg-gray-900">
+        <div class="px-4 py-3 flex items-start justify-between gap-4">
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-gray-200 resource-title"></div>
+                <div class="resource-uri text-gray-500 mt-1 px-2 py-1 rounded inline-block"></div>
+                <div class="text-xs text-gray-500 mt-1 resource-desc"></div>
+            </div>
+            <button class="read-btn shrink-0 text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded transition-colors">Read</button>
+        </div>
+        <!-- Param inputs (hidden initially) -->
+        <div class="param-area hidden px-4 pb-3 border-t border-gray-800 pt-3"></div>
+        <!-- Content output -->
+        <div class="content-area hidden border-t border-gray-800"></div>
+    </div>
+</template>
+<template id="tmpl-content">
+    <div class="px-4 py-3">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-xs text-gray-500 font-mono status-line"></span>
+            <button class="collapse-btn text-xs text-gray-600 hover:text-gray-400">Collapse</button>
+        </div>
+        <div class="content-box rounded p-3 text-gray-300"></div>
+    </div>
+</template>
+<template id="tmpl-error">
+    <div class="px-4 py-3">
+        <div class="text-xs text-red-400 mb-1 font-mono"></div>
+        <div class="content-box rounded p-3 text-red-300 border-red-900"></div>
+    </div>
+</template>
+
+<script>
+let catalog = [];
+
+function loadCatalog() {
+    fetch('/api/mcp/resources').then(r => r.json()).then(data => {
+        catalog = data;
+        renderTabs();
+        renderAll(data);
+        document.getElementById('resource-count').textContent = data.length + ' resource(s)';
+        lucide.createIcons();
+    }).catch(() => {
+        document.getElementById('resource-list').innerHTML = '<div class="text-red-400 text-sm">Failed to load resource catalog.</div>';
+    });
+}
+
+function renderTabs() {
+    const cats = [...new Set(catalog.map(r => r.category))];
+    const tabBar = document.getElementById('category-tabs');
+    tabBar.innerHTML = `<button class="tab-btn active" data-cat="all">All</button>` +
+        cats.map(c => `<button class="tab-btn" data-cat="${esc(c)}">${esc(c)}</button>`).join('');
+    tabBar.addEventListener('click', e => {
+        const btn = e.target.closest('.tab-btn');
+        if (!btn) return;
+        tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderAll(catalog, btn.dataset.cat);
+    });
+}
+
+function renderAll(data, filterCat) {
+    const container = document.getElementById('resource-list');
+    const filtered = filterCat && filterCat !== 'all'
+        ? data.filter(r => r.category === filterCat)
+        : data;
+    container.innerHTML = '';
+    filtered.forEach(function(r) {
+        const card = renderCard(r);
+        if (card) container.appendChild(card);
+    });
+    lucide.createIcons();
+}
+
+function renderCard(r) {
+    const tmpl = document.getElementById('tmpl-card');
+    const div = tmpl.content.cloneNode(true);
+    const card = div.querySelector('.resource-card');
+    card.querySelector('.resource-title').textContent = r.title;
+    card.querySelector('.resource-uri').textContent = r.uri;
+    card.querySelector('.resource-desc').textContent = r.description || '';
+    const readBtn = card.querySelector('.read-btn');
+    const paramArea = card.querySelector('.param-area');
+    const contentArea = card.querySelector('.content-area');
+
+    // Check if resource has template parameters {param}
+    const params = (r.uri.match(/\{(\w+)\}/g) || []).map(p => p.slice(1, -1));
+    let paramValues = {};
+
+    if (params.length) {
+        paramArea.innerHTML = params.map(p =>
+            `<label class="flex items-center gap-2 mt-2">
+                <span class="text-xs text-gray-400 w-16 shrink-0">${esc(p)}:</span>
+                <input class="param-input param-${esc(p)} w-full max-w-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200"
+                       placeholder="Enter ${esc(p)}...">
+            </label>`
+        ).join('') +
+        `<button class="apply-params text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1 rounded mt-2 transition-colors">Apply</button>`;
+        paramArea.classList.remove('hidden');
+    }
+
+    readBtn.addEventListener('click', () => {
+        if (params.length) {
+            // Collect param values
+            params.forEach(p => {
+                const inp = paramArea.querySelector(`.param-${p}`);
+                paramValues[p] = inp ? inp.value.trim() : '';
+            });
+            if (params.some(p => !paramValues[p])) {
+                alert('Please fill in all parameters');
+                return;
+            }
+        }
+        const uri = fillParams(r.uri, paramValues);
+        readResource(uri, card, contentArea);
+    });
+
+    // Apply button for params
+    const applyBtn = paramArea.querySelector('.apply-params');
+    if (applyBtn) {
+        applyBtn.addEventListener('click', () => readBtn.click());
+        // Enter key on param inputs triggers read
+        paramArea.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('keydown', e => { if (e.key === 'Enter') readBtn.click(); });
+        });
+    }
+
+    return card;
+}
+
+function fillParams(uri, vals) {
+    return uri.replace(/\{(\w+)\}/g, (_, k) => vals[k] || `{${k}}`);
+}
+
+function readResource(uri, card, contentArea) {
+    contentArea.innerHTML = '<div class="px-4 py-3 text-xs text-gray-500">Loading...</div>';
+    contentArea.classList.remove('hidden');
+
+    fetch('/api/mcp/resources/read', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({uri: uri})
+    }).then(r => r.json()).then(data => {
+        if (data.error) {
+            showError(contentArea, data.error);
+            return;
+        }
+        showContent(contentArea, data.content, uri);
+    }).catch(err => {
+        showError(contentArea, err.message);
+    });
+}
+
+function showContent(area, content, uri) {
+    const tmpl = document.getElementById('tmpl-content');
+    const div = tmpl.content.cloneNode(true);
+    const contentBox = div.querySelector('.content-box');
+    const statusLine = div.querySelector('.status-line');
+    const collapseBtn = div.querySelector('.collapse-btn');
+
+    statusLine.textContent = uri + ' — ' + (content ? (content.length + ' chars') : 'empty');
+    contentBox.textContent = content || '(empty)';
+    collapseBtn.addEventListener('click', () => { area.classList.add('hidden'); });
+
+    area.innerHTML = '';
+    area.appendChild(div);
+}
+
+function showError(area, msg) {
+    const tmpl = document.getElementById('tmpl-error');
+    const div = tmpl.content.cloneNode(true);
+    div.querySelector('.text-red-400').textContent = 'Error:';
+    div.querySelector('.text-red-300').textContent = msg;
+    area.innerHTML = '';
+    area.appendChild(div);
+}
+
+function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+}
+
+document.addEventListener('DOMContentLoaded', loadCatalog);
+</script>
+{% endblock %}

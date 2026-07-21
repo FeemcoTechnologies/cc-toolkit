@@ -1,9 +1,10 @@
 name: "Server-Side Template Injection (SSTI)"
 description: "SSTI detection across template engines (Jinja2, Twig, Freemarker, Velocity, Mako, Jade/Pug) and RCE exploitation"
-version: "1.0"
+version: "2.0"
 
 vars:
   callback: ""
+  wordlist: "/wordlists/Generic_Fuzz.txt"
 
 preflight:
   - id: setup
@@ -21,7 +22,7 @@ steps:
         name: "Fuzz common template parameters"
         tool: ffuf
         args: ["-u", "{target}/?FUZZ={{7*7}}",
-               "-w", "/wordlists/ssrf-params.txt",
+               "-w", "{wordlist}",
                "-mc", "200,500",
                "-o", "{case_dir}/ffuf-ssti-params.json", "-of", "json",
                "-ac"]
@@ -141,10 +142,28 @@ steps:
 
   # ---- Phase 5: Report ----
   - id: report
-    name: "SSTI assessment note"
+    name: "SSTI assessment report"
+    type: report
+    format: markdown
+    title: "SSTI Assessment Report — {target}"
+    output: "{case_dir}/ssti-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Parameter Discovery"
+        body: "- FFuF params: {case_dir}/ffuf-ssti-params.json\n- Technology: {case_dir}/whatweb-ssti.txt\n- Basic math: {case_dir}/ssti-basic-math.txt"
+      - heading: "SSTImap Results"
+        body: "- Full scan: {case_dir}/sstimap-report.txt\n- RCE check: {case_dir}/sstimap-rce.txt"
+      - heading: "Engine-Specific Probes"
+        body: "- Jinja2: {case_dir}/ssti-jinja2.txt\n- Twig: {case_dir}/ssti-twig.txt\n- Freemarker: {case_dir}/ssti-freemarker.txt\n- Velocity: {case_dir}/ssti-velocity.txt\n- Mako: {case_dir}/ssti-mako.txt\n- Pug: {case_dir}/ssti-pug.txt"
+      - heading: "Contextual Injection"
+        body: "- User-Agent: {case_dir}/ssti-header-ua.txt\n- Cookie: {case_dir}/ssti-cookie.txt\n- Referer: {case_dir}/ssti-referer.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      SSTI assessment complete for {target}.
-      Check {case_dir}/ for sstimap report, per-engine probe outputs,
-      and contextual injection results. Look for "49" (7*7) in responses
-      to confirm injection.
+    message: "SSTI assessment complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "SSTI assessment finished for {target}. Results in {case_dir}"

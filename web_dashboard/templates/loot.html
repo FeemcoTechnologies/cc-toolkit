@@ -1,0 +1,422 @@
+{% extends "base.html" %}
+{% block title %}Loot Database{% endblock %}
+{% block head %}
+<style>
+    .tab-btn { transition: all 0.15s ease; }
+    .reveal-btn { cursor: pointer; user-select: none; }
+    .mono { font-family: 'Courier New', monospace; font-size: 12px; }
+    .copy-btn { cursor: pointer; opacity: 0.4; transition: opacity 0.15s; }
+    .copy-btn:hover { opacity: 1; }
+    .inline-edit { cursor: text; border-bottom: 1px dashed transparent; }
+    .inline-edit:hover { border-bottom-color: #4b5563; }
+    .inline-edit:focus { border-bottom-color: #818cf8; outline: none; background: rgba(99,102,241,0.08); border-radius: 2px; }
+    .pw-hidden::after { content: '••••••••'; letter-spacing: 2px; }
+</style>
+{% endblock %}
+{% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Loot</span>
+</nav>
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="database" class="w-6 h-6 text-indigo-400"></i>
+        Loot Database
+    </h1>
+    <span id="stats-badge" class="text-xs text-gray-500"></span>
+</div>
+
+<!-- Search bar -->
+<div class="flex gap-2 mb-4">
+    <input id="loot-search" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-200 w-72"
+           placeholder="Search credentials, tokens, sessions..." onkeydown="if(event.key==='Enter') searchLoot()">
+    <button onclick="searchLoot()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm flex items-center gap-1">
+        <i data-lucide="search" class="w-4 h-4"></i> Search
+    </button>
+    <button onclick="clearSearch()" class="text-gray-500 hover:text-gray-300 px-2 py-1.5 text-sm">Clear</button>
+</div>
+
+<!-- Tabs -->
+<div class="flex gap-1 mb-4 border-b border-gray-800">
+    <button onclick="switchTab('credentials')" id="tab-credentials"
+            class="tab-btn px-4 py-2 text-sm border-b-2 border-indigo-400 text-indigo-300 font-medium">Credentials</button>
+    <button onclick="switchTab('tokens')" id="tab-tokens"
+            class="tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Tokens</button>
+    <button onclick="switchTab('sessions')" id="tab-sessions"
+            class="tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Sessions</button>
+    <button onclick="switchTab('add')" id="tab-add"
+            class="tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">+ Add</button>
+</div>
+
+<!-- ==================== CREDENTIALS TAB ==================== -->
+<div id="panel-credentials">
+    <div id="cred-list" class="space-y-1">
+        <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+    </div>
+</div>
+
+<!-- ==================== TOKENS TAB ==================== -->
+<div id="panel-tokens" class="hidden">
+    <div id="token-list" class="space-y-1">
+        <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+    </div>
+</div>
+
+<!-- ==================== SESSIONS TAB ==================== -->
+<div id="panel-sessions" class="hidden">
+    <div id="session-list" class="space-y-1">
+        <div class="text-gray-500 text-sm py-8 text-center">Loading...</div>
+    </div>
+</div>
+
+<!-- ==================== ADD TAB ==================== -->
+<div id="panel-add" class="hidden">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Add Credential -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-gray-200 mb-3">Add Credential</h3>
+            <div class="space-y-2">
+                <input id="add-source" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Source (e.g. nmap, burp)">
+                <input id="add-target" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Target (IP/host)">
+                <input id="add-username" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Username">
+                <div class="flex gap-1">
+                    <input id="add-password" type="password" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Password">
+                    <button onclick="generatePassword()" class="bg-gray-700 hover:bg-gray-600 px-2 rounded text-xs text-gray-300" title="Generate random password"><i data-lucide="wand" class="w-4 h-4"></i></button>
+                </div>
+                <input id="add-hash" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 font-mono" placeholder="Hash">
+                <div class="flex gap-2">
+                    <input id="add-hash-type" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Hash type">
+                    <input id="add-protocol" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Protocol">
+                    <input id="add-port" type="number" class="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Port">
+                </div>
+                <input id="add-domain" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Domain">
+                <textarea id="add-notes" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Notes"></textarea>
+                <button onclick="addCredential(this)" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm w-full">Add Credential</button>
+            </div>
+        </div>
+        <!-- Add Token -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-gray-200 mb-3">Add Token</h3>
+            <div class="space-y-2">
+                <input id="add-token-source" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Source">
+                <input id="add-token-type" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Token type (JWT, API, session)">
+                <textarea id="add-token-value" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 font-mono" placeholder="Token value"></textarea>
+                <input id="add-token-target" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Target">
+                <input id="add-token-expires" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Expires (YYYY-MM-DD)">
+                <button onclick="addToken(this)" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm w-full">Add Token</button>
+            </div>
+        </div>
+        <!-- Add Session -->
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h3 class="text-sm font-semibold text-gray-200 mb-3">Add Session</h3>
+            <div class="space-y-2">
+                <input id="add-session-source" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Source">
+                <input id="add-session-id" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Session ID">
+                <input id="add-session-target" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Target">
+                <input id="add-session-protocol" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200" placeholder="Protocol">
+                <button onclick="addSession(this)" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm w-full">Add Session</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="fixed bottom-6 right-6 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-sm shadow-xl hidden z-50"></div>
+
+<script>
+let searchActive = '';
+
+function switchTab(name) {
+    ['credentials','tokens','sessions','add'].forEach(t => {
+        document.getElementById('panel-'+t).classList.toggle('hidden', t !== name);
+        const btn = document.getElementById('tab-'+t);
+        if (t === name) {
+            btn.className = 'tab-btn px-4 py-2 text-sm border-b-2 border-indigo-400 text-indigo-300 font-medium';
+        } else {
+            btn.className = 'tab-btn px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300';
+        }
+    });
+    if (name === 'credentials') loadCredentials();
+    if (name === 'tokens') loadTokens();
+    if (name === 'sessions') loadSessions();
+}
+
+function toast(msg, ok) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'fixed bottom-6 right-6 rounded-lg px-4 py-2 text-sm shadow-xl z-50 border ' +
+        (ok ? 'bg-emerald-900 border-emerald-700 text-emerald-200' : 'bg-red-900 border-red-700 text-red-200');
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 3000);
+}
+
+// ---- Credentials ----
+function loadCredentials() {
+    const url = searchActive ? '/api/loot?q='+encodeURIComponent(searchActive) : '/api/loot';
+    document.getElementById('cred-list').innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">Loading...</div>';
+    fetch(url).then(r=>r.json()).then(data => {
+        const creds = data.credentials || [];
+        document.getElementById('stats-badge').textContent = creds.length + ' credential(s)';
+        if (!creds.length) {
+            document.getElementById('cred-list').innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No credentials found.</div>';
+            return;
+        }
+        document.getElementById('cred-list').innerHTML = creds.map(c => renderCred(c)).join('');
+        lucide.createIcons();
+    }).catch(() => {
+        document.getElementById('cred-list').innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Failed to load credentials</div>';
+    });
+}
+
+function renderCred(c) {
+    const hid = 'cred-'+c.id;
+    const pid = 'pw-'+c.id;
+    const hasPass = !!c.password;
+    const passStr = hasPass
+        ? `<span class="mono text-gray-400" id="${pid}">${esc(c.password)}</span>
+           <button onclick="copyText('${esc(c.password)}')" class="copy-btn text-gray-500 hover:text-gray-300" title="Copy"><i data-lucide="copy" class="w-3.5 h-3.5 inline"></i></button>
+           <button onclick="revealToggle('${pid}')" class="text-gray-500 hover:text-gray-300" title="Toggle visibility"><i data-lucide="eye" class="w-3.5 h-3.5 inline"></i></button>`
+        : '<span class="text-gray-600">—</span>';
+    const hashStr = c.hash ? `<div class="mono text-gray-500 truncate max-w-[300px]" title="${esc(c.hash)}">${esc(c.hash.substring(0, 48))}${c.hash.length>48?'…':''}</div>` : '';
+    return `<div class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex items-start justify-between hover:border-gray-700 transition-colors">
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="text-sm font-medium text-gray-200">${esc(c.username)}</span>
+                <span class="text-xs text-gray-500">@</span>
+                <span class="text-sm text-gray-300">${esc(c.target)}</span>
+                ${c.domain ? `<span class="text-xs text-gray-500">(${esc(c.domain)})</span>` : ''}
+                ${c.protocol ? `<span class="text-xs bg-gray-800 text-gray-400 rounded px-1.5 py-0.5">${esc(c.protocol)}${c.port ? ':'+c.port : ''}</span>` : ''}
+            </div>
+            <div class="flex items-center gap-3 text-xs text-gray-500">
+                <span>Source: ${esc(c.source || '?')}</span>
+                <span>${c.discovered ? new Date(c.discovered).toLocaleString() : ''}</span>
+            </div>
+            <div class="mt-1 flex items-center gap-1">
+                <span class="text-xs text-gray-500">Pass:</span> ${passStr}
+            </div>
+            ${hashStr ? `<div class="mt-0.5 flex items-center gap-2">${hashStr} ${c.hash_type ? `<span class="text-xs text-gray-500">[${esc(c.hash_type)}]</span>` : ''}</div>` : ''}
+            ${c.notes ? `<div class="text-xs text-gray-500 mt-0.5 italic inline-edit" contenteditable="true" data-cred-id="${c.id}" data-field="notes" onblur="updateCredField(${c.id},'notes',this.textContent)">${esc(c.notes)}</div>` : `<div class="text-xs text-gray-600 mt-0.5 italic inline-edit" contenteditable="true" data-cred-id="${c.id}" data-field="notes" onblur="updateCredField(${c.id},'notes',this.textContent)">Add notes...</div>`}
+        </div>
+        <button onclick="deleteCred(${c.id})" class="text-gray-600 hover:text-red-400 ml-2 shrink-0" title="Delete">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+        </button>
+    </div>`;
+}
+
+function revealToggle(pid) {
+    const el = document.getElementById(pid);
+    if (!el) return;
+    if (el.dataset.hidden === '1') {
+        el.textContent = el.dataset.orig;
+        el.dataset.hidden = '0';
+    } else {
+        el.dataset.orig = el.textContent;
+        el.textContent = '••••••••';
+        el.dataset.hidden = '1';
+    }
+}
+
+function copyText(t) {
+    navigator.clipboard.writeText(t).then(() => toast('Copied!', true)).catch(() => toast('Copy failed', false));
+}
+
+function updateCredField(id, field, value) {
+    fetch('/api/loot/'+id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({field: field, value: value})
+    }).then(r => { if (!r.ok) toast('Update failed', false); });
+}
+
+function deleteCred(id) {
+    if (!confirm('Delete this credential?')) return;
+    fetch('/api/loot/'+id, {method:'DELETE'}).then(r=>{
+        if (r.ok) toast('Deleted', true);
+        else toast('Delete failed', false);
+        loadCredentials();
+    }).catch(() => toast('Delete error', false));
+}
+
+function addCredential(btn) {
+    const body = {
+        source: getVal('add-source'), target: getVal('add-target'),
+        username: getVal('add-username'), password: getVal('add-password'),
+        hash: getVal('add-hash'), hash_type: getVal('add-hash-type'),
+        protocol: getVal('add-protocol'), port: getVal('add-port'),
+        domain: getVal('add-domain'), notes: getVal('add-notes'),
+    };
+    if (!body.source || !body.target || !body.username) return toast('source, target, username required', false);
+    btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i> Adding...'; lucide.createIcons();
+    fetch('/api/loot', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+        .then(r => { btn.disabled = false; btn.textContent = 'Add Credential'; if (r.ok) { toast('Credential added', true); clearAddCred(); loadCredentials(); switchTab('credentials'); } else toast('Add failed', false); })
+        .catch(() => { btn.disabled = false; btn.textContent = 'Add Credential'; toast('Add error', false); });
+}
+
+function clearAddCred() {
+    ['add-source','add-target','add-username','add-password','add-hash','add-hash-type','add-protocol','add-port','add-domain','add-notes']
+        .forEach(id => document.getElementById(id).value = '');
+}
+
+// ---- Tokens ----
+function loadTokens() {
+    const url = searchActive ? '/api/loot?q='+encodeURIComponent(searchActive) : '/api/loot/tokens';
+    document.getElementById('token-list').innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">Loading...</div>';
+    fetch(url).then(r=>r.json()).then(data => {
+        const tokens = Array.isArray(data) ? data : (data.tokens || []);
+        if (!tokens.length) {
+            document.getElementById('token-list').innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No tokens found.</div>';
+            return;
+        }
+        document.getElementById('token-list').innerHTML = tokens.map(t => renderToken(t)).join('');
+        lucide.createIcons();
+    }).catch(() => {
+        document.getElementById('token-list').innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Failed to load tokens</div>';
+    });
+}
+
+function renderToken(t) {
+    const tv = t.token_value || '';
+    const truncated = tv.length > 80 ? tv.substring(0, 80) + '…' : tv;
+    return `<div class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex items-start justify-between hover:border-gray-700 transition-colors">
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="text-xs bg-gray-800 text-indigo-400 rounded px-1.5 py-0.5">${esc(t.token_type)}</span>
+                <span class="text-sm text-gray-200 font-medium">${esc(t.source)}</span>
+                ${t.target ? `<span class="text-xs text-gray-500">→ ${esc(t.target)}</span>` : ''}
+                <button onclick="copyText('${esc(tv)}')" class="copy-btn text-gray-500 hover:text-gray-300 ml-1" title="Copy token value"><i data-lucide="copy" class="w-3.5 h-3.5 inline"></i></button>
+            </div>
+            <div class="mono text-gray-400 truncate max-w-full" title="${esc(tv)}">${esc(truncated)}</div>
+            <div class="flex items-center gap-3 text-xs text-gray-500 mt-1">
+                ${t.expires ? `<span>Expires: ${t.expires}</span>` : ''}
+                <span>${t.discovered ? new Date(t.discovered).toLocaleString() : ''}</span>
+            </div>
+            ${t.notes ? `<div class="text-xs text-gray-500 mt-0.5 italic">${esc(t.notes)}</div>` : ''}
+        </div>
+        <button onclick="deleteToken(${t.id})" class="text-gray-600 hover:text-red-400 ml-2 shrink-0" title="Delete">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+        </button>
+    </div>`;
+}
+
+function deleteToken(id) {
+    if (!confirm('Delete this token?')) return;
+    fetch('/api/loot/tokens/'+id, {method:'DELETE'}).then(r=>{
+        if (r.ok) toast('Deleted', true);
+        else toast('Delete failed', false);
+        loadTokens();
+    }).catch(() => toast('Delete error', false));
+}
+
+function addToken(btn) {
+    const body = {
+        source: getVal('add-token-source'), token_type: getVal('add-token-type'),
+        token_value: getVal('add-token-value'), target: getVal('add-token-target'),
+        expires: getVal('add-token-expires'),
+    };
+    if (!body.source || !body.token_type || !body.token_value) return toast('source, token_type, token_value required', false);
+    btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i> Adding...'; lucide.createIcons();
+    fetch('/api/loot/tokens', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+        .then(r => { btn.disabled = false; btn.textContent = 'Add Token'; if (r.ok) { toast('Token added', true); ['add-token-source','add-token-type','add-token-value','add-token-target','add-token-expires'].forEach(id => document.getElementById(id).value = ''); loadTokens(); switchTab('tokens'); } else toast('Add failed', false); })
+        .catch(() => { btn.disabled = false; btn.textContent = 'Add Token'; toast('Add error', false); });
+}
+
+// ---- Sessions ----
+function loadSessions() {
+    const url = searchActive ? '/api/loot?q='+encodeURIComponent(searchActive) : '/api/loot/sessions';
+    document.getElementById('session-list').innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">Loading...</div>';
+    fetch(url).then(r=>r.json()).then(data => {
+        const sessions = Array.isArray(data) ? data : (data.sessions || []);
+        if (!sessions.length) {
+            document.getElementById('session-list').innerHTML = '<div class="text-gray-500 text-sm py-8 text-center">No sessions found.</div>';
+            return;
+        }
+        document.getElementById('session-list').innerHTML = sessions.map(s => renderSession(s)).join('');
+        lucide.createIcons();
+    }).catch(() => {
+        document.getElementById('session-list').innerHTML = '<div class="text-red-400 text-sm py-8 text-center">Failed to load sessions</div>';
+    });
+}
+
+function renderSession(s) {
+    return `<div class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex items-start justify-between hover:border-gray-700 transition-colors">
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="text-sm font-medium text-gray-200">${esc(s.session_id)}</span>
+                ${s.protocol ? `<span class="text-xs bg-gray-800 text-gray-400 rounded px-1.5 py-0.5">${esc(s.protocol)}</span>` : ''}
+                ${s.target ? `<span class="text-xs text-gray-500">→ ${esc(s.target)}</span>` : ''}
+            </div>
+            <div class="text-xs text-gray-500">Source: ${esc(s.source || '?')} &middot; ${s.discovered ? new Date(s.discovered).toLocaleString() : ''}</div>
+            ${s.data ? `<div class="mono text-gray-500 text-xs mt-1 truncate max-w-full" title="${esc(s.data)}">${esc(s.data.substring(0, 120))}${s.data.length>120?'…':''}</div>` : ''}
+        </div>
+        <button onclick="deleteSession(${s.id})" class="text-gray-600 hover:text-red-400 ml-2 shrink-0" title="Delete">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+        </button>
+    </div>`;
+}
+
+function deleteSession(id) {
+    if (!confirm('Delete this session?')) return;
+    fetch('/api/loot/sessions/'+id, {method:'DELETE'}).then(r=>{
+        if (r.ok) toast('Deleted', true);
+        else toast('Delete failed', false);
+        loadSessions();
+    }).catch(() => toast('Delete error', false));
+}
+
+function addSession(btn) {
+    const body = {
+        source: getVal('add-session-source'), session_id: getVal('add-session-id'),
+        target: getVal('add-session-target'), protocol: getVal('add-session-protocol'),
+    };
+    if (!body.source || !body.session_id) return toast('source and session_id required', false);
+    btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i> Adding...'; lucide.createIcons();
+    fetch('/api/loot/sessions', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+        .then(r => { btn.disabled = false; btn.textContent = 'Add Session'; if (r.ok) { toast('Session added', true); ['add-session-source','add-session-id','add-session-target','add-session-protocol'].forEach(id => document.getElementById(id).value = ''); loadSessions(); switchTab('sessions'); } else toast('Add failed', false); })
+        .catch(() => { btn.disabled = false; btn.textContent = 'Add Session'; toast('Add error', false); });
+}
+
+// ---- Search ----
+function searchLoot() {
+    searchActive = document.getElementById('loot-search').value.trim();
+    const active = document.querySelector('[id^="panel-"]:not(.hidden)');
+    const tab = active ? active.id.replace('panel-','') : 'credentials';
+    if (tab === 'credentials') loadCredentials();
+    else if (tab === 'tokens') loadTokens();
+    else if (tab === 'sessions') loadSessions();
+    if (searchActive) document.getElementById('stats-badge').textContent = 'searching...';
+}
+
+function clearSearch() {
+    searchActive = '';
+    document.getElementById('loot-search').value = '';
+    switchTab('credentials');
+}
+
+function generatePassword() {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=';
+    let pw = '';
+    for (let i = 0; i < 20; i++) pw += chars[Math.floor(Math.random() * chars.length)];
+    document.getElementById('add-password').value = pw;
+    toast('Password generated', true);
+}
+
+// ---- Helpers ----
+function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+}
+
+function getVal(id) {
+    return document.getElementById(id).value.trim();
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+    loadCredentials();
+});
+</script>
+{% endblock %}

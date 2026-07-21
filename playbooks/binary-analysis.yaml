@@ -1,277 +1,358 @@
-# v2 runbook — Binary analysis and exploitation assessment
-name: "Binary Analysis & Exploitation"
-description: "Analyze binaries for vulnerabilities: file info, static analysis, dynamic analysis, fuzzing, exploit development checks"
-version: "2.0"
+name: Binary Analysis & Exploitation
+description: 'Analyze binaries for vulnerabilities: file info, static analysis, security
+  mitigation checks, disassembly, ROP gadget search, vulnerability pattern scanning,
+  fuzzing, and exploit template generation.
 
+  '
+version: '2.0'
 vars:
-  binary_path: ""
-  target_ip: ""
-  target_port: ""
-
+  target: ''
+  target_ip: ''
+  target_port: ''
+  wordlist_dir: /wordlists
 preflight:
-  - id: preamble
-    type: log
-    message: "Binary analysis — {binary_path} (case: {case_id})"
-
+- id: preamble
+  type: log
+  message: 'Binary analysis — {target} (case: {case_id})'
+  name: Preamble
 steps:
-  # Phase 1: File identification
-  - id: file_id
-    name: "File identification"
-    type: parallel
-    max_workers: 6
+- id: file_id
+  name: File identification
+  type: parallel
+  max_workers: 6
+  steps:
+  - id: file_type
+    name: file type
+    tool: file
+    args:
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/filetype.txt'
+    type: tool
+  - id: strings
+    name: Strings extraction
+    tool: strings
+    args:
+    - '{target}'
+    - -n6
+    timeout: 60
+    save: '{case_dir}/strings.txt'
+    artifacts:
+    - '{case_dir}/strings.txt'
+    type: tool
+  - id: exiftool
+    name: EXIF / metadata
+    tool: exiftool
+    args:
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/exiftool.txt'
+    type: tool
+  - id: checksum
+    name: SHA256 checksum
+    tool: sha256sum
+    args:
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/sha256.txt'
+    type: tool
+  - id: binwalk
+    name: Binwalk (embedded files)
+    tool: binwalk
+    args:
+    - '{target}'
+    - -f
+    - '{case_dir}/binwalk.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/binwalk.txt'
+    type: tool
+  - id: upx_detect
+    name: Packer detection
+    tool: python3
+    args:
+    - -c
+    - 'import subprocess,sys; r=subprocess.run([''strings'',sys.argv[1]],capture_output=True,text=True,timeout=30);
+      out=r.stdout; has_upx=''UPX'' in out or ''upx'' in out; has_themida=''Themida''
+      in out; has_vmprotect=''VMProtect'' in out; print(f''UPX packed: {has_upx}'');
+      print(f''Themida: {has_themida}''); print(f''VMProtect: {has_vmprotect}'');
+      import re; urls=re.findall(r''https?://[^\s"\''<>]+'',out); endpoints=[u for
+      u in urls if not any(x in u for x in [''example.com'',''github.com'',''golang.org''])];
+      print(f''Potential endpoints found: {len(endpoints)}''); [print(f''  {e}'')
+      for e in endpoints[:20]]'
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/packer.txt'
+    type: tool
+- id: static_analysis
+  name: Static analysis
+  type: parallel
+  max_workers: 5
+  steps:
+  - id: objdump_sections
+    name: Sections & headers
+    tool: objdump
+    args:
+    - -x
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/objdump_headers.txt'
+    type: tool
+  - id: objdump_syms
+    name: Symbol table
+    tool: objdump
+    args:
+    - -t
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/objdump_syms.txt'
+    type: tool
+  - id: readelf_all
+    name: Readelf full
+    tool: readelf
+    args:
+    - -a
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/readelf.txt'
+    type: tool
+  - id: nm_functions
+    name: Function list
+    tool: nm
+    args:
+    - -C
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/nm_functions.txt'
+    type: tool
+  - id: ldd_deps
+    name: Library dependencies
+    tool: ldd
+    args:
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/ldd_deps.txt'
+    type: tool
+- id: security_checks
+  name: Security mitigation checks
+  type: parallel
+  steps:
+  - id: checksec
+    name: Checksec (NX, PIE, RELRO, Stack Canary, FORTIFY)
+    tool: python3
+    args:
+    - -c
+    - import subprocess,sys; r=subprocess.run(['checksec','--file',sys.argv[1]],capture_output=True,text=True,timeout=30);
+      print(r.stderr or r.stdout)
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/checksec.txt'
+    artifacts:
+    - '{case_dir}/checksec.txt'
+    type: tool
+  - id: hardening
+    name: Hardening check (pwn checksec)
+    tool: python3
+    args:
+    - -c
+    - 'import sys; from pwn import ELF; e=ELF(sys.argv[1]); nx=''NX enabled'' if not
+      e.execstack else ''NX disabled''; print(f''NX:        {e.execstack}\nPIE:       {e.pie}\nRELRO:     {e.relro}\nCanary:    {e.canary}\nFORTIFY:   {e.fortify}\nRUNPATH:   {e.runpath}\nNX
+      status: {nx}'')'
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/hardening.txt'
+    type: tool
+- id: disassembly
+  name: Disassembly
+  type: parallel
+  steps:
+  - id: objdump_disasm
+    name: Objdump disassembly (text section)
+    tool: objdump
+    args:
+    - -d
+    - '{target}'
+    timeout: 120
+    save: '{case_dir}/disassembly.txt'
+    artifacts:
+    - '{case_dir}/disassembly.txt'
+    type: tool
+  - id: objdump_plt
+    name: PLT / GOT entries
+    tool: objdump
+    args:
+    - -d
+    - '{target}'
+    - -j
+    - .plt
+    timeout: 60
+    save: '{case_dir}/plt.txt'
+    type: tool
+  - id: ropgadget
+    name: ROP gadget search
+    tool: ropper
+    args:
+    - --file
+    - '{target}'
+    - --nocolor
+    timeout: 600
+    save: '{case_dir}/ropgadgets.txt'
+    artifacts:
+    - '{case_dir}/ropgadgets.txt'
+    type: tool
+- id: vuln_scan
+  name: Vulnerability pattern scanning
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: flare_ida
+    name: Interesting string extraction
+    tool: python3
+    args:
+    - -c
+    - 'import sys, re; d=open(sys.argv[1],''rb'').read(); dec=open(sys.argv[1],''r'',errors=''ignore'').read();
+      print(f''Total size: {len(d)} bytes''); print(''---Potential base64 (>=40 chars)---'');
+      [print(s.decode()) for s in re.findall(rb''[A-Za-z0-9+/]{40,}={0,2}'', d[:100000])];
+      print(''---Potential hex (>=32 chars)---''); [print(s.decode()) for s in re.findall(rb''[0-9a-fA-F]{32,}'',
+      d[:100000])]; print(''---URLs found---''); [print(s) for s in re.findall(r''https?://[^\s\''"<>]+'',
+      dec)]; print(''---API/endpoint patterns---''); [print(m.group()) for m in re.finditer(r''(?:https?://)?[a-zA-Z0-9.-]+\.[a-z]{2,}(?:/[^\s"\''<>]*)?'',
+      dec) if not m.group().startswith(''http'')]'
+    - '{target}'
+    timeout: 120
+    save: '{case_dir}/floss.txt'
+    artifacts:
+    - '{case_dir}/floss.txt'
+    type: tool
+  - id: cwe_checker
+    name: CWE pattern scan
+    tool: python3
+    args:
+    - -c
+    - import sys,json; d=open(sys.argv[1],errors='ignore').read().lower(); cwe_map=[('CWE-78',['exec(','popen','system(','subprocess']),('CWE-120',['memcpy','strcpy','strcat','sprintf','gets','scanf']),('CWE-134',['printf(','fprintf','vprintf','vsprintf']),('CWE-190',['atoi','atol','strtol','stoi','stoul']),('CWE-312',['password','secret','token','apikey','api_key','credential','authorization']),('CWE-327',['md5','sha1','des_']),('CWE-502',['pickle.load','yaml.load','eval(','unserialize']),('CWE-676',['gets(','strcpy(','sprintf(','scanf('])];
+      results=[{'cwe':cwe,'matches':sum(d.count(p) for p in patterns)} for cwe,patterns
+      in cwe_map]; [print(json.dumps(r)) for r in results if r['matches']>0]
+    - '{target}'
+    timeout: 120
+    save: '{case_dir}/cwe_checker.json'
+    type: tool
+  - id: danger_funcs
+    name: Dangerous function grep
+    tool: python3
+    args:
+    - -c
+    - 'import sys; d=open(sys.argv[1]).read() if len(sys.argv)>1 else ''''; c_funcs=[''strcpy'',''sprintf'',''gets'',''scanf'',''system('',''popen'',''memcpy'',''strcat'',''strncpy'',''strncat'',''printf'',''vsprintf'',''sscanf'',''fscanf'',''strlen'',''strcmp''];
+      go_funcs=[''exec.Command'',''os.Exec'',''unsafe.Pointer'',''syscall.Syscall'',''cgo.Insecure'',''json.Unmarshal'',''sql.DB'',''http.ServeFile'',''ioutil.ReadFile'',''os.OpenFile'',''net.Listen''];
+      found=[(f,d.count(f)) for f in c_funcs+go_funcs if f in d]; [print(f''{f}: {c}
+      occurrences'') for f,c in found]'
+    - '{case_dir}/strings.txt'
+    save: '{case_dir}/dangerous_funcs.txt'
+    timeout: 30
+    type: tool
+  - id: pattern_ret2
+    name: Return-oriented pattern check
+    tool: python3
+    args:
+    - -c
+    - 'import sys; d=open(sys.argv[1]).read(); import re; rets=len(re.findall(r''\tc3\s'',d));
+      pops=len(re.findall(r''\t5[0-9a-f]\s'',d)); jmps=len(re.findall(r''\tff\s'',d));
+      print(f''ret instructions: {rets}\npop reg instructions: {pops}\njmp reg instructions:
+      {jmps}'')'
+    - '{case_dir}/disassembly.txt'
+    save: '{case_dir}/ret_patterns.txt'
+    timeout: 30
+    type: tool
+- id: ask_fuzz
+  type: prompt
+  message: Run AFL++ fuzzing on this binary? (requires input corpus, may run long)
+  then:
+  - id: afl_fuzz
+    name: AFL++ fuzzing
+    type: foreach
+    items:
+    - '{target}'
+    var: target_bin
     steps:
-      - id: file_type
-        name: "file type"
-        tool: file
-        args: ["{binary_path}"]
-        timeout: 30
+    - id: afl_run
+      name: AFL fuzz
+      tool: afl-fuzz
+      args:
+      - -i
+      - '{case_dir}/corpus'
+      - -o
+      - '{case_dir}/afl_output'
+      - '{target_bin}'
+      - '@@'
+      timeout: 1800
+      artifacts:
+      - '{case_dir}/afl_output'
+      type: tool
+  name: Ask Fuzz
+- id: ask_remote_test
+  type: prompt
+  message: Run pwntools connectivity check against remote target?
+  condition:
+    ref: target_ip
+    expected: ''
+    negate: true
+  then:
+  - id: pwntools_check
+    name: pwntools remote check
+    tool: python3
+    args:
+    - -c
+    - from pwn import *; c=remote('{target_ip}', {target_port}); print(c.recv(1024));
+      c.close()
+    timeout: 60
+    save: '{case_dir}/remote_check.txt'
+    type: tool
+  name: Ask Remote Test
+- id: exploit_templates
+  name: Exploit template generation
+  type: parallel
+  steps:
+  - id: buffer_overflow
+    name: Buffer overflow test pattern
+    tool: python3
+    args:
+    - -c
+    - print('A'*256)
+    timeout: 30
+    save: '{case_dir}/overflow_pattern.txt'
+    type: tool
+  - id: format_string
+    name: Format string test pattern
+    tool: python3
+    args:
+    - -c
+    - print('%x.'*50 + '%n'*10)
+    timeout: 30
+    save: '{case_dir}/format_string_pattern.txt'
+    type: tool
+- id: report
+  name: Generate binary analysis report
+  type: report
+  format: markdown
+  title: Binary Analysis — {target}
+  output: '{case_dir}/binary-analysis-report.md'
+  sections:
+  - heading: Target
+    body: '- Binary: {target}
 
-      - id: strings
-        name: "Strings extraction"
-        tool: strings
-        args: ["{binary_path}", "-n6",
-               ">", "{case_dir}/strings.txt"]
-        timeout: 60
-        artifacts: ["{case_dir}/strings.txt"]
+      - Case: {case_id}'
+  - heading: Security Mitigations
+    body: '- NX/PIE/RELRO/Canary: {case_dir}/checksec.txt'
+  - heading: Vulnerability Scan Results
+    body: '- Dangerous functions: {case_dir}/dangerous_funcs.txt
 
-      - id: exiftool
-        name: "EXIF / metadata"
-        tool: exiftool
-        args: ["{binary_path}"]
-        timeout: 60
+      - CWE patterns: {case_dir}/cwe_checker.json
 
-      - id: checksum
-        name: "SHA256 checksum"
-        tool: sha256sum
-        args: ["{binary_path}"]
-        timeout: 30
-
-      - id: binwalk
-        name: "Binwalk (embedded files)"
-        tool: binwalk
-        args: ["{binary_path}",
-               "-o", "{case_dir}/binwalk.txt"]
-        timeout: 120
-
-      - id: upx_detect
-        name: "Packer detection"
-        tool: detect-it-easy
-        args: ["{binary_path}"]
-        timeout: 60
-
-  # Phase 2: Static analysis
-  - id: static_analysis
-    name: "Static analysis"
-    type: parallel
-    max_workers: 5
-    steps:
-      - id: objdump_sections
-        name: "Sections & headers"
-        tool: objdump
-        args: ["-x", "{binary_path}",
-               "-o", "{case_dir}/objdump_headers.txt"]
-        timeout: 60
-
-      - id: objdump_syms
-        name: "Symbol table"
-        tool: objdump
-        args: ["-t", "{binary_path}",
-               "-o", "{case_dir}/objdump_syms.txt"]
-        timeout: 60
-
-      - id: readelf_all
-        name: "Readelf full"
-        tool: readelf
-        args: ["-a", "{binary_path}",
-               "-o", "{case_dir}/readelf.txt"]
-        timeout: 60
-
-      - id: nm_functions
-        name: "Function list"
-        tool: nm
-        args: ["-C", "{binary_path}",
-               "-o", "{case_dir}/nm_functions.txt"]
-        timeout: 60
-
-      - id: ldd_deps
-        name: "Library dependencies"
-        tool: ldd
-        args: ["{binary_path}",
-               "-o", "{case_dir}/ldd_deps.txt"]
-        timeout: 30
-
-  # Phase 3: Security check
-  - id: security_checks
-    name: "Security mitigation checks"
-    type: parallel
-    steps:
-      - id: checksec
-        name: "Checksec (NX, PIE, RELRO, Stack Canary, FORTIFY)"
-        tool: checksec
-        args: ["--file", "{binary_path}",
-               "-o", "{case_dir}/checksec.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/checksec.txt"]
-
-      - id: hardening
-        name: "Hardening check"
-        tool: hardening-check
-        args: ["{binary_path}",
-               "-o", "{case_dir}/hardening.txt"]
-        timeout: 30
-
-  # Phase 4: Disassembly
-  - id: disassembly
-    name: "Disassembly"
-    type: parallel
-    steps:
-      - id: objdump_disasm
-        name: "Objdump disassembly (text section)"
-        tool: objdump
-        args: ["-d", "{binary_path}",
-               "-o", "{case_dir}/disassembly.txt"]
-        timeout: 120
-        artifacts: ["{case_dir}/disassembly.txt"]
-
-      - id: objdump_plt
-        name: "PLT / GOT entries"
-        tool: objdump
-        args: ["-d", "{binary_path}", "-j", ".plt",
-               "-o", "{case_dir}/plt.txt"]
-        timeout: 60
-
-      - id: ropgadget
-        name: "ROP gadget search"
-        tool: ROPgadget
-        args: ["--binary", "{binary_path}",
-               "-o", "{case_dir}/ropgadgets.txt"]
-        timeout: 300
-        artifacts: ["{case_dir}/ropgadgets.txt"]
-
-  # Phase 5: Vulnerability pattern scanning
-  - id: vuln_scan
-    name: "Vulnerability pattern scanning"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: flare_ida
-        name: "FLARE strings"
-        tool: python3
-        args: ["/usr/bin/floss", "{binary_path}",
-               "-o", "{case_dir}/floss.txt"]
-        timeout: 300
-        artifacts: ["{case_dir}/floss.txt"]
-
-      - id: cwe_checker
-        name: "CWE checker"
-        tool: cwe_checker
-        args: ["{binary_path}",
-               "-o", "{case_dir}/cwe_checker.json"]
-        timeout: 600
-        artifacts: ["{case_dir}/cwe_checker.json"]
-
-      - id: danger_funcs
-        name: "Dangerous function grep"
-        tool: grep
-        args: ["-rn",
-               "-e", "strcpy",
-               "-e", "sprintf",
-               "-e", "gets",
-               "-e", "scanf",
-               "-e", "system(",
-               "-e", "popen",
-               "-e", "memcpy",
-               "-e", "strcat",
-               "{case_dir}/disassembly.txt",
-               "-o", "{case_dir}/dangerous_funcs.txt"]
-        timeout: 30
-
-      - id: pattern_ret2
-        name: "Return-oriented pattern check"
-        tool: objdump
-        args: ["-d", "{binary_path}", "|",
-               "grep", "-E", "\"ret|pop.*ret|jmp.*r\"",
-               ">", "{case_dir}/ret_patterns.txt"]
-        timeout: 60
-
-  # Phase 6: Fuzzing
-  - id: ask_fuzz
-    type: prompt
-    message: "Run AFL++ fuzzing on this binary? (requires input corpus, may run long)"
-    then:
-      - id: afl_fuzz
-        name: "AFL++ fuzzing"
-        type: foreach
-        items: ["{binary_path}"]
-        var: target_bin
-        steps:
-          - id: afl_run
-            name: "AFL fuzz"
-            tool: afl-fuzz
-            args: ["-i", "{case_dir}/corpus",
-                   "-o", "{case_dir}/afl_output",
-                   "{target_bin}",
-                   "@@"]
-            timeout: 1800
-            artifacts: ["{case_dir}/afl_output"]
-
-  # Phase 7: Dynamic analysis via pwntools
-  - id: ask_remote_test
-    type: prompt
-    message: "Run pwntools connectivity check against remote target?"
-    condition:
-      ref: target_ip
-      expected: ""
-      negate: true
-    then:
-      - id: pwntools_check
-        name: "pwntools remote check"
-        tool: python3
-        args: ["-c",
-               "\"from pwn import *; c=remote('{target_ip}', {target_port}); c.interactive()\"",
-               "-o", "{case_dir}/remote_check.txt"]
-        timeout: 60
-
-  # Phase 8: Exploit template generation
-  - id: exploit_templates
-    name: "Exploit template generation"
-    type: parallel
-    steps:
-      - id: buffer_overflow
-        name: "Buffer overflow test pattern"
-        tool: python3
-        args: ["-c",
-               "\"print('A'*256)\"",
-               ">", "{case_dir}/overflow_pattern.txt"]
-        timeout: 30
-
-      - id: format_string
-        name: "Format string test pattern"
-        tool: python3
-        args: ["-c",
-               "\"print('%x.'*50)\"",
-               ">", "{case_dir}/format_string_pattern.txt"]
-        timeout: 30
-
-  # Phase 9: Report
-  - id: report
-    name: "Generate binary analysis report"
-    type: report
-    format: markdown
-    title: "Binary Analysis — {binary_path}"
-    output: "{case_dir}/binary-analysis-report.md"
-    sections:
-      - heading: "Target"
-        body: "- Binary: {binary_path}\n- Case: {case_id}"
-      - heading: "Security Mitigations"
-        body: "- NX / PIE / RELRO / Stack Canary: see {case_dir}/checksec.txt"
-      - heading: "Vulnerability Scan Results"
-        body: "- Dangerous functions: {case_dir}/dangerous_funcs.txt\n- CWE patterns: {case_dir}/cwe_checker.json\n- ROP gadgets: {case_dir}/ropgadgets.txt"
-      - heading: "Exploitation Notes"
-        body: "Review checksec for bypassable mitigations. Cross-reference dangerous functions with reachable paths."
-
+      - ROP gadgets: {case_dir}/ropgadgets.txt'
+  - heading: Exploitation Notes
+    body: Review checksec for bypassable mitigations. Cross-reference dangerous functions
+      with reachable paths.
 postflight:
-  - id: done
-    type: notify
-    level: success
-    message: "Binary analysis complete — {case_dir}"
+- id: done
+  type: notify
+  level: success
+  message: Binary analysis complete — {case_dir}
+  name: Done

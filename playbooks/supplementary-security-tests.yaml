@@ -1,0 +1,289 @@
+name: "Supplementary Security Tests"
+description: >
+  Cross-cutting security tests not covered in other playbooks.
+  Covers CORS, WebSocket, security headers, cookie flags, clickjacking,
+  rate limiting, MFA bypass, subdomain takeover, email security,
+  host header injection, open redirect, NoSQL injection, and backup
+  file disclosure. Designed as a supplementary module that can be
+  appended to any web/API/cloud assessment.
+version: "2.0"
+target_required: true
+
+vars:
+  wordlist_dir: "/wordlists"
+  domain: ""
+  email_domain: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Supplementary security tests — {target} case: {case_id}"
+
+steps:
+  # Phase 1: Security headers
+  - id: security_headers
+    name: "HTTP security headers audit"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: header_scan
+        name: "Scan for security headers"
+        tool: python3
+        args: ["-c", "import sys; print(f'Security header check for {sys.argv[1]}:\\nRequired headers:\\n- Strict-Transport-Security (HSTS): max-age, includeSubDomains, preload\\n- Content-Security-Policy (CSP): script-src, object-src, frame-ancestors\\n- X-Frame-Options: DENY or SAMEORIGIN\\n- X-Content-Type-Options: nosniff\\n- Referrer-Policy: strict-origin-when-cross-origin\\n- Permissions-Policy: geolocation, camera, microphone\\n- X-XSS-Protection: 0 (deprecated, use CSP)\\nCheck: curl -sI {sys.argv[1]} | grep -iE \\\"(strict-transport|content-security|x-frame|x-content|referrer|permissions|x-xss)\\\"')",
+               "{target}"]
+        save: "{case_dir}/security-headers.txt"
+        timeout: 15
+
+      - id: hsts_preload
+        name: "HSTS preload eligibility"
+        tool: python3
+        args: ["-c", "import sys; d=sys.argv[1]; print(f'HSTS preload check for {d}:\\nRequirements:\\n1. Valid certificate on root domain\\n2. Redirect HTTP to HTTPS (301)\\n3. HSTS header on root domain with: max-age>=31536000, includeSubDomains, preload\\n4. All subdomains must serve over HTTPS\\n5. No 404/soft-404 on root after redirect\\nCheck: https://hstspreload.org/?domain={d}')",
+               "{domain}"]
+        save: "{case_dir}/hsts-preload.txt"
+        timeout: 15
+
+      - id: csp_eval
+        name: "CSP policy evaluation"
+        tool: python3
+        args: ["-c", "import sys; print('CSP weakness detection:\\n1. script-src \\'unsafe-inline\\' (XSS bypass)\\n2. script-src \\'unsafe-eval\\' (eval() allowed)\\n3. Wildcard sources (*.cdn.com, cdn.*.com)\\n4. Missing object-src (plugin XSS)\\n5. Missing frame-ancestors (clickjacking)\\n6. CSP via meta tag (not HTTP header - less secure)\\n7. CSP reporting: report-uri, report-to\\n8. Nonce reuse detection\\nTest: eval('alert(1)') to test unsafe-eval')"]
+        save: "{case_dir}/csp-evaluation.txt"
+        timeout: 15
+
+  # Phase 2: Cookie security
+  - id: cookie_security
+    name: "Cookie security audit"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: cookie_scan
+        name: "Analyze cookie flags"
+        tool: python3
+        args: ["-c", "import sys; print(f'Cookie security audit for {sys.argv[1]}:\\nCheck each cookie for: Secure, HttpOnly, SameSite, Path, Domain, Max-Age/Expires\\ncurl -sI {sys.argv[1]} | grep -i set-cookie\\nFlags required for session cookies: Secure + HttpOnly + SameSite=Lax/Strict\\n- Missing Secure: cookie sent over HTTP (cleartext)\\n- Missing HttpOnly: accessible via JS (XSS cookie theft)\\n- SameSite=None w/o Secure: browser rejects\\n- Domain too broad: *.example.com vs specific subdomain\\n- Path too broad: / vs /app\\n- Persistent cookies without need')",
+               "{target}"]
+        save: "{case_dir}/cookie-audit.txt"
+        timeout: 15
+
+      - id: cookie_attrs
+        name: "Session cookie attribute tests"
+        tool: python3
+        args: ["-c", "import sys; print('Cookie attribute exploitation tests:\\n1. Remove Secure flag -> capture cookie via HTTP MITM\\n2. Remove HttpOnly flag -> steal via XSS\\n3. Change SameSite=None -> CSRF on cross-site\\n4. Prefix manipulation: __Secure-, __Host-\\n5. Cookie injection via subdomain\\n6. Cookie tossing: same name, different path/domain\\n7. Expired cookie replay (if server doesn\\'t validate)\\n8. Cookie jar overflow (browser cookie limits)')"]
+        save: "{case_dir}/cookie-attrs.txt"
+        timeout: 15
+
+  # Phase 3: CORS testing
+  - id: cors_test
+    name: "CORS misconfiguration testing"
+    type: sequential
+    steps:
+      - id: cors_scan
+        name: "CORS misconfiguration scan"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'CORS testing on {u}:\\n1. Origin reflection: curl -H \\\"Origin: https://evil.com\\\" -I {u}\\n   Check if Access-Control-Allow-Origin: https://evil.com\\n2. Null origin: curl -H \\\"Origin: null\\\" -I {u}\\n3. Wildcard with credentials: curl -H \\\"Origin: https://evil.com\\\" -I {u}\\n   Dangerous: Access-Control-Allow-Origin: * with Allow-Credentials: true\\n4. Subdomain trust: curl -H \\\"Origin: https://attacker.evil.com\\\" -I {u}\\n5. Prefix trust: curl -H \\\"Origin: https://evilexample.com\\\" -I {u}\\n6. Suffix trust: curl -H \\\"Origin: https://example.com.evil.com\\\" -I {u}\\n7. Preflight bypass: DELETE/PUT/PATCH with simple request\\n8. Internal IP exposure: curl -H \\\"Origin: https://192.168.1.1\\\" -I {u}')",
+               "{target}"]
+        save: "{case_dir}/cors-test.txt"
+        timeout: 15
+
+  # Phase 4: WebSocket testing
+  - id: websocket
+    name: "WebSocket security testing"
+    type: sequential
+    steps:
+      - id: ws_discover
+        name: "WebSocket endpoint discovery"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'WebSocket discovery for {u}:\\n1. Check for ws:// or wss:// in page source\\n2. Check for new WebSocket() in JS files\\n3. Common WS paths: /ws, /socket, /websocket, /chat, /stream\\n4. Chrome DevTools: look for WS connections\\n5. Upgrade header: curl -H \\\"Connection: Upgrade\\\" -H \\\"Upgrade: websocket\\\" {u}\\n6. WS proxy: check if WSS supports insecure origins\\n7. Check SockJS, Socket.IO, WS libraries in use')",
+               "{target}"]
+        save: "{case_dir}/ws-discovery.txt"
+        timeout: 15
+
+      - id: ws_attacks
+        name: "WebSocket attack vectors"
+        tool: python3
+        args: ["-c", "import sys; print('WebSocket security tests:\\n1. Cross-Site WebSocket Hijacking (CSWSH)\\n   - Test if Origin header validated\\n   - If no auth on connect, attacker site can connect\\n2. WS message injection: send malformed JSON\\n3. WS DoS: send large payloads rapidly\\n4. WS fuzzing: send unexpected data types\\n5. WS authentication bypass: connect without token\\n6. WS reconnection: token reuse after logout\\n7. WS input injection: XSS via chat messages\\n8. WS IDOR: subscribe to another user\\'s channel\\n9. WS SQLi: inject SQL via WS messages\\n10. WS parameter pollution: wss://host/path?param=value')"]
+        save: "{case_dir}/ws-attacks.txt"
+        timeout: 15
+
+  # Phase 5: Clickjacking
+  - id: clickjacking
+    name: "Clickjacking testing"
+    type: sequential
+    steps:
+      - id: clickjack_test
+        name: "Clickjacking vulnerability test"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'Clickjacking test for {u}:\\n1. Check for X-Frame-Options header (DENY or SAMEORIGIN)\\n2. Check for CSP frame-ancestors directive\\n3. Create PoC: <iframe src=\\\"{u}\\\" style=\\\"opacity:0;position:absolute;top:0;left:0;width:100%;height:100%\\\"></iframe>\\n4. Test with multiple framing: frame-ancestors none\\n5. UI redressing: stroke-width/opacity overlays\\n6. Multi-step clickjacking (drag+drop, copy+paste)\\n7. Test all login/action endpoints\\nMitigation: X-Frame-Options: DENY or CSP: frame-ancestors \\'self\\'')",
+               "{target}"]
+        save: "{case_dir}/clickjacking.txt"
+        timeout: 15
+
+  # Phase 6: Rate limiting
+  - id: rate_limit
+    name: "Rate limiting testing"
+    type: sequential
+    steps:
+      - id: rate_limit_check
+        name: "Rate limiting bypass tests"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'Rate limiting tests for {u}:\\n1. Sequential requests: send 100 requests in 1s loop\\n2. IP rotation: X-Forwarded-For header bypass\\n   curl -H \\\"X-Forwarded-For: 1.2.3.4\\\" {u}\\n   curl -H \\\"X-Real-IP: 1.2.3.5\\\" {u}\\n   curl -H \\\"Client-IP: 1.2.3.6\\\" {u}\\n   curl -H \\\"X-Originating-IP: 1.2.3.7\\\" {u}\\n3. Cookie rotation: delete session cookies between requests\\n4. Parameter mutation: vary benign params\\n5. Method switch: GET vs POST\\n6. HTTP/2 multiplexing bypass\\n7. Race condition: concurrent requests\\n8. Slow loris: slow headers to bypass rate limit\\n9. IP fragmentation: use IPv6 addresses\\n10. Distributed: different user-agent per request')",
+               "{target}"]
+        save: "{case_dir}/rate-limit.txt"
+        timeout: 15
+
+  # Phase 7: Host header injection
+  - id: host_header
+    name: "Host header injection"
+    type: sequential
+    steps:
+      - id: host_header_test
+        name: "Host header manipulation"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'Host header injection tests for {u}:\\n1. Arbitrary host: curl -H \\\"Host: evil.com\\\" {u}\\n2. Port injection: curl -H \\\"Host: {u}:12345\\\" {u}\\n3. X-Forwarded-Host: curl -H \\\"X-Forwarded-Host: evil.com\\\" {u}\\n4. X-Forwarded-Server: curl -H \\\"X-Forwarded-Server: evil.com\\\" {u}\\n5. X-HTTP-Host-Override: curl -H \\\"X-HTTP-Host-Override: evil.com\\\" {u}\\n6. Newline injection: curl -H $\\'Host: {u}\\\\r\\nX-Forwarded-For: 127.0.0.1\\' {u}\\n7. Absolute URL: curl http://evil.com@{u}/path\\n8. Check for: password reset poisoning, cache poisoning, SSRF via Host, web cache poisoning')",
+               "{target}"]
+        save: "{case_dir}/host-header.txt"
+        timeout: 15
+
+  # Phase 8: Open redirect
+  - id: open_redirect
+    name: "Open redirect testing"
+    type: sequential
+    steps:
+      - id: redirect_test
+        name: "Open redirect detection"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; payloads=['//evil.com','@evil.com','https://evil.com','/\\\\evil.com','%68%74%74%70://evil.com','http://evil.com@good.com','//good.com@evil.com','http://evil.com?good.com','http://evil.com#good.com','/url?=http://evil.com','/redirect?url=data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==']; print(f'Open redirect tests for {u}:\\nCommon params: url, redirect, return, next, target\\nPayloads:'+'\\n'.join(f'{i+1}. {p}' for i,p in enumerate(payloads)))"]
+        save: "{case_dir}/open-redirect.txt"
+        timeout: 15
+
+  # Phase 9: NoSQL injection
+  - id: nosql
+    name: "NoSQL injection testing"
+    type: sequential
+    steps:
+      - id: nosql_scan
+        name: "NoSQL injection vectors"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'NoSQL injection tests for {u}:\\nMongoDB payloads:\\n1. JSON body: {\\\"$gt\\\": \\\"\\\"} or {\\\"$ne\\\": \\\"\\\"}\\n2. URL params: ?username[$ne]=admin&password[$ne]=x\\n3. boolean-based: ?user=admin\\' && this.password%3d%3d\\\"\\\" && \\'1\\'%3d%3d\\'1\\'\\n4. POST body: username[$regex]=.*&password[$regex]=.*\\n5. Time-based: ?username=admin\\' && sleep(5000) && \\'1\\'=\\'1\\'\\n6. Array injection: users[]=admin\\n7. $where injection: ?username=admin\\' && this.password.match(/.*/) && \\'1\\'==\\'1\\n8. $exists: ?username[$exists]=true\\n\\nCouchDB payloads:\\n1. _all_docs access: /db/_all_docs\\n2. Designer doc injection: _design/views\\n\\nCheck for: 200 OK with unexpected results, errors revealing DB engine')",
+               "{target}"]
+        save: "{case_dir}/nosql-injection.txt"
+        timeout: 15
+
+  # Phase 10: Backup file disclosure
+  - id: backup_files
+    name: "Backup file disclosure"
+    type: sequential
+    steps:
+      - id: backup_scan
+        name: "Backup file enumeration"
+        tool: python3
+        args: ["-c", "import sys; u=sys.argv[1]; print(f'Backup file scan for {u}:\\nPaths to check:\\n1. /.git/config\\n2. /.env\\n3. /wp-config.php.bak\\n4. /backup/\\n5. /database.sql.gz\\n6. /app.tar.gz\\n7. /config.php.old\\n8. /config.yml.swp\\n9. /.svn/entries\\n10. /web.config.bak\\n11. /appsettings.json\\n12. /composer.json (reveals dependencies)\\n13. /package.json\\n14. /dump.sql\\n15. /admin/backup.sql\\n\\nExtensions: .bak, .old, .swp, .swo, ~, .backup, .sql, .gz, .tar, .zip, .rar, .7z, .env, .dist\\n\\nTools: ffuf/feroxbuster with backup extension wordlist')",
+               "{target}"]
+        save: "{case_dir}/backup-files.txt"
+        timeout: 15
+
+  # Phase 11: MFA bypass
+  - id: mfa_bypass
+    name: "MFA bypass testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: mfa_vectors
+        name: "MFA bypass vectors"
+        tool: python3
+        args: ["-c", "import sys; print('MFA bypass technique catalog:\\n1. MFA enrollment bypass: modify response to skip MFA setup\\n2. OTP brute-force: test 000000-999999 (if no rate limit)\\n3. OTP reuse: use old OTP code\\n4. Backup code abuse: use someone else\\'s backup code\\n5. MFA reset bypass: remove MFA via password reset\\n6. Session cookie reuse: auth session before MFA\\n7. OAuth token theft: steal OAuth token to bypass MFA\\n8. MFA fatigue: push multiple MFA notifications until user accepts\\n9. TOTP seed extraction: QR code leaked in setup screen\\n10. SMS interception: SS7 attack on SMS MFA\\n11. MFA downgrade: remove MFA requirement via API\\n12. API endpoint without MFA: direct API access\\n13. Remember-me token abuse: long-lived session token\\n14. Device trust bypass: spoof trusted device cookie')"]
+        save: "{case_dir}/mfa-bypass.txt"
+        timeout: 15
+
+      - id: mfa_fatigue
+        name: "MFA fatigue attack setup"
+        tool: python3
+        args: ["-c", "import sys; print(f'MFA fatigue attack:\\n1. Obtain target credentials (phishing/breach)\\n2. Initiate login (triggers MFA push)\\n3. Repeat step 2 rapidly (10-50 pushes)\\n4. Target accepts push out of annoyance\\n5. Attacker uses the accepted session\\nTools: evilginx2, modlishka, CredSniper\\nCountermeasures: number matching, location-based auth, push timeout')"]
+        save: "{case_dir}/mfa-fatigue.txt"
+        timeout: 15
+
+  # Phase 12: Subdomain takeover
+  - id: subdomain_takeover
+    name: "Subdomain takeover testing"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: takeover_scan
+        name: "Subdomain takeover detection"
+        tool: python3
+        args: ["-c", "import sys; d=sys.argv[1]; print(f'Subdomain takeover checks for {d}:\\nStep 1: Enumerate all subdomains (subfinder, amass, dnsrecon)\\nStep 2: Check CNAME records: dig CNAME sub.{d}\\nStep 3: Check for dangling services:\\n- AWS: \\\"NoSuchBucket\\\", \\\"NoSuchKey\\\" (S3)\\n- AWS CloudFront: \\\"BadRequest\\\" or \\\"The specified key does not exist\\\"\\n- Azure: \\\"The specified blob does not exist\\\"\\n- GitHub Pages: \\\"There isn\\'t a GitHub Pages site here\\\"\\n- Heroku: \\\"No such app\\\"\\n- Shopify: \\\"Sorry, this shop is currently unavailable\\\"\\n- Fastly: \\\"Fastly error: unknown domain\\\"\\n- Cloudflare: error 1003 / orange-clouded to unclaimed\\n- GitLab: \\\"The page you\\'re looking for could not be found\\\"\\n- WordPress.com: \\\"Domain not found\\\"\\n- Zendesk: \\\"Help Center closed\\\"\\nTools: subjack, subover, nuclei \\\"dns/takeover/*\\\"')",
+               "{domain}"]
+        save: "{case_dir}/subdomain-takeover.txt"
+        timeout: 15
+
+  # Phase 13: Email security
+  - id: email_security
+    name: "Email security tests"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: spf_check
+        name: "SPF record analysis"
+        tool: python3
+        args: ["-c", "import sys; d=sys.argv[1]; print(f'SPF check for {d}:\\ndig TXT {d} | grep \\\"v=spf1\\\"\\nCheck:\\n1. Missing SPF = anyone can send as {d}\\n2. ?all or ~all (softfail) = spoofable\\n3. +all = completely open (critical)\\n4. Too many DNS lookups (>10, SPF perm-error)\\n5. include: too broad (include:spoof-me.example.com)\\n6. No -all (hardfail) = weaker security\\n7. IPv4/IPv6 ranges allow broader senders\\n8. Check subdomain SPF records separately')",
+               "{email_domain}"]
+        save: "{case_dir}/spf-check.txt"
+        timeout: 15
+
+      - id: dkim_check
+        name: "DKIM record analysis"
+        tool: python3
+        args: ["-c", "import sys; d=sys.argv[1]; print(f'DKIM check for {d}:\\nCommon selectors: dig TXT default._domainkey.{d}\\nAlso try: google._domainkey, selector1._domainkey, s1._domainkey, k1._domainkey, 2023._domainkey\\nCheck:\\n1. Missing DKIM = no email signing\\n2. Key length too short (<1024 bits RSA)\\n3. Weak hash (sha1 vs sha256)\\n4. Revoked key (key expired but selector still in DNS)\\n5. Key mismatch: signing domain differs from From domain (ADSP)\\n6. Wildcard DKIM selector (security risk)')",
+               "{email_domain}"]
+        save: "{case_dir}/dkim-check.txt"
+        timeout: 15
+
+      - id: dmarc_check
+        name: "DMARC record analysis"
+        tool: python3
+        args: ["-c", "import sys; d=sys.argv[1]; print(f'DMARC check for {d}:\\ndig TXT _dmarc.{d}\\nCheck:\\n1. Missing DMARC = no reporting/rejection\\n2. p=none = monitoring only (no protection)\\n3. p=quarantine or p=reject with low pct (<100)\\n4. No rua/ruf = no abuse reporting\\n5. pct=0 = effectively disabled\\n6. aspf=r = relaxed alignment (subdomains can spoof)\\n7. Policy mismatch: subdomain policy weaker than org\\n8. DMARC aggregate report analysis (rua emails)\\n9. DMARC forensic reporting (ruf) not configured')",
+               "{email_domain}"]
+        save: "{case_dir}/dmarc-check.txt"
+        timeout: 15
+
+  # Phase 14: Report
+  - id: report
+    name: "Supplementary security tests report"
+    type: report
+    format: markdown
+    title: "Supplementary Security Tests — {target}"
+    output: "{case_dir}/supplementary-security-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Host: {target}\n- Domain: {domain}\n- Email domain: {email_domain}\n- Case: {case_id}"
+      - heading: "Security Headers"
+        body: "- Header scan: {case_dir}/security-headers.txt\n- HSTS preload: {case_dir}/hsts-preload.txt\n- CSP eval: {case_dir}/csp-evaluation.txt"
+      - heading: "Cookie Security"
+        body: "- Cookie audit: {case_dir}/cookie-audit.txt\n- Attribute tests: {case_dir}/cookie-attrs.txt"
+      - heading: "CORS"
+        body: "- Test results: {case_dir}/cors-test.txt"
+      - heading: "WebSocket"
+        body: "- Discovery: {case_dir}/ws-discovery.txt\n- Attacks: {case_dir}/ws-attacks.txt"
+      - heading: "Clickjacking"
+        body: "- Results: {case_dir}/clickjacking.txt"
+      - heading: "Rate Limiting"
+        body: "- Results: {case_dir}/rate-limit.txt"
+      - heading: "Host Header / Open Redirect"
+        body: "- Host header: {case_dir}/host-header.txt\n- Open redirect: {case_dir}/open-redirect.txt"
+      - heading: "NoSQL Injection"
+        body: "- Scan results: {case_dir}/nosql-injection.txt"
+      - heading: "Backup Files"
+        body: "- Scan results: {case_dir}/backup-files.txt"
+      - heading: "MFA Bypass"
+        body: "- Vectors: {case_dir}/mfa-bypass.txt\n- Fatigue: {case_dir}/mfa-fatigue.txt"
+      - heading: "Subdomain Takeover"
+        body: "- Results: {case_dir}/subdomain-takeover.txt"
+      - heading: "Email Security"
+        body: "- SPF: {case_dir}/spf-check.txt\n- DKIM: {case_dir}/dkim-check.txt\n- DMARC: {case_dir}/dmarc-check.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Supplementary security tests complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Supplementary security tests finished for {target}. Report at {case_dir}/supplementary-security-report.md"

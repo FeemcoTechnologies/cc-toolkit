@@ -8,6 +8,12 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Terminal</span>
+</nav>
 <div class="max-w-6xl mx-auto">
     <!-- Connection bar -->
     <div class="bg-gray-900 border border-gray-800 rounded-t-lg px-3 py-2 flex items-center justify-between">
@@ -69,7 +75,8 @@
         const host = loc.hostname;
         // WS terminal server runs on port = HTTP port + 1 (or 5001 default)
         const wsPort = {{ config.get('ws_port', 5001) }};
-        return 'ws://' + host + ':' + wsPort;
+        const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+        return proto + '//' + host + ':' + wsPort;
     }
 
     function connect() {

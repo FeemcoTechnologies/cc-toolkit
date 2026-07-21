@@ -119,7 +119,10 @@ def list_monitors() -> List[dict]:
         cfg = json.loads(cfg_file.read_text())
         # Count history entries
         hist_file = d / "history.jsonl"
-        entry_count = sum(1 for _ in open(hist_file)) if hist_file.exists() else 0
+        entry_count = 0
+        if hist_file.exists():
+            with open(hist_file) as _f:
+                entry_count = sum(1 for _ in _f)
         cfg["history_count"] = entry_count
         results.append(cfg)
     return results

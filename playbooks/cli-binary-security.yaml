@@ -1,0 +1,327 @@
+name: "CLI Binary Security Assessment"
+description: >
+  Comprehensive security assessment of CLI binaries and their ecosystems.
+  Covers Go binary extraction, binary exploitation (ROP/overflow), authentication
+  flow analysis (JSON response injection, IAM token handling), plugin supply chain,
+  environment variable abuse, and MCP/SSE endpoint exploitation. Designed for
+  CLI tools (Go, Rust, Python, Node.js) with installed binaries available.
+version: "2.0"
+target_required: false
+vars:
+  binary_path: ""
+  binary_name: ""
+  plugin_dir: ""
+  mcp_endpoint: ""
+vars_description:
+  binary_path: "Full path to the CLI binary (e.g., /usr/local/bin/ibmcloud)"
+  binary_name: "Name of the binary for output filenames"
+  plugin_dir: "Directory where plugins are stored (e.g., ~/.config/ibmcloud/plugins)"
+  mcp_endpoint: "Optional MCP SSE endpoint URL if the binary exposes one"
+preflight:
+  name: preflight_check
+  description: "Verify tool availability and binary accessibility"
+  steps:
+    - name: tool_check
+      description: "Verify analysis tools"
+      command: >
+        which checksec python3 strings objdump xxd readelf nm 2>&1;
+        python3 -c "import struct,json,sys,os; print('Python OK')" 2>&1;
+        which angr ROPgadget ropper pwntools 2>/dev/null || echo "Some exploitation tools may be missing";
+        ls -la "{binary_path}" 2>&1 || echo "binary_path not accessible";
+        file "{binary_path}" 2>&1;
+        du -sh "{binary_path}" 2>&1
+    - name: version_info
+      description: "Gather binary version and help information"
+      command: >
+        echo "=== Version info ===";
+        "{binary_name}" version 2>&1 || "{binary_name}" --version 2>&1 || true;
+        echo "=== Help ===";
+        "{binary_name}" help 2>&1 | head -40 || "{binary_name}" --help 2>&1 | head -40 || true
+steps:
+  - name: preamble
+    description: "Create output directories"
+    command: >
+      mkdir -p "{case_dir}/analysis/binary" "{case_dir}/analysis/auth"
+      "{case_dir}/analysis/exploit" "{case_dir}/analysis/plugins"
+      "{case_dir}/analysis/env" "{case_dir}/analysis/mcp"
+      "{case_dir}/report"{newline}
+      echo "Directories ready" > "{case_dir}/preamble.txt"
+  - name: binary_type_check
+    description: "Identify binary type (Go, Rust, PE, ELF, Mach-O) and compiler info"
+    command: >
+      echo "=== Binary type analysis ===" > "{case_dir}/analysis/binary/binary_type.txt{newline}"
+      file "{binary_path}" >> "{case_dir}/analysis/binary/binary_type.txt";
+      echo "" >> "{case_dir}/analysis/binary/binary_type.txt";
+      echo "=== Compiler info ===" >> "{case_dir}/analysis/binary/binary_type.txt";
+      strings "{binary_path}" | grep -iE "(Go|Rust|gcc|clang|MSVC|rustc|built with|compiler)" | sort -u | head -20 >> "{case_dir}/analysis/binary/binary_type.txt";
+      echo "" >> "{case_dir}/analysis/binary/binary_type.txt";
+      echo "=== Go version (if Go binary) ===" >> "{case_dir}/analysis/binary/binary_type.txt";
+      strings "{binary_path}" | grep -E "^go[0-9]+\.[0-9]+\.[0-9]+" | head -5 >> "{case_dir}/analysis/binary/binary_type.txt";
+      echo "" >> "{case_dir}/analysis/binary/binary_type.txt";
+      echo "=== Function count ===" >> "{case_dir}/analysis/binary/binary_type.txt";
+      which nm 2>/dev/null && nm "{binary_path}" 2>/dev/null | wc -l >> "{case_dir}/analysis/binary/binary_type.txt" || echo "nm not available"
+  - name: checksec_analysis
+    description: "Run checksec for security mitigations (NX, Stack Canary, RELRO, PIE, RPath)"
+    command: >
+      echo "=== Binary security mitigations ===" > "{case_dir}/analysis/exploit/checksec.txt{newline}"
+      which checksec 2>/dev/null && checksec --file="{binary_path}" 2>&1 >> "{case_dir}/analysis/exploit/checksec.txt" || echo "checksec not found";
+      echo "" >> "{case_dir}/analysis/exploit/checksec.txt";
+      echo "=== ELF metadata (readelf) ===" >> "{case_dir}/analysis/exploit/checksec.txt";
+      readelf -h "{binary_path}" 2>/dev/null >> "{case_dir}/analysis/exploit/checksec.txt" || echo "readelf not available";
+      echo "" >> "{case_dir}/analysis/exploit/checksec.txt";
+      echo "=== RPath / RunPath ===" >> "{case_dir}/analysis/exploit/checksec.txt";
+      readelf -d "{binary_path}" 2>/dev/null | grep -E "(RPATH|RUNPATH)" >> "{case_dir}/analysis/exploit/checksec.txt" || echo "No RPATH";
+      echo "" >> "{case_dir}/analysis/exploit/checksec.txt";
+      echo "=== Dynamic libraries ===" >> "{case_dir}/analysis/exploit/checksec.txt";
+      ldd "{binary_path}" 2>/dev/null >> "{case_dir}/analysis/exploit/checksec.txt" || echo "ldd not available"
+  - name: rop_gadget_search
+    description: "Search for ROP/JOP gadgets in the binary"
+    command: >
+      echo "=== ROP gadget search ===" > "{case_dir}/analysis/exploit/rop_gadgets.txt{newline}"
+      which ROPgadget 2>/dev/null && {
+        ROPgadget --binary "{binary_path}" 2>/dev/null | grep -E "(pop rdi|pop rsi|pop rdx|pop rcx|pop r8|pop r9|syscall|int 0x80|ret$|pop rax|pop rbx|leave|pop rsp)" | head -50 >> "{case_dir}/analysis/exploit/rop_gadgets.txt";
+        echo "---" >> "{case_dir}/analysis/exploit/rop_gadgets.txt";
+        ROPgadget --binary "{binary_path}" 2>/dev/null | wc -l | awk '{print "Total gadgets: "$1}' >> "{case_dir}/analysis/exploit/rop_gadgets.txt";
+      } || echo "ROPgadget not available" >> "{case_dir}/analysis/exploit/rop_gadgets.txt";
+      which ropper 2>/dev/null && {
+        ropper --file "{binary_path}" --search "pop rdi" 2>/dev/null | head -10 >> "{case_dir}/analysis/exploit/rop_gadgets.txt";
+      } || echo "ropper not available" >> "{case_dir}/analysis/exploit/rop_gadgets.txt"
+  - name: auth_flow_analysis
+    description: "Analyze authentication flow: IAM token handling, API key storage, response injection"
+    command: >
+      echo "=== Authentication flow analysis ===" > "{case_dir}/analysis/auth/auth_flow.txt{newline}"
+      python3 -c "
+import re, os
+data = open('{binary_path}','rb').read().decode('latin-1')
+findings = []
+# IAM/OAuth token patterns
+for pat in ['iam_token','access_token','refresh_token','api_key','apikey',
+            'iam_token_endpoint','authorization','bearer','oauth','oidc']:
+    matches = re.findall(r'.{0,40}' + pat + r'.{0,40}', data, re.IGNORECASE)
+    if matches:
+        findings.append(f'{pat}: {len(matches)} matches')
+        for m in matches[:5]: findings.append(f'  {m.strip()}')
+# JSON response parsing
+for pat in ['json.Unmarshal','json.Decode','response.Inject','response.body',
+            'json.RawMessage','interface{}','map[string]interface']:
+    if pat in data: findings.append(f'JSON parsing: {pat}')
+# Token storage
+for pat in ['token.json','credentials.json','config.json','.ibmcloud','.config']:
+    if pat in data: findings.append(f'Token storage: {pat}')
+print(chr(10).join(findings))
+" >> "{case_dir}/analysis/auth/auth_flow.txt";
+      echo "" >> "{case_dir}/analysis/auth/auth_flow.txt";
+      echo "=== ENV-based auth testing ===" >> "{case_dir}/analysis/auth/auth_flow.txt";
+      echo "Check if auth can be bypassed via environment variables:" >> "{case_dir}/analysis/auth/auth_flow.txt";
+      for var in "IBMCLOUD_API_KEY" "BM_API_KEY" "CLOUD_API_KEY" "API_KEY" "TOKEN" "IAM_TOKEN" "ACCESS_TOKEN"; do
+        if strings "{binary_path}" | grep -qi "$var"; then
+          echo "  ENV VAR: $var" >> "{case_dir}/analysis/auth/auth_flow.txt";
+        fi;
+      done
+  - name: response_injection_check
+    description: "Check for JSON response injection and MITM vulnerability in auth flow"
+    command: >
+      echo "=== Response injection analysis (angr) ===" > "{case_dir}/analysis/auth/response_injection.txt{newline}"
+      python3 -c "
+import re
+data = open('{binary_path}','rb').read().decode('latin-1')
+# Look for auth response parsing patterns
+patterns = {
+    'Unmarshal into struct': r'json\.Unmarshal.*[Rr]esponse',
+    'Auth response field': r'(success|status|authenticated|valid|error)[\"']?\s*[=:].*json',
+    'HTTP client call': r'http\.(Post|Get|Do|NewRequest)',
+    'TLS verification skip': r'(InsecureSkipVerify|skip_verify|SkipVerify)',
+    'Token extraction from body': r'(token|access_token|iam_token)[\"']?\s*[:=]',
+    'String-based auth check': r'(if|==)\s*\w+[\"'](?:success|true|ok|valid)[\"']',
+    'Unvalidated redirect': r'response\.(Body|String)',
+}
+for name, pattern in patterns.items():
+    matches = re.findall(pattern, data, re.IGNORECASE)
+    if matches:
+        print(f'{name}: {len(matches)} matches')
+        for m in matches[:3]: print(f'  {m}')
+" >> "{case_dir}/analysis/auth/response_injection.txt"
+  - name: sym_exec_analysis
+    description: "Run angr symbolic execution on auth check functions"
+    command: >
+      echo "=== Symbolic execution ===" > "{case_dir}/analysis/exploit/sym_exec.txt{newline}"
+      python3 -c "
+import sys
+try:
+    import angr
+    proj = angr.Project('{binary_path}', auto_load_libs=False)
+    print(f'angr loaded: arch={proj.arch.name}, entry={hex(proj.entry)}')
+    # Get CFG
+    cfg = proj.analyses.CFGFast()
+    print(f'Functions in CFG: {len(cfg.functions)}')
+    # Search for auth-check functions
+    auth_funcs = []
+    for addr, func in cfg.functions.items():
+        if any(x in func.name.lower() for x in ['auth','token','login','verify','check']):
+            auth_funcs.append((func.name, hex(addr)))
+            print(f'Auth function: {func.name} @ {hex(addr)}')
+    if not auth_funcs:
+        print('No auth functions found (expected for stripped Go binaries)')
+except ImportError:
+    print('angr not installed')
+except Exception as e:
+    print(f'angr analysis failed: {e}')
+" >> "{case_dir}/analysis/exploit/sym_exec.txt"
+  - name: plugin_supply_chain
+    description: "Audit plugin directory for supply chain risks"
+    command: >
+      echo "=== Plugin supply chain audit ===" > "{case_dir}/analysis/plugins/supply_chain.txt{newline}"
+      if [ -d "{plugin_dir}" ]; then
+        echo "Plugin directory: {plugin_dir}" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        ls -la "{plugin_dir}/" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        find "{plugin_dir}" -type f -exec file {{}} \; 2>/dev/null >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "=== Plugin installation verification ===" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "Check if plugins are cryptographically verified:" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        find "{plugin_dir}" -type f -name "*.sig" -o -name "*.asc" -o -name "*.sha256" 2>/dev/null | head -10 >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "=== Plugin command injection ===" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        python3 -c "
+import os, re
+bp = '{plugin_dir}'
+for root, dirs, files in os.walk(bp):
+    for f in files:
+        fp = os.path.join(root, f)
+        try:
+            data = open(fp, 'rb').read().decode('latin-1')
+            if re.search(r'exec\(|system\(|subprocess|os\.popen|shell=True|cmd\.Run\)', data):
+                print(f'  COMMAND_INJECTION_RISK: {f}')
+        except: pass
+" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+      else
+        echo "Plugin directory not found at {plugin_dir}" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+        echo "Try: find ~ -type d -name 'plugins' 2>/dev/null;" >> "{case_dir}/analysis/plugins/supply_chain.txt";
+      fi
+  - name: env_var_abuse
+    description: "Check for dangerous environment variable handling (LD_PRELOAD, sudo -E, custom paths)"
+    command: >
+      echo "=== Environment variable abuse ===" > "{case_dir}/analysis/env/env_abuse.txt{newline}"
+      python3 -c "
+import re
+data = open('{binary_path}','rb').read().decode('latin-1')
+findings = []
+# Dangerous env vars
+for var in ['LD_PRELOAD','LD_LIBRARY_PATH','LD_AUDIT','PATH','HOME',
+            'IBMCLOUD_HOME','IBMCLOUD_CONFIG','DOCKER_HOST','KUBECONFIG']:
+    if var in data:
+        findings.append(f'USES: {var}')
+# sudo -E patterns
+if 'sudo' in data and 'env_keep' in data.lower():
+    findings.append('sudo -E pattern detected')
+# Temp file patterns
+for pat in ['/tmp/','/var/tmp/','mktemp','tempfile']:
+    if pat in data:
+        findings.append(f'Temp file: {pat}')
+# Symlink following
+for pat in ['os.Symlink','ioutil.WriteFile.*follow','filepath.EvalSymlinks']:
+    if pat in data: findings.append(f'Symlink: {pat}')
+print(chr(10).join(findings))
+" >> "{case_dir}/analysis/env/env_abuse.txt"
+  - name: trace_log_leak
+    description: "Check for sensitive data in trace/log files"
+    command: >
+      echo "=== Trace/log leak check ===" > "{case_dir}/analysis/env/trace_leak.txt{newline}"
+      find ~ -name "*{binary_name}*trace*" -o -name "*{binary_name}*log*" -o -name "*{binary_name}*debug*" 2>/dev/null | head -10 >> "{case_dir}/analysis/env/trace_leak.txt";
+      find /tmp -name "*{binary_name}*" -o -name "*.trace" 2>/dev/null | head -10 >> "{case_dir}/analysis/env/trace_leak.txt";
+      echo "" >> "{case_dir}/analysis/env/trace_leak.txt";
+      echo "=== Strace captures ===" >> "{case_dir}/analysis/env/trace_leak.txt";
+      echo "Run: strace -o {case_dir}/analysis/env/strace.log -f {binary_name} help" >> "{case_dir}/analysis/env/trace_leak.txt";
+      strace -o "{case_dir}/analysis/env/strace.log" -f "{binary_name}" help 2>&1 >/dev/null;
+      python3 -c "
+import re
+try:
+    data = open('{case_dir}/analysis/env/strace.log').read()
+    # Check for leaked sensitive data in syscall args
+    leaks = []
+    for pat in ['password','secret','token','api.key','authorization','key','credential']:
+        matches = re.findall(r'.{0,60}' + pat + r'.{0,60}', data, re.IGNORECASE)
+        for m in matches[:3]:
+            leaks.append(f'{pat}: {m.strip()[:120]}')
+    for l in leaks: print(l)
+    if not leaks: print('No obvious sensitive data leaks in strace')
+except: print('strace failed')
+" >> "{case_dir}/analysis/env/trace_leak.txt"
+  - name: mcp_endpoint_discovery
+    description: "Discover and test MCP SSE endpoints"
+    command: >
+      echo "=== MCP endpoint discovery ===" > "{case_dir}/analysis/mcp/mcp_discovery.txt{newline}"
+      if [ -n "{mcp_endpoint}" ]; then
+        echo "Testing provided MCP endpoint: {mcp_endpoint}" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        echo "--- GET /sse ---" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        curl -sk --max-time 10 "{mcp_endpoint}/sse" 2>&1 >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        echo "" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        echo "--- POST /message (no auth) ---" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        curl -sk --max-time 10 -X POST "{mcp_endpoint}/message" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>&1 >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        echo "" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        echo "--- Tools list (if authenticated) ---" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+        curl -sk --max-time 10 -X POST "{mcp_endpoint}/message" -H "Content-Type: application/json" -H "Authorization: Bearer test" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>&1 >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+      fi;
+      echo "" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+      echo "=== Discovery from binary strings ===" >> "{case_dir}/analysis/mcp/mcp_discovery.txt";
+      strings "{binary_path}" | grep -iE "(mcp|sse|/sse|/message|tool/call|tool/list|server.sent.event|text.event.stream)" | sort -u | head -20 >> "{case_dir}/analysis/mcp/mcp_discovery.txt"
+  - name: mcp_tool_exploit
+    description: "Exploit MCP tools for command execution and data exfiltration"
+    command: >
+      echo "=== MCP tool exploitation ===" > "{case_dir}/analysis/mcp/mcp_exploit.txt{newline}"
+      if [ -n "{mcp_endpoint}" ]; then
+        for auth in "" "Bearer test" "Bearer admin" "Basic admin:admin"; do
+          echo "--- Auth: $auth ---" >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+          AH="-H 'Content-Type: application/json'";
+          [ -n "$auth" ] && AH="$AH -H 'Authorization: $auth'";
+          # List tools
+          echo "tools/list:" >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+          eval curl -sk --max-time 10 -X POST "'{mcp_endpoint}/message'" $AH -d "'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}'" 2>&1 | python3 -m json.tool 2>/dev/null | head -30 >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+          echo "" >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+          echo "Try command execution tools:" >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+          for tool in "exec" "run" "command" "shell" "bash" "cmd" "system" "execute"; do
+            echo "  Testing tool: $tool" >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+            eval curl -sk --max-time 10 -X POST "'{mcp_endpoint}/message'" $AH -d "'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"\$tool\",\"arguments\":{\"command\":\"id\"}}}'" 2>&1 | head -3 >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+          done;
+        done;
+      else
+        echo "No MCP endpoint configured." >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+        echo "To test, provide mcp_endpoint variable." >> "{case_dir}/analysis/mcp/mcp_exploit.txt";
+      fi
+  - name: compile_report
+    description: "Compile comprehensive assessment report"
+    command: >
+      echo "# CLI Binary Security Assessment" > "{case_dir}/report/cli_assessment.md{newline}"
+      echo "Binary: {binary_name} ({binary_path})" >> "{case_dir}/report/cli_assessment.md";
+      echo "Date: $(date -u)" >> "{case_dir}/report/cli_assessment.md";
+      echo "" >> "{case_dir}/report/cli_assessment.md";
+      echo "## Binary Security" >> "{case_dir}/report/cli_assessment.md";
+      if grep -qi "No RELRO\|No canary\|NX disabled\|No PIE" "{case_dir}/analysis/exploit/checksec.txt" 2>/dev/null; then
+        echo "- **Missing mitigations detected**" >> "{case_dir}/report/cli_assessment.md";
+      fi;
+      GADGETS=$(grep "Total gadgets" "{case_dir}/analysis/exploit/rop_gadgets.txt" 2>/dev/null);
+      echo "- $GADGETS" >> "{case_dir}/report/cli_assessment.md";
+      echo "" >> "{case_dir}/report/cli_assessment.md";
+      echo "## Authentication" >> "{case_dir}/report/cli_assessment.md";
+      wc -l "{case_dir}/analysis/auth/auth_flow.txt" 2>/dev/null | awk '{printf("- Auth flow: %s lines\n", \$1)}' >> "{case_dir}/report/cli_assessment.md";
+      if grep -qi "InsecureSkipVerify" "{case_dir}/analysis/auth/response_injection.txt" 2>/dev/null; then
+        echo "- **TLS verification may be skipped**" >> "{case_dir}/report/cli_assessment.md";
+      fi;
+      echo "" >> "{case_dir}/report/cli_assessment.md";
+      echo "## Plugin Supply Chain" >> "{case_dir}/report/cli_assessment.md";
+      if grep -qi "COMMAND_INJECTION" "{case_dir}/analysis/plugins/supply_chain.txt" 2>/dev/null; then
+        echo "- **Plugin command injection risk**" >> "{case_dir}/report/cli_assessment.md";
+      fi;
+      echo "" >> "{case_dir}/report/cli_assessment.md";
+      echo "## Environment" >> "{case_dir}/report/cli_assessment.md";
+      grep "USES:" "{case_dir}/analysis/env/env_abuse.txt" 2>/dev/null >> "{case_dir}/report/cli_assessment.md";
+      if grep -q "LD_PRELOAD" "{case_dir}/analysis/env/env_abuse.txt" 2>/dev/null; then
+        echo "- **LD_PRELOAD abuse possible**" >> "{case_dir}/report/cli_assessment.md";
+      fi;
+      echo "" >> "{case_dir}/report/cli_assessment.md";
+      echo "## MCP Endpoint" >> "{case_dir}/report/cli_assessment.md";
+      wc -l "{case_dir}/analysis/mcp/mcp_discovery.txt" 2>/dev/null | awk '{printf("- MCP discovery: %s lines\n", \$1)}' >> "{case_dir}/report/cli_assessment.md"
+postflight:
+  - name: cleanup
+    description: "Clean up temporary files"
+    command: rm -f /tmp/strace_*.log 2>/dev/null; echo "Cleanup done" > "{case_dir}/cleanup.txt"

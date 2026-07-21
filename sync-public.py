@@ -54,6 +54,16 @@ SKIP_NAMES = {
 
     # Code with hardcoded environment data (public uses modules/config.py instead)
     "constants.py",
+
+    # Runtime scan/report output files (never sync)
+    "ffuf_output",           # ffuf scan results
+    "gobuster_output",       # gobuster scan results
+    "sqlmap",                # sqlmap output in case dirs
+    "reports",               # Per-case Eng report outputs under web_dashboard/
+
+    # Local analysis artifacts (never sync)
+    "report.json",           # Binary analysis report
+    "reverse_exploit_analyzer.py",   # Per-binary analysis script
 }
 # Files that MUST NOT exist in the public repo — if found, abort
 FILE_BLOCKLIST = frozenset({
@@ -65,6 +75,8 @@ FILE_BLOCKLIST = frozenset({
     "findings.json",      # Case findings DB
     "findings.db",        # Alternative findings storage
     "evidence.db",        # Evidence database
+    "loot.db",            # Loot database
+    "case.json",          # Case metadata (contains client name, targets)
 })
 
 # Files that exist ONLY in public — preserve them
@@ -82,6 +94,8 @@ RENAME = {
 VERBATIM_EXTS = frozenset({
     ".yaml", ".yml", ".json", ".md", ".txt", ".css", ".js", ".html", ".sh",
     ".conf", ".toml", ".cfg", ".ini", ".svg",
+    ".go", ".java", ".ql", ".ps1", ".php", ".py", ".rb", ".rs", ".ts",
+    ".xml", ".xsl", ".xslt", ".lock",
 })
 
 # Environment-specific patterns that trigger a warning
@@ -99,8 +113,8 @@ ENV_PATTERNS = [
     (r"/root/", "Hardcoded /root/ path"),
 ]
 
-IMPORT_RE = re.compile(r"^(from\s+modules)\.constants(\s+import)", re.MULTILINE)
-REL_IMPORT_RE = re.compile(r"^(from\s+\.)constants(\s+import)", re.MULTILINE)
+IMPORT_RE = re.compile(r"^[ \t]*(from\s+modules)\.constants(\s+import)", re.MULTILINE)
+REL_IMPORT_RE = re.compile(r"^[ \t]*(from\s+\.)constants(\s+import)", re.MULTILINE)
 
 
 # -- SAFETY CHECKS ------------------------------------------------------------
@@ -112,20 +126,29 @@ def _safety_scan(path: Path, label: str) -> list[str]:
     for f in path.rglob("*"):
         if not f.is_file():
             continue
+        rel = f.relative_to(path)
+        # Skip .git internals
+        if ".git" in rel.parts:
+            continue
         if f.name in FILE_BLOCKLIST:
             violations.append(f"  BLOCKED: {f.relative_to(path)} ({f.name})")
-        # Check if file is inside a data directory
-        for part in f.relative_to(path).parts:
+        # Flag files inside blocked data directories
+        in_skipped = False
+        for part in rel.parts:
             if part in SKIP_NAMES:
-                break  # already excluded by SKIP_NAMES, skip
+                in_skipped = True
+                violations.append(f"  INSIDE-BLOCKED-DIR: {rel} (under '{part}/')")
+                break
+        if in_skipped:
+            continue
         # Check for JSON files containing case data patterns
         if f.suffix == ".json" and f.stat().st_size > 100:
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
                 if "case_id" in text and ("findings" in text or "evidence" in text or "scope" in text):
-                    violations.append(f"  SUSPECT: {f.relative_to(path)} (contains case data markers)")
-            except Exception:
-                pass
+                    violations.append(f"  SUSPECT: {rel} (contains case data markers)")
+            except Exception as _e:
+                print(f"[sync] Skipping file: {_e}", flush=True)
     return violations
 
 

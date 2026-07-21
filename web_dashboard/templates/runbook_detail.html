@@ -20,6 +20,14 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/runbooks" class="hover:text-gray-300">Runbooks</a>
+  <span>/</span>
+  <span class="text-gray-400">{{ data.name }}</span>
+</nav>
 <div class="flex items-center justify-between mb-6">
     <div class="flex items-center gap-3">
         <i data-lucide="book-open" class="w-6 h-6 text-indigo-400"></i>
@@ -28,31 +36,18 @@
         <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{{ data.version }}</span>
         {% endif %}
     </div>
-    <a href="/runbooks" class="text-gray-400 hover:text-gray-100 text-sm">&larr; All Runbooks</a>
-</div>
+    </div>
 
 {% if data.description %}
 <p class="text-sm text-gray-400 mb-6">{{ data.description }}</p>
 {% endif %}
 
-<!-- Vars -->
-{% if data.vars %}
-<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-6">
-    <h2 class="text-sm font-semibold text-gray-300 mb-2">Variables</h2>
-    <div class="flex flex-wrap gap-2">
-        {% for k, v in data.vars.items() %}
-        <span class="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded"><span class="text-indigo-400">{{ k }}</span> = {{ v }}</span>
-        {% endfor %}
-    </div>
-</div>
-{% endif %}
-
-<!-- Launch Form -->
+<!-- Launch Form (with editable vars) -->
 <div class="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4 mb-6">
     <h2 class="text-sm font-semibold text-indigo-300 mb-3 flex items-center gap-1">
         <i data-lucide="play" class="w-4 h-4"></i> Launch Runbook
     </h2>
-    <div class="flex gap-3 items-end flex-wrap">
+    <div class="flex gap-3 items-end flex-wrap mb-4">
         <div>
             <label class="text-xs text-gray-500 block mb-1">Target(s)</label>
             <input id="launch-target" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-64" placeholder="target.com or IP">
@@ -63,6 +58,19 @@
         </div>
         <button onclick="launchRunbook()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium">Run</button>
     </div>
+    {% if data.vars %}
+    <details class="text-xs">
+        <summary class="text-indigo-400 cursor-pointer hover:text-indigo-300 select-none">Variables ({{ data.vars|length }})</summary>
+        <div class="flex flex-wrap gap-3 mt-3">
+            {% for k, v in data.vars.items() %}
+            <div>
+                <label class="text-gray-500 block mb-0.5 font-mono">{{ k }}</label>
+                <input id="var-{{ k }}" class="var-input bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 w-48 font-mono" value="{{ v }}" data-varkey="{{ k }}">
+            </div>
+            {% endfor %}
+        </div>
+    </details>
+    {% endif %}
     <div id="launch-status" class="mt-2 text-xs hidden"></div>
 </div>
 
@@ -181,6 +189,11 @@ function launchRunbook() {
     var caseId = document.getElementById('launch-case').value.trim();
     if (!target) { alert('Enter a target'); return; }
 
+    var vars = {};
+    document.querySelectorAll('.var-input').forEach(function(el) {
+        vars[el.getAttribute('data-varkey')] = el.value.trim();
+    });
+
     var btn = document.querySelector('button[onclick="launchRunbook()"]');
     btn.disabled = true;
     btn.textContent = 'Launching...';
@@ -192,7 +205,7 @@ function launchRunbook() {
     fetch('/api/runbook/{{ filename }}/run', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({target: target, case_id: caseId}),
+        body: JSON.stringify({target: target, case_id: caseId, vars: vars}),
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {

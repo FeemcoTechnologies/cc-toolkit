@@ -525,6 +525,60 @@ def _exec_log(step: dict, ctx: RunContext) -> dict:
     return {"log": msg}
 
 
+def _exec_burp(step: dict, ctx: RunContext) -> dict:
+    """Execute a Burp Suite action via REST API. Step params:
+        action: str       — "scan_start" | "scan_status" | "issues_list" | "proxy_history"
+                            | "repeater_send" | "scope_set" | "health"
+        target: str       — URL for scan_start / repeater_send
+        scan_id: str      — scan ID for status / issues
+        scope: [str]      — URL prefixes for scope_set
+        limit: int        — max results for proxy_history/issues (default 50)
+        severity: str     — filter issues by severity
+        host: str         — filter proxy history by host
+    """
+    from .burp_client import BurpClient
+    from .constants import BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
+
+    action = step.get("action", "health")
+    bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY,
+                    proxy_url=BURP_PROXY_URL)
+
+    if action == "health":
+        result = bc.health()
+        return {"rc": 0 if result.get("status") == "ok" else -1, **result}
+
+    elif action == "scan_start":
+        urls = step.get("targets", [ctx.resolve(step.get("target", ""))])
+        if not urls or not urls[0]:
+            return {"error": "No target specified for scan_start", "rc": -1}
+        urls = [urls] if isinstance(urls, str) else urls
+        r = bc.scan_start(urls)
+        return {"rc": 0 if "error" not in r else -1, **r}
+
+    elif action == "scan_status":
+        sid = step.get("scan_id", "")
+        if not sid:
+            return {"error": "No scan_id specified", "rc": -1}
+        r = bc.scan_status(sid)
+        return {"rc": 0 if "error" not in r else -1, **r}
+
+    elif action == "issues_list":
+        sid = step.get("scan_id", ctx.vars.get("burp_scan_id", ""))
+        sev = step.get("severity", "")
+        if not sid:
+            return {"error": "No scan_id specified for issues_list", "rc": -1}
+        r = bc.issues_list(sid, severity=sev)
+        return {"rc": 0, "issues": r, "count": len(r) if isinstance(r, list) else 0}
+
+    elif action == "config_set":
+        cfg = step.get("config", {})
+        r = bc.config_set(cfg)
+        return {"rc": 0 if "error" not in r else -1, **r}
+
+    else:
+        return {"error": f"Unknown burp action: {action}", "rc": -1}
+
+
 def _exec_dns(step: dict, ctx: RunContext) -> dict:
     """Resolve or start monitoring a domain. Step params:
         domain: str    — target domain
@@ -585,7 +639,7 @@ class RunbookEngine:
     # Allowed step types
     STEP_TYPES = {"tool", "parallel", "sequential", "prompt", "conditional",
                   "foreach", "log", "notify", "set", "wait", "runbook", "report",
-                  "dns"}
+                  "dns", "burp"}
 
     def __init__(self, runbook_dir: Optional[Path] = None):
         self.runbook_dir = Path(runbook_dir or PLAYBOOKS_DIR)
@@ -900,6 +954,8 @@ class RunbookEngine:
                 result = _exec_report(step, ctx)
             elif step_type == "log":
                 result = _exec_log(step, ctx)
+            elif step_type == "burp":
+                result = _exec_burp(step, ctx)
             elif step_type == "dns":
                 result = _exec_dns(step, ctx)
             else:

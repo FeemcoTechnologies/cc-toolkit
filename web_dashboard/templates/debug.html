@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Debug Log{% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Debug</span>
+</nav>
 <div class="flex items-center justify-between mb-4">
     <h1 class="text-xl font-semibold flex items-center gap-2">
         <i data-lucide="bug" class="w-5 h-5 text-yellow-400"></i> Debug Log

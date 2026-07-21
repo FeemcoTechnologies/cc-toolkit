@@ -1,0 +1,334 @@
+name: "Linux Package Testing"
+description: >
+  Static and simulated testing of Linux software packages: DEB (.deb),
+  RPM (.rpm), AppImage, Flatpak, Snap, and shell script-based installers.
+  Covers package extraction, metadata analysis, contained ELF binary audit,
+  maintainer script inspection, dependency review, repository origin checks,
+  and malware/risk indicator scanning.
+version: "1.0"
+
+vars:
+  package_path: ""
+  case_dir: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Linux package analysis — {package_path} (case: {case_id})"
+
+steps:
+  # ─────────────────────────────────────────────
+  # Phase 1: File identification
+  # ─────────────────────────────────────────────
+  - id: file_id
+    name: "File identification"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: file_type
+        name: "File type identification"
+        tool: file
+        args: ["{package_path}"]
+        timeout: 30
+        save: "{case_dir}/filetype.txt"
+
+      - id: checksums
+        name: "Checksums"
+        tool: python3
+        args: ["-c", "import hashlib,sys; d=open(sys.argv[1],'rb').read(); print(f'MD5: {hashlib.md5(d).hexdigest()}\\nSHA1: {hashlib.sha1(d).hexdigest()}\\nSHA256: {hashlib.sha256(d).hexdigest()}\\nSize: {len(d)} bytes')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/checksums.txt"
+
+      - id: entropy
+        name: "File entropy"
+        tool: python3
+        args: ["-c", "import sys,math; d=open(sys.argv[1],'rb').read(); freq=[0]*256; [freq.__setitem__(b,freq[b]+1) for b in d]; ent=-sum((c/len(d))*math.log2(c/len(d)) for c in freq if c); print(f'File entropy: {ent:.4f} / 8.0'); print('High entropy > 7.8 suggests compressed/packed payload')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/entropy.txt"
+
+      - id: strings_suspicious
+        name: "Suspicious string grep"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); patterns=['/etc/passwd','/etc/shadow','/etc/sudoers','chmod 777','chmod +s','setuid','setgid','SUID','useradd','usermod','groupadd','wget ','curl ','/dev/tcp','bash -c','python3 -c','perl -e','base64 -d','openssl enc','mkfifo','/tmp/','/dev/shm/','LD_PRELOAD','LD_LIBRARY_PATH','ptrace','prctl','sys_call','init_module','delete_module','reboot','shutdown','poweroff']; found=[(p,d.count(p)) for p in patterns if p.lower() in d.lower()]; [print(f'{f}: {cnt}') for f,cnt in sorted(found,key=lambda x:-x[1])]",
+               "{case_dir}/strings_all.txt"]
+        condition:
+          ref: strings_all
+          expected: ""
+          negate: true
+        timeout: 30
+        save: "{case_dir}/suspicious_strings.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 2: DEB package analysis
+  # ─────────────────────────────────────────────
+  - id: deb_analysis
+    name: "DEB package analysis"
+    type: sequential
+    steps:
+      - id: deb_info
+        name: "DEB metadata extraction"
+        condition:
+          ref: file_type
+          expected: "Debian"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]; os.makedirs(d+'/deb_extract',exist_ok=True); # try dpkg-deb; r=sp.run(['dpkg-deb','--info',p],capture_output=True,timeout=30); print('=== DEB Info ==='); print(r.stdout.decode()[:2000]); # extract; sp.run(['dpkg-deb','--extract',p,d+'/deb_extract'],capture_output=True,timeout=60); print('\\nExtracted to: '+d+'/deb_extract'); # list contents; r2=sp.run(['dpkg-deb','--contents',p],capture_output=True,timeout=30); print('\\n=== Contents ==='); print(r2.stdout.decode()[:2000])",
+               "{package_path}", "{case_dir}"]
+        timeout: 120
+        save: "{case_dir}/deb_info.txt"
+        artifacts: ["{case_dir}/deb_extract"]
+
+      - id: deb_control
+        name: "DEB control file analysis"
+        condition:
+          ref: file_type
+          expected: "Debian"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['dpkg-deb','--field',p],capture_output=True,timeout=30); out=r.stdout.decode(); print(out[:2000]); # check for suspicious fields; if 'Pre-Depends' in out: print('\\n[!] Has Pre-Depends (runs before dpkg setup)'); if 'Breaks' in out: print('[!] Has Breaks field'); if 'Conflicts' in out: print('[!] Has Conflicts'); if 'Essential' in out and 'yes' in out: print('[!] Package marked Essential')",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/deb_control.txt"
+
+      - id: deb_scripts
+        name: "DEB maintainer script inspection"
+        condition:
+          ref: file_type
+          expected: "Debian"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os,glob; p=sys.argv[1]; d=sys.argv[2]+'/deb_extract/DEBIAN'; # extract control tarball; sp.run(['dpkg-deb','--control',p,sys.argv[2]+'/deb_control_dir'],capture_output=True,timeout=30); cd=sys.argv[2]+'/deb_control_dir'; scripts=glob.glob(cd+'/*') if os.path.exists(cd) else []; scripts+=glob.glob(d+'/*') if os.path.exists(d) else []; print(f'Maintainer scripts: {[os.path.basename(s) for s in scripts]}'); sus_keywords=['/etc/passwd','/etc/shadow','chmod 777','chmod +s','setuid','useradd','usermod','wget','curl','/tmp','base64','perl -e','python3 -c','bash -c','mkfifo','ncat','nc -e','LD_PRELOAD']; for s in scripts: content=open(s,'r',errors='ignore').read(); print(f'\\n=== {os.path.basename(s)} ==='); [print(f'  [!] {k} found') for k in sus_keywords if k in content.lower()]; print(content[:1000])",
+               "{package_path}", "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/deb_scripts.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 3: RPM package analysis
+  # ─────────────────────────────────────────────
+  - id: rpm_analysis
+    name: "RPM package analysis"
+    type: sequential
+    steps:
+      - id: rpm_info
+        name: "RPM metadata extraction"
+        condition:
+          ref: file_type
+          expected: "RPM"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]; # query metadata; r=sp.run(['rpm','-qip',p],capture_output=True,timeout=30); print('=== RPM Info ==='); print(r.stdout.decode()[:2000]); # list files; r2=sp.run(['rpm','-qlp',p],capture_output=True,timeout=30); print('\\n=== File list ==='); print(r2.stdout.decode()[:2000])",
+               "{package_path}", "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/rpm_info.txt"
+
+      - id: rpm_extract
+        name: "RPM extraction"
+        condition:
+          ref: file_type
+          expected: "RPM"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]+'/rpm_extract'; os.makedirs(d,exist_ok=True); # use rpm2cpio; r=sp.run(['rpm2cpio',p],capture_output=True,timeout=60); with open(d+'/payload.cpio','wb') as f: f.write(r.stdout); sp.run(['cpio','-idmv'],input=r.stdout,cwd=d,capture_output=True,timeout=60); print(f'Extracted to {d}'); # count; for root,dirs,files in os.walk(d): print(f'  {len(files)} files, {len(dirs)} dirs'); break",
+               "{package_path}", "{case_dir}"]
+        timeout: 120
+        save: "{case_dir}/rpm_extract_status.txt"
+        artifacts: ["{case_dir}/rpm_extract"]
+
+      - id: rpm_scripts
+        name: "RPM scriptlet inspection"
+        condition:
+          ref: file_type
+          expected: "RPM"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; scripts=['%pre','%post','%preun','%postun','%pretrans','%posttrans']; print('=== RPM Scriptlets ==='); for s in scripts: r=sp.run(['rpm','-q','--scripts','--qf','[{%s}]',p] if False else ['rpm','-qp','--scripts',p],capture_output=True,timeout=30); print(r.stdout.decode()[:2000])",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/rpm_scripts.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 4: AppImage analysis
+  # ─────────────────────────────────────────────
+  - id: appimage_analysis
+    name: "AppImage analysis"
+    type: sequential
+    steps:
+      - id: appimage_info
+        name: "AppImage metadata & extraction"
+        condition:
+          ref: file_type
+          expected: "AppImage"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]; os.makedirs(d+'/appimage_extract',exist_ok=True); # make executable; os.chmod(p,0o755); # try --appimage-extract; r=sp.run([p,'--appimage-extract'],cwd=d+'/appimage_extract',capture_output=True,timeout=120); print('STDOUT:',r.stdout.decode(errors='replace')[:500]); print('STDERR:',r.stderr.decode(errors='replace')[:500]); # check for squashfs-root; sfs=d+'/appimage_extract/squashfs-root'; if os.path.exists(sfs): print(f'\\nExtracted to {sfs}'); files=[]; for root,dirs,fs in os.walk(sfs): files.extend(fs); print(f'Total files: {len(files)}'); [print(f'  {f}') for f in files[:30]]; # check .desktop; import glob; ds=glob.glob(sfs+'/*.desktop'); [print(f'\\nDesktop file: {open(ds[0]).read()[:500]}') for ds in ds[:1]]",
+               "{package_path}", "{case_dir}"]
+        timeout: 180
+        save: "{case_dir}/appimage_info.txt"
+        artifacts: ["{case_dir}/appimage_extract"]
+
+      - id: appimage_elfs
+        name: "AppImage contained ELF analysis"
+        condition:
+          ref: file_type
+          expected: "AppImage"
+        tool: python3
+        args: ["-c", "import subprocess as sp,os,glob,sys; d=sys.argv[2]+'/appimage_extract/squashfs-root'; elfs=glob.glob(d+'/**',recursive=True); bins=[f for f in elfs if os.path.isfile(f) and open(f,'rb').read(4)==b'\\x7fELF']; print(f'ELFs found: {len(bins)}'); sus_files=[b for b in bins if '/.hidden' in b.lower() or any(s in os.path.basename(b).lower() for s in ['malware','hack','crack','keygen','payload'])]; [print(f'  [!] Suspicious ELF: {b}') for b in sus_files]; setuid=[b for b in bins if os.stat(b).st_mode & 0o4000]; [print(f'  [!] SUID binary: {b}') for b in setuid]",
+               "{package_path}", "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/appimage_elfs.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 5: Snap & Flatpak analysis
+  # ─────────────────────────────────────────────
+  - id: snap_flatpak
+    name: "Snap & Flatpak analysis"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: snap_analysis
+        name: "Snap package analysis"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; is_snap=open(p,'rb').read(4)==b'\\x7fELF' and b'snap' in open(p,'rb').read(200).lower(); print(f'Snap package: {is_snap}'); if is_snap: r=sp.run(['snap','info',p],capture_output=True,timeout=30); print(r.stdout.decode()[:2000]); r2=sp.run(['unsquashfs','-l',p],capture_output=True,timeout=60); print(r2.stdout.decode()[:2000]); print('Install: sudo snap install --dangerous <file>')",
+               "{package_path}"]
+        timeout: 120
+        save: "{case_dir}/snap_analysis.txt"
+
+      - id: flatpak_analysis
+        name: "Flatpak package analysis"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; is_flatpak=open(p,'rb').read(8)==b'\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00' and p.endswith('.flatpak') or p.endswith('.flatpakref'); print(f'Flatpak: {is_flatpak}'); if is_flatpak: r=sp.run(['flatpak','info',p],capture_output=True,timeout=30); print(r.stdout.decode()[:2000]); r2=sp.run(['flatpak','build-bundle','--show',p],capture_output=True,timeout=30); print(r2.stdout.decode()[:2000]); print('Install: flatpak install --from <file>')",
+               "{package_path}"]
+        timeout: 120
+        save: "{case_dir}/flatpak_analysis.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 6: Contained ELF binary audit
+  # ─────────────────────────────────────────────
+  - id: contained_elf_audit
+    name: "Contained ELF binary audit"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: find_elfs
+        name: "Find all ELF binaries in extracted package"
+        tool: python3
+        args: ["-c", "import os,glob,sys; d=sys.argv[2]; elfs=[]; for ext_dirs in ['/deb_extract','/rpm_extract','/appimage_extract/squashfs-root']: p=d+ext_dirs; if os.path.exists(p): elfs.extend([f for f in glob.glob(p+'/**',recursive=True) if os.path.isfile(f) and open(f,'rb').read(4)==b'\\x7fELF']); print(f'Total ELF files found: {len(elfs)}'); [print(f'  {f}') for f in elfs[:30]]; print(f'And {len(elfs)-30} more...' if len(elfs)>30 else '')",
+               "{package_path}", "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/found_elfs.txt"
+
+      - id: elfs_stripped
+        name: "ELF stripped/not-stripped stats"
+        tool: python3
+        args: ["-c", "import subprocess as sp,os,glob,sys; d=sys.argv[2]; elfs=[]; for ext in ['/deb_extract','/rpm_extract','/appimage_extract/squashfs-root']: p=d+ext; [elfs.append(f) for f in glob.glob(p+'/**',recursive=True) if os.path.isfile(f) and open(f,'rb').read(4)==b'\\x7fELF']; stripped=sum(1 for e in elfs[:50] if sp.run(['file',e],capture_output=True).stdout.count(b'not stripped')==0); print(f'Checked {min(50,len(elfs))} ELFs: {stripped} stripped, {min(50,len(elfs))-stripped} not stripped')",
+               "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/elfs_stripped.txt"
+
+      - id: elfs_suid
+        name: "SUID/SGID binary detection"
+        tool: python3
+        args: ["-c", "import os,glob,sys,stat; d=sys.argv[2]; paths=[]; for ext in ['/deb_extract','/rpm_extract','/appimage_extract/squashfs-root']: p=d+ext; paths.append(p) if os.path.exists(p) else None; suid=[]; for p in paths: [suid.append(f) for f in glob.glob(p+'/**',recursive=True) if os.path.isfile(f) and (os.stat(f).st_mode & (stat.S_ISUID|stat.S_ISGID))]; print(f'SUID/SGID files: {len(suid)}'); [print(f'  [!] {f}') for f in suid]",
+               "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/elfs_suid.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 7: Dependency & origin checks
+  # ─────────────────────────────────────────────
+  - id: dependency_check
+    name: "Dependency & origin checks"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: deb_deps
+        name: "DEB dependency analysis"
+        condition:
+          ref: file_type
+          expected: "Debian"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['dpkg-deb','--field',p,'Depends','Pre-Depends','Recommends','Suggests','Provides','Conflicts','Breaks'],capture_output=True,timeout=30); print(r.stdout.decode()); sus_deps=['malware','trojan','backdoor','crack','keygen']; [print(f'[!] Suspicious dependency: {d}') for d in sus_deps if d in r.stdout.decode().lower()]",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/deb_deps.txt"
+
+      - id: rpm_deps
+        name: "RPM dependency analysis"
+        condition:
+          ref: file_type
+          expected: "RPM"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['rpm','-qp','--requires',p],capture_output=True,timeout=30); print('=== Requires ==='); print(r.stdout.decode()[:1000]); r2=sp.run(['rpm','-qp','--provides',p],capture_output=True,timeout=30); print('\\n=== Provides ==='); print(r2.stdout.decode()[:500])",
+               "{package_path}"]
+        timeout: 30
+        save: "{case_dir}/rpm_deps.txt"
+
+      - id: origin_check
+        name: "Package origin and authenticity"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; print('=== Origin Checks ==='); r=sp.run(['gpg','--verify',p],capture_output=True,timeout=30); gpg_out=r.stderr.decode()+r.stdout.decode(); print(gpg_out[:1000] if 'good signature' in gpg_out.lower() or 'Can\\'t check' in gpg_out else 'No GPG signature or not signed'); # dpkg-sig check; r2=sp.run(['dpkg-sig','--verify',p],capture_output=True,timeout=30); print('dpkg-sig:',r2.stdout.decode()[:500])",
+               "{package_path}"]
+        timeout: 60
+        save: "{case_dir}/origin_check.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 8: YARA & malware scanning
+  # ─────────────────────────────────────────────
+  - id: malware_scan
+    name: "Malware & risk scanning"
+    type: parallel
+    max_workers: 2
+    steps:
+      - id: yara_scan
+        name: "YARA scan"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,glob; p=sys.argv[1]; yara_dirs=['/usr/share/yara-rules','/usr/local/share/yara']; rules=[]; [rules.extend(glob.glob(d+'/*.yar')+glob.glob(d+'/*.yara')) for d in yara_dirs if __import__('os').path.exists(d)]; print(f'Found {len(rules)} YARA rules'); [sp.run(['yara','-w',r,p],capture_output=True,timeout=30) for r in rules[:5]]",
+               "{package_path}"]
+        timeout: 60
+        save: "{case_dir}/yara_scan.txt"
+
+      - id: clamav_scan
+        name: "ClamAV scan"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['clamscan','--stdout','--no-summary',p],capture_output=True,timeout=180); print(r.stdout.decode()[:3000] if r.stdout else 'Clean or ClamAV not available')",
+               "{package_path}"]
+        timeout: 180
+        save: "{case_dir}/clamav_scan.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 9: Report
+  # ─────────────────────────────────────────────
+  - id: report
+    name: "Generate Linux package analysis report"
+    type: report
+    format: markdown
+    title: "Linux Package Analysis — {package_path}"
+    output: "{case_dir}/linux-package-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Package: {package_path}\n- Size: see {case_dir}/checksums.txt\n- Entropy: {case_dir}/entropy.txt\n- Case: {case_id}"
+
+      - heading: "File Identification"
+        body: "- Type: {case_dir}/filetype.txt\n- Suspicious strings: {case_dir}/suspicious_strings.txt"
+
+      - heading: "DEB Analysis"
+        body: "- Package info: {case_dir}/deb_info.txt\n- Control fields: {case_dir}/deb_control.txt\n- Maintainer scripts: {case_dir}/deb_scripts.txt"
+
+      - heading: "RPM Analysis"
+        body: "- Package info: {case_dir}/rpm_info.txt\n- File list: {case_dir}/rpm_extract_status.txt\n- Scriptlets: {case_dir}/rpm_scripts.txt"
+
+      - heading: "AppImage Analysis"
+        body: "- Extraction: {case_dir}/appimage_info.txt\n- Contained ELFs: {case_dir}/appimage_elfs.txt"
+
+      - heading: "Snap & Flatpak"
+        body: "- Snap: {case_dir}/snap_analysis.txt\n- Flatpak: {case_dir}/flatpak_analysis.txt"
+
+      - heading: "Contained ELF Audit"
+        body: "- ELF inventory: {case_dir}/found_elfs.txt\n- Stripped status: {case_dir}/elfs_stripped.txt\n- SUID/SGID: {case_dir}/elfs_suid.txt"
+
+      - heading: "Dependencies & Origin"
+        body: "- DEB deps: {case_dir}/deb_deps.txt\n- RPM deps: {case_dir}/rpm_deps.txt\n- Origin/authenticity: {case_dir}/origin_check.txt"
+
+      - heading: "Malware Detection"
+        body: "- YARA: {case_dir}/yara_scan.txt\n- ClamAV: {case_dir}/clamav_scan.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Linux package analysis complete — {case_dir}/linux-package-report.md"

@@ -144,7 +144,8 @@ class ObsidianBridge:
                         logger.debug("Exception in obsidian_bridge.py", exc_info=True)
             if not data:
                 return None
-        except Exception:
+        except Exception as _e:
+            print(f"[obsidian] {_e}", flush=True)
             return None
 
         findings: Dict[str, List[str]] = {

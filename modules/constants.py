@@ -42,6 +42,11 @@ JUPYTER_PORT = 8888
 CAIDO_HOST = "192.168.56.1"
 CAIDO_PORT = 8080
 
+# Burp Suite Pro REST API (user-configured via env or dashboard settings)
+BURP_API_URL = "http://127.0.0.1:1337"
+BURP_API_KEY = ""  # Set via dashboard /burp/settings or env
+BURP_PROXY_URL = "http://127.0.0.1:4080"
+
 # Report branding
 COMPANY = "Feemco Technologies"
 TESTER = "Jeff Feemster"
@@ -74,6 +79,10 @@ DEFAULT_CONFIG = {
     "dashboard_port": 5000,
     "dashboard_debug": False,
     "dashboard_api_key": "",
+    # Burp Suite Pro
+    "burp_api_url": BURP_API_URL,
+    "burp_api_key": BURP_API_KEY,
+    "burp_proxy_url": BURP_PROXY_URL,
 }
 
 

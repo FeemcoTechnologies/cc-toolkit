@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}CC / Burp Suite{% endblock %}
+{% block head %}
+<style>
+    .stat-card { @apply bg-gray-900 rounded-lg border border-gray-800 p-4; }
+    .stat-label { @apply text-xs text-gray-500 uppercase tracking-wide; }
+    .stat-value { @apply text-2xl font-bold mt-1; }
+    .badge { @apply text-xs px-2 py-0.5 rounded-full font-medium; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="bug" class="w-5 h-5 text-red-400"></i> Burp Suite Pro</h1>
+    <div class="flex gap-2">
+        <a href="/burp/scans" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="list" class="w-3.5 h-3.5"></i> Scans</a>
+        <a href="/burp/settings" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="settings" class="w-3.5 h-3.5"></i> Settings</a>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" id="health-cards">
+    <div class="stat-card"><div class="stat-label">Status</div><div class="stat-value" id="status-val">...</div></div>
+    <div class="stat-card"><div class="stat-label">Burp Version</div><div class="stat-value text-sm" id="version-val">...</div></div>
+    <div class="stat-card"><div class="stat-label">API Version</div><div class="stat-value" id="api-version">...</div></div>
+</div>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+    <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="activity" class="w-4 h-4 text-green-400"></i> Quick Actions</h2>
+    <div class="flex gap-3">
+        <a href="/burp/scans" class="bg-indigo-600 hover:bg-indigo-500 text-xs px-4 py-2 rounded font-medium">Start New Scan</a>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadHealth() {
+    const h = await (await fetch('/api/burp/health')).json();
+    document.getElementById('status-val').textContent = h.connected ? 'Connected' : 'Disconnected';
+    document.getElementById('status-val').className = 'stat-value ' + (h.connected ? 'text-green-400' : 'text-red-400');
+    document.getElementById('version-val').textContent = h.versions?.burpVersion || 'unknown';
+    document.getElementById('api-version').textContent = h.versions?.apiVersion || '?';
+}
+loadHealth();
+setInterval(loadHealth, 15000);
+</script>
+{% endblock %}

@@ -1,0 +1,321 @@
+name: "Android APK Analysis & Testing"
+description: >
+  Static and simulated testing of Android APK packages: file identification,
+  decompilation (apktool, jadx), manifest analysis, permission audit, DEX
+  bytecode review, certificate/signing analysis, obfuscation detection,
+  network security config review, and YARA scanning. Runs entirely from
+  Linux using Android reverse engineering tools.
+version: "1.0"
+
+vars:
+  apk_path: ""
+  case_dir: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Android APK analysis — {apk_path} (case: {case_id})"
+
+steps:
+  # ─────────────────────────────────────────────
+  # Phase 1: File identification & basic info
+  # ─────────────────────────────────────────────
+  - id: file_id
+    name: "File identification & basic info"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: file_type
+        name: "File type identification"
+        tool: file
+        args: ["{apk_path}"]
+        timeout: 30
+        save: "{case_dir}/filetype.txt"
+
+      - id: checksums
+        name: "Checksums (MD5, SHA1, SHA256)"
+        tool: python3
+        args: ["-c", "import hashlib,sys; d=open(sys.argv[1],'rb').read(); print(f'MD5: {hashlib.md5(d).hexdigest()}\\nSHA1: {hashlib.sha1(d).hexdigest()}\\nSHA256: {hashlib.sha256(d).hexdigest()}\\nSize: {len(d)} bytes')",
+               "{apk_path}"]
+        timeout: 30
+        save: "{case_dir}/checksums.txt"
+
+      - id: zip_list
+        name: "APK contents (ZIP listing)"
+        tool: python3
+        args: ["-c", "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); [print(f'{i.filename:60} {i.file_size:>10} {i.compress_size:>10} {i.compress_type}') for i in z.infolist()]",
+               "{apk_path}"]
+        timeout: 30
+        save: "{case_dir}/zip_listing.txt"
+
+      - id: aapt_package
+        name: "AAPT package info"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['aapt','dump','badging',p],capture_output=True,timeout=30); print(r.stdout.decode(errors='replace')[:3000])",
+               "{apk_path}"]
+        timeout: 30
+        save: "{case_dir}/aapt_badging.txt"
+
+      - id: strings_all
+        name: "Strings extraction"
+        tool: strings
+        args: ["{apk_path}", "-n5"]
+        timeout: 120
+        save: "{case_dir}/strings_all.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 2: Decompilation
+  # ─────────────────────────────────────────────
+  - id: decompilation
+    name: "APK decompilation"
+    type: sequential
+    steps:
+      - id: apktool_decompile
+        name: "Apktool decompile (smali)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]+'/apktool_out'; os.makedirs(sys.argv[2],exist_ok=True); r=sp.run(['apktool','d','-f','-o',d,p],capture_output=True,timeout=120); print('STDOUT:',r.stdout.decode(errors='replace')[:500]); print('STDERR:',r.stderr.decode(errors='replace')[:500])",
+               "{apk_path}", "{case_dir}"]
+        timeout: 120
+        save: "{case_dir}/apktool_status.txt"
+        artifacts: ["{case_dir}/apktool_out"]
+
+      - id: jadx_decompile
+        name: "JADX decompile (Java source)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]+'/jadx_out'; r=sp.run(['jadx','-d',d,'--show-bad-code',p],capture_output=True,timeout=120); print(r.stdout.decode(errors='replace')[:500])",
+               "{apk_path}", "{case_dir}"]
+        timeout: 180
+        save: "{case_dir}/jadx_status.txt"
+        artifacts: ["{case_dir}/jadx_out"]
+
+      - id: class_count
+        name: "Count classes and methods"
+        tool: python3
+        args: ["-c", "import subprocess as sp,glob,sys; j_dir=sys.argv[2]+'/jadx_out'; files=glob.glob(j_dir+'/**/*.java',recursive=True); print(f'Java source files: {len(files)}'); smali=glob.glob(sys.argv[2]+'/apktool_out/**/*.smali',recursive=True); print(f'Smali files: {len(smali)}'); [print(f'  {f}') for f in files[:20]]",
+               "{apk_path}", "{case_dir}"]
+        timeout: 30
+        save: "{case_dir}/class_count.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 3: Manifest & permission analysis
+  # ─────────────────────────────────────────────
+  - id: manifest_analysis
+    name: "Manifest & permission analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: manifest_extract
+        name: "Extract & parse AndroidManifest.xml"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,os; p=sys.argv[1]; d=sys.argv[2]; r=sp.run(['apktool','d','-f','-s','-o',d+'/apktool_manifest',p],capture_output=True,timeout=60); m_path=d+'/apktool_manifest/AndroidManifest.xml'; print(open(m_path).read()[:3000] if os.path.exists(m_path) else 'Manifest extraction failed')",
+               "{apk_path}", "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/android_manifest.txt"
+
+      - id: permission_audit
+        name: "Permission audit (dangerous permissions)"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); dangerous=['CAMERA','RECORD_AUDIO','READ_CONTACTS','WRITE_CONTACTS','READ_EXTERNAL_STORAGE','WRITE_EXTERNAL_STORAGE','ACCESS_FINE_LOCATION','ACCESS_COARSE_LOCATION','READ_CALL_LOG','WRITE_CALL_LOG','READ_SMS','RECEIVE_SMS','SEND_SMS','READ_PHONE_STATE','CALL_PHONE','PROCESS_OUTGOING_CALLS','BODY_SENSORS','ACTIVITY_RECOGNITION','INSTALL_PACKAGES','REQUEST_INSTALL_PACKAGES','SYSTEM_ALERT_WINDOW','BIND_ACCESSIBILITY_SERVICE','INTERNET']; print('=== Dangerous/Monitoring Permissions ==='); found=[(p,d.count(p)) for p in dangerous if p in d]; [print(f'  [+] {p} (x{cnt})') for p,cnt in sorted(found,key=lambda x:-x[1])]; print(f'\\nTotal dangerous permissions: {len(found)}'); # flag over-permissioning; critical_perm_count=sum(1 for p,c in found if c>0 and p in ['CAMERA','RECORD_AUDIO','READ_CONTACTS','ACCESS_FINE_LOCATION','BIND_ACCESSIBILITY_SERVICE','INSTALL_PACKAGES']); print(f'High-risk permissions: {critical_perm_count}')",
+               "{case_dir}/android_manifest.txt"]
+        timeout: 30
+        save: "{case_dir}/permission_audit.txt"
+
+      - id: manifest_check
+        name: "Manifest security issues"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); checks={'debuggable=\"true\"':'Debuggable app','allowBackup=\"true\"':'Backup enabled (data extraction risk)','exported=\"true\"':'Exported components (check intent handling)','usesCleartextTraffic=\"true\"':'Cleartext HTTP traffic allowed','android:protectionLevel=\"dangerous\"':'Custom dangerous permission','android:protectionLevel=\"signature\"':'Custom signature permission (locked)','debuggable':'Debuggable flag set','testOnly=\"true\"':'Test-only build'}; print('=== Manifest Security Issues ==='); [print(f'  [!] {v}: found') for k,v in checks.items() if k in d]; protection_strs=['signatureOrSystem','signature','internal']; [print(f'  [i] Custom permission: {l}') for l in protection_strs if l in d.lower()]",
+               "{case_dir}/android_manifest.txt"]
+        timeout: 30
+        save: "{case_dir}/manifest_issues.txt"
+
+      - id: intent_analysis
+        name: "Intent filter analysis"
+        tool: python3
+        args: ["-c", "import sys; d=open(sys.argv[1],'r',errors='ignore').read(); intent_actions={'VIEW':'view','SEND':'send','EDIT':'edit','DIAL':'dial','MAIN':'main','BOOT_COMPLETED':'boot_completed','PACKAGE_ADDED':'package_added','SMS_RECEIVED':'sms_received','CONNECTIVITY_CHANGE':'connectivity_change','BATTERY_LOW':'battery_low','NEW_OUTGOING_CALL':'outgoing_call','USER_PRESENT':'user_present'}; print('=== Intent Filter Actions ==='); [print(f'  [i] ACTION_{k}: triggered on {v}') for k,v in intent_actions.items() if k in d.upper()]; receivers=d.count('<receiver'); services=d.count('<service'); activities=d.count('activity'); print(f'\\nComponents: {activities} activities, {services} services, {receivers} receivers')",
+               "{case_dir}/android_manifest.txt"]
+        timeout: 30
+        save: "{case_dir}/intent_analysis.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 4: Certificate & signing analysis
+  # ─────────────────────────────────────────────
+  - id: cert_analysis
+    name: "Certificate & signing analysis"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: cert_info
+        name: "Certificate info (keytool/jarsigner)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['jarsigner','-verify','-verbose','-certs',p],capture_output=True,timeout=30); print(r.stdout.decode(errors='replace')[:2000]); print('---'); r2=sp.run(['keytool','-printcert','-jarfile',p],capture_output=True,timeout=30); print(r2.stdout.decode(errors='replace')[:2000])",
+               "{apk_path}"]
+        timeout: 60
+        save: "{case_dir}/cert_info.txt"
+
+      - id: apk_signing
+        name: "APK signature scheme detection"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,zipfile; p=sys.argv[1]; z=zipfile.ZipFile(p); has_v1=any('META-INF/' in n and (n.endswith('.SF') or n.endswith('.RSA') or n.endswith('.DSA') or n.endswith('.MF')) for n in z.namelist()); has_v2='APK_SIGNING_BLOCK' in str(p) or any(n.startswith('META-INF/') and 'KEY' in n for n in z.namelist()); # also check for signature block v2 at end of file; d=open(p,'rb').read(); has_v2_block=b'APK Sig Block 42' in d[d.rfind(b'PK'):] if len(d)>22 else False; print(f'V1 signature (JAR): {has_v1}'); print(f'V2 signature (APK Sig Block): {has_v2_block}'); print(f'V3 signature: check APK Signature Scheme v3 in block')",
+               "{apk_path}"]
+        timeout: 30
+        save: "{case_dir}/apk_signing.txt"
+
+      - id: cert_validity
+        name: "Certificate validity check"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['apksigner','verify','--print-certs',p],capture_output=True,timeout=30); out=r.stdout.decode()+r.stderr.decode(); print(out[:2000]); # parse expiry; valid=r.returncode==0; print(f'\\nSignature valid: {valid}')",
+               "{apk_path}"]
+        timeout: 60
+        save: "{case_dir}/cert_validity.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 5: DEX bytecode analysis
+  # ─────────────────────────────────────────────
+  - id: dex_analysis
+    name: "DEX bytecode analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: dexdump_classes
+        name: "DEX class dump"
+        tool: python3
+        args: ["-c", "import subprocess as sp,zipfile,sys,tempfile,os; p=sys.argv[1]; z=zipfile.ZipFile(p); dex_files=[n for n in z.namelist() if n.endswith('.dex')]; print(f'DEX files found: {len(dex_files)}'); [print(f'  {f} ({z.getinfo(f).file_size} bytes)') for f in dex_files]; # dump first DEX class list; if dex_files: z.extract(dex_files[0],sys.argv[2]); r=sp.run(['dexdump','-f',sys.argv[2]+'/'+dex_files[0]],capture_output=True,timeout=30); out=r.stdout.decode(errors='replace'); # extract class names; for line in out.split('\\n'):\n  if 'Class #' in line or 'Class descriptor' in line: print(line)",
+               "{apk_path}", "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/dexdump_classes.txt"
+
+      - id: dexdump_opcodes
+        name: "DEX opcode analysis"
+        tool: python3
+        args: ["-c", "import subprocess as sp,zipfile,sys; p=sys.argv[1]; z=zipfile.ZipFile(p); dex_files=[n for n in z.namelist() if n.endswith('.dex')]; print(f'DEX count: {len(dex_files)}'); # count methods; import os; tmp=sys.argv[2]+'/tmp.dex'; z.extract(dex_files[0],sys.argv[2]); os.rename(sys.argv[2]+'/'+dex_files[0],tmp); r=sp.run(['dexdump',tmp],capture_output=True,timeout=60); out=r.stdout.decode(errors='replace'); methods=out.count('Virtual methods')+out.count('Direct methods'); strings=out.count('String ids'); print(f'Methods: {methods}'); print(f'String references: {strings}'); print(f'Opcode lines: {len(out.split(chr(10)))}')",
+               "{apk_path}", "{case_dir}"]
+        timeout: 120
+        save: "{case_dir}/dex_opcodes.txt"
+
+      - id: smali_review
+        name: "Smali source review (key patterns)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,glob,sys; d=sys.argv[1]+'/apktool_out'; smali_files=glob.glob(d+'/**/*.smali',recursive=True); print(f'Total smali files: {len(smali_files)}'); key_patterns={'const-string':'Hardcoded strings','invoke-virtual':'Virtual method calls','invoke-static':'Static method calls','new-instance':'Object instantiation','sput-object':'Static field writes','iget-object':'Instance field reads','iput-object':'Instance field writes','invoke-direct':'Direct/private method calls','check-cast':'Type checking','instance-of':'Type comparison','const/4':'Small constants','array-length':'Array length'}; matches={}; for f in smali_files[:50]: content=open(f,'r',errors='ignore').read(); [matches.__setitem__(k,matches.get(k,0)+content.count(k)) for k in key_patterns]; print('\\nKey opcode frequencies (sampled):'); [print(f'  {k}: {matches[k]}') for k in sorted(matches,key=matches.get,reverse=True)]",
+               "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/smali_review.txt"
+
+      - id: obfuscation_detect
+        name: "Obfuscation detection"
+        tool: python3
+        args: ["-c", "import subprocess as sp,glob,sys; d=sys.argv[1]+'/jadx_out'; java_files=glob.glob(d+'/**/*.java',recursive=True); print(f'Java files for review: {len(java_files)}'); # obfuscation indicators; obf_indicators={'a.a.a':'ProGuard default (a.a.a)','b.b.b':'ProGuard default (b.b.b)','int a=0;int b=0':'Flow obfuscation','new String[]{':'Array obfuscation'}; java_sample=''; for f in java_files[:30]: java_sample+=open(f,'r',errors='ignore').read()+'\\n'; print('\\n=== Obfuscation Indicators ==='); [print(f'  [!] {v}') for k,v in obf_indicators.items() if k in java_sample]; package_lines=[l for l in java_sample.split('\\n') if l.strip().startswith('package')]; print(f'\\nPackage names (unusual=obfuscated):'); [print(f'  {l.strip()}') for l in package_lines[:10]]",
+               "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/obfuscation_detect.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 6: Security analysis
+  # ─────────────────────────────────────────────
+  - id: security_analysis
+    name: "Application security analysis"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: network_security
+        name: "Network security analysis"
+        tool: python3
+        args: ["-c", "import subprocess as sp,glob,sys; d=sys.argv[1]; res_dir=d+'/apktool_out/res'; xml_files=glob.glob(res_dir+'/**/*.xml',recursive=True); print('=== Network Security Config ==='); ns_xml=glob.glob(res_dir+'/xml/network_security_config.xml',recursive=True); [print(f'Found: {f}') for f in ns_xml]; [print(open(f).read()[:2000]) for f in ns_xml]; # cleartext traffic in manifest; mani=open(d+'/apktool_manifest/AndroidManifest.xml').read() if __import__('os').path.exists(d+'/apktool_manifest/AndroidManifest.xml') else ''; cleartext='usesCleartextTraffic' in mani; print(f'\\nCleartext traffic allowed: {cleartext}'); # check for hardcoded URLs; strings=open(d+'/strings_all.txt','r',errors='ignore').read() if __import__('os').path.exists(d+'/strings_all.txt') else ''; urls=[l for l in strings.split('\\n') if 'http' in l.lower() and ('://' in l)]; print(f'\\nURLs found in strings: {len(urls)}'); [print(f'  {u[:200]}') for u in urls[:15]]",
+               "{case_dir}"]
+        timeout: 30
+        save: "{case_dir}/network_security.txt"
+
+      - id: api_call_analysis
+        name: "Dangerous API call analysis"
+        tool: python3
+        args: ["-c", "import glob,sys; j_dir=sys.argv[1]+'/jadx_out'; files=glob.glob(j_dir+'/**/*.java',recursive=True); dangerous_apis={'Cipher':'Cryptographic operations','getDeviceId':'IMEI/Device ID','getSimSerialNumber':'SIM serial','getSubscriberId':'IMSI','getAccounts':'Account access','getLastKnownLocation':'Location tracking','requestLocationUpdates':'GPS tracking','startActivityForResult':'Intent-based attacks','setJavaScriptEnabled':'WebView JS execution','addJavascriptInterface':'WebView bridge','loadUrlWithInterceptor':'SSL bypass','setAllowFileAccess':'File access via WebView','setAllowFileAccessFromFileURLs':'FileURL access via WebView','getWifiInfo':'WiFi info','getMacAddress':'MAC address','BluetoothAdapter.getRemoteDevice':'Bluetooth scanning','MediaRecorder':'Audio/video capture','Runtime.exec':'OS command execution','ProcessBuilder':'OS process execution','openConnection':'Network connection','setReadable':'File permission changes','setWritable':'File permission changes'}; all_code=''; for f in files[:100]: all_code+=open(f,'r',errors='ignore').read()+'\\n'; print('=== Dangerous API Calls ==='); found=[(api,desc) for api,desc in dangerous_apis.items() if api in all_code]; [print(f'  [!] {api}: {desc}') for api,desc in sorted(found)]; print(f'\\nTotal dangerous APIs: {len(found)}')",
+               "{case_dir}"]
+        timeout: 60
+        save: "{case_dir}/api_call_analysis.txt"
+
+      - id: data_storage
+        name: "Insecure data storage analysis"
+        tool: python3
+        args: ["-c", "import glob,sys; d=sys.argv[1]; strings=open(d+'/strings_all.txt','r',errors='ignore').read() if __import__('os').path.exists(d+'/strings_all.txt') else ''; patterns=['sharedpreferences','SharedPreferences','SQLiteDatabase','openOrCreateDatabase','getExternalStorage','getFilesDir','getCacheDir','FileOutputStream','EncryptedFile','encrypt','MasterKey','AndroidKeyStore']; print('=== Data Storage Analysis ==='); [print(f'  {p}: found') for p in patterns if p.lower() in strings.lower()]; # check for insecure storage; keystore='AndroidKeyStore' in strings; enc='EncryptedFile' in strings or 'encrypt' in strings.lower(); print(f'\\nUses Android KeyStore: {keystore}'); print(f'Uses encryption: {enc}'); print('WARNING: SharedPreferences without encryption is insecure') if not enc else None",
+               "{case_dir}"]
+        timeout: 30
+        save: "{case_dir}/data_storage.txt"
+
+      - id: webview_check
+        name: "WebView security check"
+        tool: python3
+        args: ["-c", "import glob,sys; d=sys.argv[1]; j_dir=d+'/jadx_out'; files=glob.glob(j_dir+'/**/*.java',recursive=True); all_code=''; for f in files[:80]: all_code+=open(f,'r',errors='ignore').read()+'\\n'; checks={'setJavaScriptEnabled(true)':'JS enabled','addJavascriptInterface':'JS bridge (XSS risk)','setAllowFileAccess(true)':'File access','setAllowFileAccessFromFileURLs(true)':'File URL access','setAllowUniversalAccessFromFileURLs(true)':'Universal file access','loadUrl(':'URL loading','loadDataWithBaseURL':'Base URL loading','WebViewClient':'Custom client','shouldOverrideUrlLoading':'URL interception','onReceivedSslError':'SSL error handling','WebChromeClient':'Chrome client','onGeolocationPermissionsShowPrompt':'Geolocation prompt'}; print('=== WebView Security ==='); [print(f'  {v}: found') for k,v in checks.items() if k in all_code]",
+               "{case_dir}"]
+        timeout: 30
+        save: "{case_dir}/webview_check.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 7: Malware & YARA scanning
+  # ─────────────────────────────────────────────
+  - id: malware_scan
+    name: "Malware & risk indicator scanning"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: yara_scan
+        name: "YARA scan (Android/mobile rules)"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys,glob; p=sys.argv[1]; yara_dirs=['/usr/share/yara-rules','/usr/local/share/yara']; rules=[]; [rules.extend(glob.glob(d+'/*andro*')+glob.glob(d+'/*mobile*')+glob.glob(d+'/*malware*')) for d in yara_dirs if __import__('os').path.exists(d)]; print(f'Found {len(rules)} relevant YARA rule files:'); [print(f'  {r}') for r in rules[:10]]; # run yara; for r in rules[:3]: sp.run(['yara',r,p],capture_output=True,timeout=120); print('To scan all: yara -r <rules_dir> {apk_path}')",
+               "{apk_path}"]
+        timeout: 60
+        save: "{case_dir}/yara_scan.txt"
+
+      - id: clamav_scan
+        name: "ClamAV scan"
+        tool: python3
+        args: ["-c", "import subprocess as sp,sys; p=sys.argv[1]; r=sp.run(['clamscan','--stdout','--no-summary',p],capture_output=True,timeout=180); out=r.stdout.decode(); print(out[:3000] if out else 'Clean or ClamAV not available')",
+               "{apk_path}"]
+        timeout: 180
+        save: "{case_dir}/clamav_scan.txt"
+
+      - id: risk_scoring
+        name: "Risk scoring"
+        tool: python3
+        args: ["-c", "import glob,sys; d=sys.argv[1]; triggers=0; findings=[]; # check for key risk factors; manifest=open(d+'/android_manifest.txt').read() if __import__('os').path.exists(d+'/android_manifest.txt') else ''; if 'debuggable' in manifest: triggers+=3; findings.append('Debuggable app (+3)'); if 'allowBackup' in manifest and 'false' not in manifest.split('allowBackup')[1][:10] if 'allowBackup' in manifest else False: triggers+=2; findings.append('Backup enabled (+2)'); if 'cleartext' in manifest: triggers+=2; findings.append('Cleartext traffic (+2)'); api_file=d+'/api_call_analysis.txt'; if __import__('os').path.exists(api_file): api_content=open(api_file).read(); dangerous_apis=api_content.count('!]'); triggers+=dangerous_apis; findings.append(f'{dangerous_apis} dangerous APIs (+{dangerous_apis})'); perm_file=d+'/permission_audit.txt'; if __import__('os').path.exists(perm_file): perm_content=open(perm_file).read(); perms=perm_content.count('[+]'); triggers+=perms; findings.append(f'{perms} dangerous permissions (+{perms})'); print('=== RISK SCORE ==='); print(f'Total score: {triggers}'); [print(f'  {f}') for f in findings]; if triggers<5: print('Risk: LOW'); elif triggers<12: print('Risk: MEDIUM'); elif triggers<25: print('Risk: HIGH'); else: print('Risk: CRITICAL')",
+               "{case_dir}"]
+        timeout: 30
+        save: "{case_dir}/risk_score.txt"
+
+  # ─────────────────────────────────────────────
+  # Phase 8: Report
+  # ─────────────────────────────────────────────
+  - id: report
+    name: "Generate APK analysis report"
+    type: report
+    format: markdown
+    title: "Android APK Analysis — {apk_path}"
+    output: "{case_dir}/apk-analysis-report.md"
+    sections:
+      - heading: "Target"
+        body: "- APK: {apk_path}\n- Size: see {case_dir}/checksums.txt\n- Case: {case_id}"
+
+      - heading: "Package Info"
+        body: "- Type: {case_dir}/filetype.txt\n- ZIP contents: {case_dir}/zip_listing.txt\n- AAPT details: {case_dir}/aapt_badging.txt\n- Strings: {case_dir}/strings_all.txt"
+
+      - heading: "Decompilation"
+        body: "- Apktool output: {case_dir}/apktool_status.txt\n- JADX output: {case_dir}/jadx_status.txt\n- Classes & methods: {case_dir}/class_count.txt"
+
+      - heading: "Manifest & Permissions"
+        body: "- Manifest: {case_dir}/android_manifest.txt\n- Permission audit: {case_dir}/permission_audit.txt\n- Security issues: {case_dir}/manifest_issues.txt\n- Intents: {case_dir}/intent_analysis.txt"
+
+      - heading: "Certificate & Signing"
+        body: "- Certificate info: {case_dir}/cert_info.txt\n- Signing scheme: {case_dir}/apk_signing.txt\n- Validity: {case_dir}/cert_validity.txt"
+
+      - heading: "DEX Bytecode"
+        body: "- Classes: {case_dir}/dexdump_classes.txt\n- Opcodes: {case_dir}/dex_opcodes.txt\n- Smali review: {case_dir}/smali_review.txt\n- Obfuscation: {case_dir}/obfuscation_detect.txt"
+
+      - heading: "Security Analysis"
+        body: "- Network security: {case_dir}/network_security.txt\n- Dangerous APIs: {case_dir}/api_call_analysis.txt\n- Data storage: {case_dir}/data_storage.txt\n- WebView: {case_dir}/webview_check.txt"
+
+      - heading: "Malware Detection"
+        body: "- YARA: {case_dir}/yara_scan.txt\n- ClamAV: {case_dir}/clamav_scan.txt\n- Risk scoring: {case_dir}/risk_score.txt"
+
+postflight:
+  - id: done
+    type: notify
+    level: success
+    message: "Android APK analysis complete — {case_dir}/apk-analysis-report.md"

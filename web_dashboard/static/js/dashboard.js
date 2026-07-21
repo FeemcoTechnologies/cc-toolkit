@@ -75,6 +75,12 @@ function buildWidgetContent(w) {
         case 'finding-trend':
             html += buildFindingTrend();
             break;
+        case 'recent-activity':
+            html += buildRecentActivity();
+            break;
+        case 'recent-loot':
+            html += '<div id="loot-placeholder" class="text-gray-500 text-sm text-center py-4"><i data-lucide="loader" class="w-5 h-5 mx-auto mb-2 animate-spin"></i><p>Loading loot...</p></div>';
+            break;
         default:
             html += '<p class="text-gray-500 text-sm">Unknown widget</p>';
     }
@@ -87,6 +93,7 @@ function renderWidgetContent(w) {
         case 'severity-chart': renderSeverityChart(); break;
         case 'status-chart': renderStatusChart(); break;
         case 'top-cves': renderCveChart(); break;
+        case 'recent-loot': renderRecentLoot(); break;
     }
 }
 
@@ -180,6 +187,57 @@ function buildFindingTrend() {
     return '<div id="trend-placeholder" class="text-gray-500 text-sm text-center py-4">' +
         '<i data-lucide="bar-chart-3" class="w-8 h-8 mx-auto mb-2 opacity-40"></i>' +
         '<p>Enable this widget to track findings over time</p></div>';
+}
+
+function buildRecentActivity() {
+    var activity = dashboardState.stats.recent_activity;
+    if (!activity || activity.length === 0) {
+        return '<p class="text-gray-500 text-sm text-center py-4">No recent activity</p>';
+    }
+    var html = '<div class="space-y-1 max-h-72 overflow-y-auto">';
+    activity.forEach(function(a) {
+        var icon = a.type === 'finding' ? 'search' : 'folder';
+        var color = a.type === 'finding' ? 'text-indigo-400' : 'text-blue-400';
+        html += '<div class="flex items-start gap-2 py-1.5 border-b border-gray-800/50 last:border-0">' +
+            '<i data-lucide="' + icon + '" class="w-3.5 h-3.5 mt-0.5 ' + color + ' shrink-0"></i>' +
+            '<div class="flex-1 min-w-0">' +
+            '<div class="text-xs text-gray-300 truncate">' + escapeHtml(a.detail || '') + '</div>' +
+            '<div class="text-[10px] text-gray-600">' + escapeHtml(a.client || '') + ' ' + (a.ts ? new Date(a.ts).toLocaleString() : '') + '</div>' +
+            '</div>' +
+            (a.severity ? '<span class="text-[10px] px-1 py-0.5 rounded ' +
+                ({critical:'bg-red-900/40 text-red-300', high:'bg-orange-900/40 text-orange-300', medium:'bg-yellow-900/40 text-yellow-300', low:'bg-blue-900/40 text-blue-300'}[a.severity] || 'bg-gray-800 text-gray-400') + '">' + a.severity + '</span>' : '') +
+            '</div>';
+    });
+    html += '</div>';
+    return html;
+}
+
+function renderRecentLoot() {
+    var container = document.getElementById('loot-placeholder');
+    if (!container) return;
+    fetch('/api/loot').then(function(r) { return r.json(); }).then(function(data) {
+        var creds = data.credentials || [];
+        if (!creds.length) {
+            container.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">No loot yet</p>';
+            return;
+        }
+        var html = '<div class="space-y-1 max-h-72 overflow-y-auto">';
+        creds.slice(0, 15).forEach(function(c) {
+            html += '<div class="flex items-center gap-2 py-1.5 border-b border-gray-800/50 last:border-0 text-xs">' +
+                '<i data-lucide="key" class="w-3.5 h-3.5 text-amber-400 shrink-0"></i>' +
+                '<span class="text-gray-300 truncate max-w-[120px]">' + escapeHtml(c.username || '?') + '</span>' +
+                '<span class="text-gray-600">@</span>' +
+                '<span class="text-gray-400 truncate max-w-[160px]">' + escapeHtml(c.target || '?') + '</span>' +
+                (c.protocol ? '<span class="text-[10px] bg-gray-800 text-gray-500 px-1 rounded">' + escapeHtml(c.protocol) + '</span>' : '') +
+                '<span class="text-[10px] text-gray-600 ml-auto">' + (c.discovered ? new Date(c.discovered).toLocaleDateString() : '') + '</span>' +
+                '</div>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+        if (window.lucide) lucide.createIcons();
+    }).catch(function() {
+        container.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">Failed to load loot</p>';
+    });
 }
 
 /* Chart rendering */

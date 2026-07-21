@@ -15,6 +15,12 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">DNS Monitor</span>
+</nav>
 <div class="max-w-6xl mx-auto">
     <h1 class="text-xl font-bold mb-1 text-indigo-400">DNS Monitor</h1>
     <p class="text-gray-500 text-sm mb-4">One-shot resolution + persistent change tracking</p>
@@ -94,7 +100,7 @@ function escapeHtml(s) {
 
 async function api(url, opts) {
     const r = await fetch(url, opts);
-    if (!r.ok) { alert(`Error: ${r.status}`); return null; }
+    if (!r.ok) { toast('API Error: ' + r.status, false); return null; }
     try { return await r.json(); } catch(e) { return null; }
 }
 
@@ -120,17 +126,28 @@ async function doResolve() {
 
 async function addMonitor() {
     const domain = document.getElementById('mon-domain').value.trim();
-    if (!domain) { alert('Enter a domain'); return; }
+    if (!domain) { toast('Enter a domain', false); return; }
     const types = document.getElementById('mon-types').value;
     const interval = parseInt(document.getElementById('mon-interval').value) || 300;
-    const r = await api('/api/dns/monitor', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({domain, types: types.split(','), interval})
-    });
-    if (r && r.status === 'started') {
-        document.getElementById('mon-domain').value = '';
-        loadMonitors();
+    const btn = document.querySelector('button[onclick="addMonitor()"]');
+    btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i> Starting...'; lucide.createIcons();
+    try {
+        const r = await fetch('/api/dns/monitor', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({domain, types: types.split(','), interval})
+        });
+        if (!r.ok) { toast('Failed to start monitor (HTTP ' + r.status + ')', false); return; }
+        const result = await r.json();
+        if (result && result.status === 'started') {
+            document.getElementById('mon-domain').value = '';
+            toast('Monitor started for ' + domain, true);
+            loadMonitors();
+        }
+    } catch(e) {
+        toast('Error: ' + e.message, false);
+    } finally {
+        btn.disabled = false; btn.textContent = 'Start Monitoring';
     }
 }
 

@@ -1,0 +1,4 @@
+name: custom-security-queries/go
+version: 1.0.0
+dependencies:
+  codeql/go-all: ^7.2.0

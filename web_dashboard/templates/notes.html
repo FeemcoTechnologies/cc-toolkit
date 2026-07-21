@@ -1,12 +1,18 @@
 {% extends "base.html" %}
 {% block title %}{{ case.case_id }} / Notes{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-4">
-    <div>
-        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</a>
-        <h1 class="text-xl font-semibold mt-1">Notes</h1>
-    </div>
-</div>
+{% set active_section = 'notes' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Notes</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+<h1 class="text-xl font-semibold mb-4">Notes</h1>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
     <div class="lg:col-span-2">
@@ -23,10 +29,13 @@
         </div>
     </div>
 </div>
+</div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+function escapeHtml(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 async function loadNotes() {
     const el = document.getElementById('notes-list');
     try {
@@ -51,16 +60,28 @@ async function loadNotes() {
 async function addNote() {
     const body = document.getElementById('note-body');
     const tagsInput = document.getElementById('note-tags');
-    if (!body.value.trim()) return;
     const tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
-    await fetch('/api/case/{{ case.case_id }}/notes', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({body: body.value, tags})
-    });
-    body.value = '';
-    tagsInput.value = '';
-    loadNotes();
+    const btn = document.querySelector('button[onclick="addNote()"]');
+    if (!body.value.trim()) return;
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i> Saving...';
+    lucide.createIcons();
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/notes', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({body: body.value, tags})
+        });
+        if (!r.ok) { alert('Save failed (HTTP ' + r.status + ')'); return; }
+        body.value = '';
+        tagsInput.value = '';
+        loadNotes();
+    } catch (e) {
+        alert('Error saving note: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save Note';
+    }
 }
 loadNotes();
 </script>

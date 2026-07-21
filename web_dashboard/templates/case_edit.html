@@ -1,14 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Edit {{ case.case_id }}{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6">
-    <div class="flex items-center gap-3">
-        <i data-lucide="edit" class="w-6 h-6 text-indigo-400"></i>
-        <h1 class="text-xl font-semibold">Edit {{ case.case_id }}</h1>
-        <span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">{{ case.type }}</span>
-    </div>
-    <a href="/case/{{ case.case_id }}" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">&larr; Back to Dashboard</a>
-</div>
+{% set active_section = 'edit' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Settings</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+<h1 class="text-xl font-semibold mb-4">Edit {{ case.case_id }}</h1>
 
 <form id="case-edit-form" class="space-y-6" onsubmit="saveMeta(); return false">
     <!-- Status -->
@@ -79,6 +83,8 @@
         <a href="/case/{{ case.case_id }}" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm">Cancel</a>
     </div>
 </form>
+</div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>

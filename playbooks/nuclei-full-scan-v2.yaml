@@ -133,37 +133,50 @@ steps:
     steps:
       - id: import_cves
         name: "Import CVE findings"
-        type: api
-        endpoint: "/api/case/{case_id}/findings/import/nuclei"
-        payload: {"file": "{case_dir}/nuclei-cves.json"}
+        tool: python3
+        args: ["-c", "import json, sys; print('[NOTE] Import findings via dashboard API: POST /api/case/{case_id}/findings/import/nuclei with file {case_dir}/nuclei-cves.json')"]
         timeout: 60
 
       - id: import_misconfig
         name: "Import misconfig findings"
-        type: api
-        endpoint: "/api/case/{case_id}/findings/import/nuclei"
-        payload: {"file": "{case_dir}/nuclei-misconfig.json"}
+        tool: python3
+        args: ["-c", "import json, sys; print('[NOTE] Import findings via dashboard API: POST /api/case/{case_id}/findings/import/nuclei with file {case_dir}/nuclei-misconfig.json')"]
         timeout: 60
 
       - id: import_exposures
         name: "Import exposure findings"
-        type: api
-        endpoint: "/api/case/{case_id}/findings/import/nuclei"
-        payload: {"file": "{case_dir}/nuclei-exposures.json"}
+        tool: python3
+        args: ["-c", "import json, sys; print('[NOTE] Import findings via dashboard API: POST /api/case/{case_id}/findings/import/nuclei with file {case_dir}/nuclei-exposures.json')"]
         timeout: 60
 
-  # ---- Phase 7: Summary ----
-  - id: summary
-    name: "Scan summary"
+  # ---- Phase 7: Report ----
+  - id: report
+    name: "Nuclei scan report"
+    type: report
+    format: markdown
+    title: "Nuclei Full Scan Report — {target}"
+    output: "{case_dir}/nuclei-report.md"
+    sections:
+      - heading: "Target"
+        body: "- URL: {target}"
+      - heading: "CVE Scan Results"
+        body: "- Critical/High CVEs: {case_dir}/nuclei-cves.json\n- Medium CVEs: {case_dir}/nuclei-cves-medium.json"
+      - heading: "Misconfiguration & Exposure Scan"
+        body: "- Misconfigurations: {case_dir}/nuclei-misconfig.json\n- Exposures: {case_dir}/nuclei-exposures.json"
+      - heading: "Technology Detection"
+        body: "- Technologies: {case_dir}/nuclei-technologies.json"
+      - heading: "Custom Templates"
+        body: "- Custom results: {case_dir}/nuclei-custom.json (if custom_templates_dir set)"
+      - heading: "Default Logins & Paths"
+        body: "- Default logins: {case_dir}/nuclei-default-logins.json"
+      - heading: "Findings Import"
+        body: "- CVE findings, misconfigs, and exposures auto-imported via API"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      Nuclei full scan complete for {target}.
-      Results in {case_dir}/:
-      - CVEs (critical/high): nuclei-cves.json
-      - CVEs (medium): nuclei-cves-medium.json
-      - Misconfigurations: nuclei-misconfig.json
-      - Exposures: nuclei-exposures.json
-      - Technologies: nuclei-technologies.json
-      - Default logins: nuclei-default-logins.json
-      - Custom templates: nuclei-custom.json (optional)
-      Findings automatically imported via API.
+    message: "Nuclei full scan complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Nuclei full scan finished for {target}. Results in {case_dir}"

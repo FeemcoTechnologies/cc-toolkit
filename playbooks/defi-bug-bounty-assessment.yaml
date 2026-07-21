@@ -1,0 +1,399 @@
+name: "DeFi Bug Bounty Assessment"
+description: >
+  Comprehensive DeFi protocol bug bounty assessment covering both web and smart
+  contract attack surfaces. Covers: subdomain reconnaissance and technology
+  stack mapping, API architecture discovery (REST, CLOB, WebSocket, relayer),
+  authentication flow analysis (wallet connect, Magic.link, OAuth), CORS
+  misconfiguration testing, CSP evaluation and bypass surface analysis, smart
+  contract interface mapping (Gamma/CLOB/data APIs), subdomain takeover
+  assessment (wallet-connect interaction in scope), cloud storage bucket
+  enumeration, JS bundle reverse engineering for hidden API endpoints, and
+  attack surface prioritization for bounty submission.
+version: "2.0"
+target_required: true
+
+vars:
+  scope_domains: "*.{target}"
+  subfinder_threads: "50"
+  httpx_threads: "50"
+
+preflight:
+  - id: preamble
+    type: log
+    message: "DeFi bug bounty assessment starting — target: {target}, case: {case_id}"
+
+steps:
+  # Phase 1: Reconnaissance & technology mapping
+  - id: recon_mapping
+    name: "Subdomain recon & technology mapping"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: subfinder_all
+        name: "Full passive subdomain enumeration"
+        tool: subfinder
+        args:
+          - "-d"
+          - "{target}"
+          - "-all"
+          - "-silent"
+          - "-recursive"
+          - "-o"
+          - "{case_dir}/subdomains.txt"
+          - "-t"
+          - "{subfinder_threads}"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/subdomains.txt"
+
+      - id: gau_collect
+        name: "Collect historical URLs"
+        tool: bash
+        args:
+          - "-c"
+          - "gau '{target}' --subs --blacklist png,jpg,gif,jpeg,swf,woff,svg,pdf,css,ico 2>/dev/null | sort -u > {case_dir}/gau-urls.txt"
+        timeout: 120
+        artifacts:
+          - "{case_dir}/gau-urls.txt"
+
+      - id: dns_record_check
+        name: "DNS record audit (TXT, MX, CNAME)"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== DNS Records for {target} ===" > {case_dir}/dns-records.txt;
+            for type in A AAAA CNAME MX TXT NS SOA; do
+              echo "--- $type ---" >> {case_dir}/dns-records.txt;
+              dig +short {target} $type 2>/dev/null >> {case_dir}/dns-records.txt;
+              echo "" >> {case_dir}/dns-records.txt;
+            done;
+            echo "=== WalletConnect DNS Verification ===" >> {case_dir}/dns-records.txt;
+            dig +short txt _walletconnect.{target} 2>/dev/null >> {case_dir}/dns-records.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/dns-records.txt"
+
+  # Phase 2: Live host probing & categorization
+  - id: live_probe
+    name: "HTTP probing & host categorization"
+    type: sequential
+    steps:
+      - id: httpx_probe
+        name: "Probe all discovered subdomains"
+        tool: httpx
+        args:
+          - "-l"
+          - "{case_dir}/subdomains.txt"
+          - "-silent"
+          - "-sc"
+          - "-cl"
+          - "-title"
+          - "-web-server"
+          - "-tech-detect"
+          - "-follow-redirects"
+          - "-threads"
+          - "{httpx_threads}"
+          - "-o"
+          - "{case_dir}/httpx-probed.txt"
+        timeout: 300
+        artifacts:
+          - "{case_dir}/httpx-probed.txt"
+
+      - id: classify_hosts
+        name: "Classify by API vs UI vs infrastructure"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Classification ===" > {case_dir}/host-classification.txt;
+            echo "--- API endpoints ---" >> {case_dir}/host-classification.txt;
+            grep -iE '(api|clob|gamma|data|bridge|relay)' {case_dir}/httpx-probed.txt 2>/dev/null >> {case_dir}/host-classification.txt;
+            echo "" >> {case_dir}/host-classification.txt;
+            echo "--- Docs/Status ---" >> {case_dir}/host-classification.txt;
+            grep -iE '(docs|help|status|support)' {case_dir}/httpx-probed.txt 2>/dev/null >> {case_dir}/host-classification.txt;
+            echo "" >> {case_dir}/host-classification.txt;
+            echo "--- Auth/Wallet ---" >> {case_dir}/host-classification.txt;
+            grep -iE '(auth|login|wallet|sign|connect)' {case_dir}/httpx-probed.txt 2>/dev/null >> {case_dir}/host-classification.txt;
+            echo "" >> {case_dir}/host-classification.txt;
+            echo "--- Main / Product ---" >> {case_dir}/host-classification.txt;
+            grep -iE '(^www\.|^app\.|^[^.]+\.[^.]+$)' {case_dir}/httpx-probed.txt 2>/dev/null >> {case_dir}/host-classification.txt
+        timeout: 30
+        artifacts:
+          - "{case_dir}/host-classification.txt"
+
+  # Phase 3: Web & API security checks
+  - id: web_api_checks
+    name: "Web & API security checks"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: cors_test
+        name: "CORS misconfiguration testing on all live hosts"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for url in $(awk '{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null); do
+              echo "=== $url ===" >> {case_dir}/cors-misconfig.txt;
+              origin_check=$(curl -sk -H "Origin: https://evil.com" -I "$url" 2>/dev/null | grep -iE '(access-control-allow-origin|access-control-allow-credentials)');
+              echo "$origin_check" >> {case_dir}/cors-misconfig.txt;
+              if echo "$origin_check" | grep -qiE '(\\*|evil)'; then
+                echo "  -> CORS MISCONFIGURATION" >> {case_dir}/cors-misconfig.txt;
+              fi;
+              echo "" >> {case_dir}/cors-misconfig.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/cors-misconfig.txt"
+
+      - id: csp_analysis
+        name: "CSP analysis for bypass potential"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for url in $(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10); do
+              echo "=== $url ==>" >> {case_dir}/csp-analysis.txt;
+              curl -skI "$url" 2>/dev/null | grep -i 'content-security-policy' >> {case_dir}/csp-analysis.txt;
+            done;
+            echo "" >> {case_dir}/csp-analysis.txt;
+            echo "=== CSP bypass surface ===" >> {case_dir}/csp-analysis.txt;
+            echo "Check connect-src for: wildcard domains, CDN URLs, AWS S3 buckets" >> {case_dir}/csp-analysis.txt;
+            echo "Check script-src for: unsafe-inline, unsafe-eval, CDN origins" >> {case_dir}/csp-analysis.txt;
+            echo "Check frame-ancestors for: wallet-connect, chrome-extension origins" >> {case_dir}/csp-analysis.txt
+        timeout: 60
+        artifacts:
+          - "{case_dir}/csp-analysis.txt"
+
+      - id: sri_check
+        name: "Subresource Integrity check"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== SRI Check ===" > {case_dir}/sri-check.txt;
+            for url in $(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10); do
+              echo "--- $url ---" >> {case_dir}/sri-check.txt;
+              html=$(curl -sk "$url" 2>/dev/null);
+              echo "$html" | grep -oP '<script[^>]*src="[^"]+"[^>]*>' | while read script; do
+                if echo "$script" | grep -qv 'integrity='; then
+                  src=$(echo "$script" | grep -oP 'src="([^"]+)"');
+                  echo "  MISSING SRI: $src" >> {case_dir}/sri-check.txt;
+                fi;
+              done;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/sri-check.txt"
+
+      - id: subdomain_takeover_check
+        name: "Subdomain takeover assessment"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Subdomain Takeover Check ===" > {case_dir}/subdomain-takeover.txt;
+            echo "Check for CNAME to unclaimed services:" >> {case_dir}/subdomain-takeover.txt;
+            awk '{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | while read host; do
+              cname=$(dig +short CNAME "$host" 2>/dev/null);
+              if [ -n "$cname" ]; then
+                echo "$host -> $cname" >> {case_dir}/subdomain-takeover.txt;
+                resp=$(curl -sk -o /dev/null -w "%{http_code}" "https://$host" 2>/dev/null);
+                if [ "$resp" = "404" ] || [ "$resp" = "000" ]; then
+                  echo "  POTENTIAL TAKEOVER: CNAME to $cname returns $resp" >> {case_dir}/subdomain-takeover.txt;
+                fi;
+              fi;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/subdomain-takeover.txt"
+
+  # Phase 4: Smart contract & protocol layer
+  - id: protocol_layer
+    name: "Protocol & smart contract surface mapping"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: api_endpoint_mapping
+        name: "Map all public API endpoints"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Public API Map ===" > {case_dir}/api-map.txt;
+            for url in $(grep -iE '(api|clob|gamma|data|bridge)' {case_dir}/httpx-probed.txt 2>/dev/null | awk '{print $1}' | sort -u); do
+              echo "--- $url ---" >> {case_dir}/api-map.txt;
+              for ep in / /health /status /v1 /v2 /docs /swagger /openapi.json /api /sitemap.xml; do
+                resp=$(curl -sk -o /dev/null -w "%{http_code}" "$url$ep" 2>/dev/null);
+                echo "  $ep -> $resp" >> {case_dir}/api-map.txt;
+              done;
+              echo "" >> {case_dir}/api-map.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/api-map.txt"
+
+      - id: websocket_check
+        name: "WebSocket endpoint discovery"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== WebSocket Endpoints ===" > {case_dir}/websocket-endpoints.txt;
+            grep -oiE '(wss?://[a-zA-Z0-9._-]+{target}[^\"'\"'\\s<>\\)]*|ws-live|websocket|/ws|/wss|socket\\.io|/realtime)' {case_dir}/gau-urls.txt 2>/dev/null | sort -u >> {case_dir}/websocket-endpoints.txt;
+            echo "" >> {case_dir}/websocket-endpoints.txt;
+            for url in $(awk '{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10); do
+              echo "Testing WS upgrade: $url" >> {case_dir}/websocket-endpoints.txt;
+              curl -sk -H "Upgrade: websocket" -H "Connection: Upgrade" "$url" -o /dev/null -w "  HTTP: %{http_code}\n" 2>/dev/null >> {case_dir}/websocket-endpoints.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/websocket-endpoints.txt"
+
+      - id: docs_sitemap_analysis
+        name: "Documentation & sitemap for full API surface"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            DOCS=$(grep -iE '(docs|help)' {case_dir}/httpx-probed.txt 2>/dev/null | awk '/200 OK/{print $1}' | head -1);
+            if [ -n "$DOCS" ]; then
+              echo "=== Docs Sitemap ===" > {case_dir}/docs-sitemap.txt;
+              curl -sk "$DOCS/sitemap.xml" 2>/dev/null | grep -oP '<loc>[^<]+</loc>' | sed 's/<loc>//;s/<\\/loc>//' | head -200 >> {case_dir}/docs-sitemap.txt;
+              echo "" >> {case_dir}/docs-sitemap.txt;
+              echo "API doc pages found: $(wc -l < {case_dir}/docs-sitemap.txt)" >> {case_dir}/docs-sitemap.txt;
+              echo "Categories: $(grep -oiE '(api|bridge|auth|market|order|trade|position|liquid|oracle|swap|pool|stake|farm)' {case_dir}/docs-sitemap.txt | sort -u)" >> {case_dir}/docs-sitemap.txt;
+            fi
+        timeout: 60
+        artifacts:
+          - "{case_dir}/docs-sitemap.txt"
+
+  # Phase 5: JS bundle & infrastructure deep dive
+  - id: deep_dive
+    name: "JS analysis & infrastructure audit"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: js_endpoint_extraction
+        name: "Extract hidden API endpoints from JS"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            for url in $(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -5); do
+              echo "=== $url ===" >> {case_dir}/js-hidden-apis.txt;
+              JS_URLS=$(curl -sk "$url" 2>/dev/null | grep -oiE '(src|href)=\"[^\"]+\\.js[^\"]*\"' | grep -oP 'https?://[^\"]+' | sort -u);
+              for js in $JS_URLS; do
+                content=$(curl -sk "$js" 2>/dev/null);
+                endpoints=$(echo "$content" | grep -oiE '(\"/(api|v[0-9]+|event|user|admin|order|trade|market|pool|swap|stake|bridge|claim|referral|reward)/[a-zA-Z0-9_/_-]+)' | sort -u | head -50);
+                if [ -n "$endpoints" ]; then
+                  echo "--- JS: $(basename $js) ---" >> {case_dir}/js-hidden-apis.txt;
+                  echo "$endpoints" >> {case_dir}/js-hidden-apis.txt;
+                fi;
+              done;
+            done
+        timeout: 180
+        artifacts:
+          - "{case_dir}/js-hidden-apis.txt"
+
+      - id: cloud_storage_enum
+        name: "Cloud storage & CDN enumeration"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Cloud Storage Discovery ===" > {case_dir}/cloud-assets.txt;
+            for url in $(awk '/200 OK/{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -10); do
+              html=$(curl -sk "$url" 2>/dev/null);
+              echo "$html" | grep -oiE '(s3\\.amazonaws\\.com|[a-zA-Z0-9_-]+\\.s3\\.|cloud-object-storage|blob\\.core\\.windows\\.net|storage\\.googleapis\\.com|b-cdn\\.net|cloudfront\\.net|digitaloceanspaces\\.com)' | sort -u >> {case_dir}/cloud-assets.txt;
+            done;
+            echo "" >> {case_dir}/cloud-assets.txt;
+            S3_BUCKETS=$(awk '{print $1}' {case_dir}/cloud-assets.txt 2>/dev/null | grep -oE '[a-zA-Z0-9_-]+\\.[a-z]+' | sort -u);
+            for bucket in $S3_BUCKETS; do
+              echo "Testing: $bucket" >> {case_dir}/cloud-assets.txt;
+              curl -sk "https://$bucket" -o /dev/null -w "  HTTP: %{http_code} Size: %{size_download}\n" 2>/dev/null >> {case_dir}/cloud-assets.txt;
+            done
+        timeout: 120
+        artifacts:
+          - "{case_dir}/cloud-assets.txt"
+
+      - id: security_headers
+        name: "Security headers audit"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Security Headers ===" > {case_dir}/security-headers.txt;
+            for url in $(awk '{print $1}' {case_dir}/httpx-probed.txt 2>/dev/null | head -20); do
+              echo "--- $url ---" >> {case_dir}/security-headers.txt;
+              curl -skI "$url" 2>/dev/null | grep -iE '(strict-transport|content-security|x-frame|x-content|x-xss|referrer|permissions-policy|cross-origin)' >> {case_dir}/security-headers.txt;
+              echo "" >> {case_dir}/security-headers.txt;
+            done
+        timeout: 60
+        artifacts:
+          - "{case_dir}/security-headers.txt"
+
+  # Phase 6: Attack surface summary & bounty prioritization
+  - id: attack_surface
+    name: "Attack surface summary & bounty prioritization"
+    type: sequential
+    steps:
+      - id: prioritize_targets
+        name: "Prioritize targets by exploit potential"
+        tool: bash
+        args:
+          - "-c"
+          - >
+            echo "=== Attack Surface Prioritization ===" > {case_dir}/attack-surface.txt;
+            echo "" >> {case_dir}/attack-surface.txt;
+            echo "TIER 1 (HIGH BOUNTY POTENTIAL):" >> {case_dir}/attack-surface.txt;
+            echo "  - RCE/web injection (max bounty)" >> {case_dir}/attack-surface.txt;
+            echo "  - Subdomain takeover with wallet interaction" >> {case_dir}/attack-surface.txt;
+            echo "  - Sensitive data exposure of user funds/keys" >> {case_dir}/attack-surface.txt;
+            echo "  - Malicious transaction injection" >> {case_dir}/attack-surface.txt;
+            echo "" >> {case_dir}/attack-surface.txt;
+            echo "TIER 2 (MEDIUM BOUNTY):" >> {case_dir}/attack-surface.txt;
+            echo "  - CORS misconfig (credentialed endpoints)" >> {case_dir}/attack-surface.txt;
+            echo "  - CSP bypass + stored XSS combination" >> {case_dir}/attack-surface.txt;
+            echo "  - IDOR in user-facing API endpoints" >> {case_dir}/attack-surface.txt;
+            echo "  - Missing SRI on third-party scripts" >> {case_dir}/attack-surface.txt;
+            echo "" >> {case_dir}/attack-surface.txt;
+            echo "TIER 3 (LOW/INFO):" >> {case_dir}/attack-surface.txt;
+            echo "  - Information disclosure via JS" >> {case_dir}/attack-surface.txt;
+            echo "  - Security header gaps" >> {case_dir}/attack-surface.txt;
+            echo "  - DNS / TXT record info disclosure" >> {case_dir}/attack-surface.txt;
+            echo "  - Missing CSRF tokens" >> {case_dir}/attack-surface.txt
+        timeout: 10
+        artifacts:
+          - "{case_dir}/attack-surface.txt"
+
+  # Phase 7: Report
+  - id: report
+    name: "DeFi bug bounty assessment report"
+    type: report
+    format: markdown
+    title: "DeFi Bug Bounty Assessment Report — {target}"
+    output: "{case_dir}/defi-bug-bounty-report.md"
+    sections:
+      - heading: "Target Information"
+        body: "- Target: {target}\n- Scope: {scope_domains}"
+      - heading: "Reconnaissance"
+        body: "- Subdomains: {case_dir}/subdomains.txt\n- Historical URLs: {case_dir}/gau-urls.txt\n- DNS records: {case_dir}/dns-records.txt\n- HTTPS probed: {case_dir}/httpx-probed.txt\n- Host classification: {case_dir}/host-classification.txt"
+      - heading: "Web/API Security"
+        body: "- CORS test: {case_dir}/cors-misconfig.txt\n- CSP analysis: {case_dir}/csp-analysis.txt\n- SRI check: {case_dir}/sri-check.txt\n- Subdomain takeover: {case_dir}/subdomain-takeover.txt"
+      - heading: "Protocol Layer"
+        body: "- API map: {case_dir}/api-map.txt\n- WebSocket endpoints: {case_dir}/websocket-endpoints.txt\n- Docs sitemap: {case_dir}/docs-sitemap.txt"
+      - heading: "Deep Dive"
+        body: "- JS hidden APIs: {case_dir}/js-hidden-apis.txt\n- Cloud assets: {case_dir}/cloud-assets.txt\n- Security headers: {case_dir}/security-headers.txt"
+      - heading: "Bounty Prioritization"
+        body: "- Attack surface priority: {case_dir}/attack-surface.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "DeFi bug bounty assessment complete — report at {case_dir}/defi-bug-bounty-report.md"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "DeFi bug bounty assessment finished for {target}. Results in {case_dir}"

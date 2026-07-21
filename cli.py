@@ -2640,18 +2640,17 @@ def cmd_infra_ai_setup(args):
         # Step 1: Start ollama on remote host, pull model only if missing
         print(f"[1/4] Starting ollama on {target_host} via {jump_host}...")
         sq = shlex.quote
-        ssh_prefix = f"ssh -J {sq(jump_user)}@{sq(jump_host)} {sq(target_user)}@{sq(target_host)}"
+        ssh_base = ["ssh", "-J", f"{sq(jump_user)}@{sq(jump_host)}", f"{sq(target_user)}@{sq(target_host)}"]
         safe_model = shlex.quote(model)
-        check_pull_cmd = (
-            f"{ssh_prefix} "
-            f'"sudo systemctl start ollama 2>/dev/null; '
-            f'if ollama list 2>/dev/null | grep -qF {safe_model} || '
-            f'sudo ollama list 2>/dev/null | grep -qF {safe_model}; then '
-            f'echo {shlex.quote("EXISTS:" + model)}; '
-            f'else echo {shlex.quote("PULLING:" + model)} && sudo ollama pull {safe_model} 2>&1 | tail -3; fi"'
+        remote_cmd = (
+            f"sudo systemctl start ollama 2>/dev/null; "
+            f"if ollama list 2>/dev/null | grep -qF {safe_model} || "
+            f"sudo ollama list 2>/dev/null | grep -qF {safe_model}; then "
+            f"echo {shlex.quote('EXISTS:' + model)}; "
+            f"else echo {shlex.quote('PULLING:' + model)} && sudo ollama pull {safe_model} 2>&1 | tail -3; fi"
         )
         try:
-            r = subprocess.run(check_pull_cmd, shell=True, timeout=300,
+            r = subprocess.run(ssh_base + [remote_cmd], timeout=300,
                                capture_output=True, text=True)
             out = r.stdout.strip()[:500] or r.stderr.strip()[:300]
             if out.startswith("EXISTS:"):
@@ -2668,18 +2667,17 @@ def cmd_infra_ai_setup(args):
 
         # Step 1b: Configure GPU layers if requested
         sq = shlex.quote
-        ssh_prefix = f"ssh -J {sq(jump_user)}@{sq(jump_host)} {sq(target_user)}@{sq(target_host)}"
+        ssh_base = ["ssh", "-J", f"{sq(jump_user)}@{sq(jump_host)}", f"{sq(target_user)}@{sq(target_host)}"]
         if gpu_layers > 0:
             print(f"[1b/4] Setting OLLAMA_NUM_GPU_LAYERS={gpu_layers} on {target_host}...")
             override_cmd = (
-                f"{ssh_prefix} "
-                f'"sudo mkdir -p /etc/systemd/system/ollama.service.d && '
+                f"sudo mkdir -p /etc/systemd/system/ollama.service.d && "
                 f"printf '{sq('[Service]')}\\nEnvironment=OLLAMA_NUM_GPU_LAYERS={sq(str(gpu_layers))}\\n' "
-                f'| sudo tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null && '
-                f'sudo systemctl daemon-reload && sudo systemctl restart ollama"'
+                f"| sudo tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null && "
+                f"sudo systemctl daemon-reload && sudo systemctl restart ollama"
             )
             try:
-                subprocess.run(override_cmd, shell=True, timeout=30,
+                subprocess.run(ssh_base + [override_cmd], timeout=30,
                                capture_output=True, text=True)
                 print(f"  OLLAMA_NUM_GPU_LAYERS={gpu_layers} set, ollama restarted")
             except subprocess.TimeoutExpired:
@@ -2687,11 +2685,10 @@ def cmd_infra_ai_setup(args):
         elif gpu_layers == 0:
             # Remove override if exists → let ollama auto-detect
             reset_cmd = (
-                f"{ssh_prefix} "
-                f'"sudo rm -f /etc/systemd/system/ollama.service.d/override.conf && '
-                f'sudo systemctl daemon-reload && sudo systemctl restart ollama 2>/dev/null"'
+                f"sudo rm -f /etc/systemd/system/ollama.service.d/override.conf && "
+                f"sudo systemctl daemon-reload && sudo systemctl restart ollama 2>/dev/null"
             )
-            subprocess.run(reset_cmd, shell=True, timeout=15, capture_output=True)
+            subprocess.run(ssh_base + [reset_cmd], timeout=15, capture_output=True)
 
         # Step 2: Set up SSH tunnel in tmux
         print(f"[2/4] Creating SSH tunnel (:{local_port} → {target_host}:{remote_port})...")
@@ -2826,7 +2823,7 @@ def cmd_infra_ai_setup(args):
         target_host = getattr(args, "target_host", os.environ.get("CC_AI_TARGET_HOST", "10.42.0.21"))
         target_user = getattr(args, "target_user", os.environ.get("CC_AI_TARGET_USER", "target-user"))
         sq = shlex.quote
-        ssh_j = f"ssh -J {sq(jump_user)}@{sq(jump_host)} {sq(target_user)}@{sq(target_host)}"
+        ssh_base = ["ssh", "-J", f"{sq(jump_user)}@{sq(jump_host)}", f"{sq(target_user)}@{sq(target_host)}"]
 
         print(f"Checking GPU on {target_host} via {jump_host}...\n")
 
@@ -2844,8 +2841,8 @@ def cmd_infra_ai_setup(args):
             print(f"  [{label}]")
             try:
                 r = subprocess.run(
-                    f'{ssh_j} "{cmd}"',
-                    shell=True, capture_output=True, text=True, timeout=30
+                    ssh_base + [cmd],
+                    capture_output=True, text=True, timeout=30
                 )
                 out = (r.stdout or r.stderr or "").strip()
                 for line in out.split("\n")[:5]:

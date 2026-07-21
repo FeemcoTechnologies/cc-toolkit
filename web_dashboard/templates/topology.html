@@ -10,11 +10,18 @@
 </style>
 {% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-4">
-    <div>
-        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back to {{ case.case_id }}</a>
-        <h1 class="text-xl font-semibold mt-1">Topology</h1>
-    </div>
+{% set active_section = 'topology' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Topology</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+<h1 class="text-xl font-semibold mb-4">Topology</h1>
     <div class="flex gap-2">
         <input id="scan-target" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm w-40 font-mono" placeholder="target.com">
         <select id="scan-type" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
@@ -70,6 +77,8 @@
             </div>
         </div>
     </div>
+</div>
+</div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -217,6 +226,9 @@
             });
 
             lucide.createIcons();
+        }).catch(function(e) {
+            document.getElementById('topology-graph').innerHTML = '<div class="text-red-400 text-center py-12">Failed to load topology: ' + e.message + '</div>';
+            document.getElementById('stat-hosts').textContent = '0';
         });
 
     function showNodeDetails(nodeData) {
@@ -319,6 +331,8 @@
                         topologyData = newData;
                         buildGraph(newData);
                     }
+                }).catch(function(e) {
+                    output.textContent += '\nFailed to refresh topology: ' + e.message;
                 });
         })
         .catch(function(e) {

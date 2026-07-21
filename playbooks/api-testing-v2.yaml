@@ -1,170 +1,227 @@
-# v2 runbook — API pentesting: GraphQL, JWT, parameter pollution, rate-limit bypass
-name: "API Penetration Testing"
-description: "Comprehensive API assessment: GraphQL introspection, JWT attacks, parameter fuzzing, rate-limit testing"
-version: "2.0"
-
+name: API Penetration Testing
+description: 'Comprehensive API assessment: GraphQL introspection, JWT attacks, parameter
+  fuzzing, rate-limit testing'
+version: '2.0'
 vars:
-  wordlist: "/wordlists/webcontent-top-10000.txt"
-  jwt_token: ""
-
+  wordlist: /wordlists/webcontent-top-10000.txt
+  jwt_token: ''
 preflight:
-  - id: setup
-    type: log
-    message: "API pentest on {target} (case: {case_id})"
-
+- id: setup
+  type: log
+  message: 'API pentest on {target} (case: {case_id})'
+  name: Setup
 steps:
-  # ---- Phase 1: API discovery ----
-  - id: api_discovery
-    name: "API endpoint discovery"
-    type: parallel
-    max_workers: 3
-    steps:
-      - id: ffuf_api
-        name: "API endpoint fuzzing"
-        tool: ffuf
-        args: ["-u", "http://{target}/api/v2/FUZZ", "-w", "{wordlist}",
-               "-mc", "200,201,204,301,302,403,405,500",
-               "-o", "{case_dir}/ffuf-api.json", "-of", "json", "-ac"]
-        timeout: 300
-        artifacts: ["{case_dir}/ffuf-api.json"]
-
-      - id: ffuf_graphql
-        name: "GraphQL path discovery"
-        tool: ffuf
-        args: ["-u", "http://{target}/FUZZ", "-w", "{wordlist}",
-               "-mc", "200,400,404",
-               "-o", "{case_dir}/ffuf-graphql.json", "-of", "json",
-               "-ac"]
-        timeout: 300
-
-      - id: whatweb
-        name: "Technology fingerprint"
-        tool: whatweb
-        args: ["-a3", "{target}", "--log-verbose", "{case_dir}/whatweb-api.txt"]
-        timeout: 120
-
-  # ---- Phase 2: GraphQL introspection (conditional) ----
-  - id: graphql_check
-    name: "GraphQL introspection query"
-    type: conditional
-    condition:
-      any:
-        - contains: "/graphql"
-          ref: ffuf_graphql
-        - contains: "/v1/graphql"
-          ref: ffuf_graphql
-    then:
-      - id: graphql_introspect
-        name: "GraphQL introspection"
-        tool: curl
-        args: ["-s", "-X", "POST",
-               "-H", "Content-Type: application/json",
-               "-d", "{\"query\": \"{__schema{types{name fields{name type{name kind}}}}\"}}",
-               "http://{target}/graphql",
-               "-o", "{case_dir}/graphql-schema.json"]
-        timeout: 30
-        artifacts: ["{case_dir}/graphql-schema.json"]
-
-      - id: graphql_batch
-        name: "GraphQL batch attack"
-        tool: curl
-        args: ["-s", "-X", "POST",
-               "-H", "Content-Type: application/json",
-               "-d", "{\"query\": \"mutation { __typename }\"}",
-               "http://{target}/graphql",
-               "-o", "{case_dir}/graphql-batch-test.json"]
-        timeout: 30
-
-      - id: graphw00f
-        name: "GraphQL fingerprint (graphw00f)"
-        tool: graphw00f
-        args: ["-t", "http://{target}/graphql",
-               "-o", "{case_dir}/graphw00f.json"]
-        timeout: 60
-    else:
-      - id: no_graphql
-        type: log
-        message: "No GraphQL endpoint found — skipping introspection"
-
-  # ---- Phase 3: JWT attacks ----
-  - id: jwt_check
-    name: "JWT token analysis"
-    type: conditional
-    condition:
-      not:
-        eq: ""
-        ref: jwt_token
-    then:
-      - id: jwt_scan
-        name: "JWT vulnerability scan"
-        tool: jwt_tool
-        args: ["{jwt_token}", "-X"]
-        timeout: 30
-
-      - id: jwt_none
-        name: "JWT none algorithm attack"
-        type: parallel
-        steps:
-          - id: jwt_none_alg
-            name: "None algorithm"
-            tool: jwt_tool
-            args: ["{jwt_token}", "-X", "none"]
-            timeout: 30
-
-          - id: jwt_kid
-            name: "KID injection"
-            tool: jwt_tool
-            args: ["{jwt_token}", "-X", "kid"]
-            timeout: 30
-
-  # ---- Phase 4: Parameter pollution & injection ----
-  - id: param_fuzz
-    name: "Parameter fuzzing"
-    type: parallel
-    steps:
-      - id: hpp_test
-        name: "HTTP parameter pollution"
-        tool: curl
-        args: ["-s", "-X", "GET",
-               "http://{target}/api/v2/endpoint?param=value&param=attacker_value",
-               "-o", "{case_dir}/hpp-test.txt"]
-        timeout: 30
-
-      - id: nuclei_api
-        name: "Nuclei API templates"
-        tool: nuclei
-        args: ["-u", "{target}",
-               "-t", "exposures,technologies,security-misconfiguration",
-               "-json", "-o", "{case_dir}/nuclei-api.json"]
-        timeout: 300
-        artifacts: ["{case_dir}/nuclei-api.json"]
-
-  # ---- Phase 5: Rate limiting check ----
-  - id: rate_limit
-    name: "Rate-limit bypass test"
+- id: api_discovery
+  name: API endpoint discovery
+  type: parallel
+  max_workers: 3
+  steps:
+  - id: ffuf_api
+    name: API endpoint fuzzing
+    tool: ffuf
+    args:
+    - -u
+    - http://{target}/api/v2/FUZZ
+    - -w
+    - '{wordlist}'
+    - -mc
+    - 200,201,204,301,302,403,405,500
+    - -o
+    - '{case_dir}/ffuf-api.json'
+    - -of
+    - json
+    - -ac
+    timeout: 300
+    artifacts:
+    - '{case_dir}/ffuf-api.json'
+    type: tool
+  - id: ffuf_graphql
+    name: GraphQL path discovery
+    tool: ffuf
+    args:
+    - -u
+    - http://{target}/FUZZ
+    - -w
+    - '{wordlist}'
+    - -mc
+    - 200,400,404
+    - -o
+    - '{case_dir}/ffuf-graphql.json'
+    - -of
+    - json
+    - -ac
+    timeout: 300
+    type: tool
+  - id: whatweb
+    name: Technology fingerprint
+    tool: whatweb
+    args:
+    - -a3
+    - '{target}'
+    - --log-verbose
+    - '{case_dir}/whatweb-api.txt'
+    timeout: 120
+    type: tool
+- id: graphql_check
+  name: GraphQL introspection query
+  type: conditional
+  condition:
+    any:
+    - contains: /graphql
+      ref: ffuf_graphql
+    - contains: /v1/graphql
+      ref: ffuf_graphql
+  then:
+  - id: graphql_introspect
+    name: GraphQL introspection
     tool: curl
-    args: ["-s", "-o", "/dev/null", "-w", "%{http_code}",
-           "http://{target}/api/v2/endpoint"]
+    args:
+    - -s
+    - -X
+    - POST
+    - -H
+    - 'Content-Type: application/json'
+    - -d
+    - '{"query": "{__schema{types{name fields{name type{name kind}}}}"}}'
+    - http://{target}/graphql
+    - -o
+    - '{case_dir}/graphql-schema.json'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/graphql-schema.json'
+    type: tool
+  - id: graphql_batch
+    name: GraphQL batch attack
+    tool: curl
+    args:
+    - -s
+    - -X
+    - POST
+    - -H
+    - 'Content-Type: application/json'
+    - -d
+    - '{"query": "mutation { __typename }"}'
+    - http://{target}/graphql
+    - -o
+    - '{case_dir}/graphql-batch-test.json'
+    timeout: 30
+    type: tool
+  - id: graphw00f
+    name: GraphQL fingerprint (graphw00f)
+    tool: graphw00f
+    args:
+    - -t
+    - http://{target}/graphql
+    - -o
+    - '{case_dir}/graphw00f.json'
     timeout: 60
-    foreach:
-      count: 50
+    type: tool
+  else:
+  - id: no_graphql
+    type: log
+    message: No GraphQL endpoint found — skipping introspection
+    name: No Graphql
+- id: jwt_check
+  name: JWT token analysis
+  type: conditional
+  condition:
+    not:
+      eq: ''
+      ref: jwt_token
+  then:
+  - id: jwt_scan
+    name: JWT vulnerability scan
+    tool: jwt_tool
+    args:
+    - '{jwt_token}'
+    - -X
+    timeout: 30
+    type: tool
+  - id: jwt_none
+    name: JWT none algorithm attack
+    type: parallel
+    steps:
+    - id: jwt_none_alg
+      name: None algorithm
+      tool: jwt_tool
+      args:
+      - '{jwt_token}'
+      - -X
+      - none
+      timeout: 30
+      type: tool
+    - id: jwt_kid
+      name: KID injection
+      tool: jwt_tool
+      args:
+      - '{jwt_token}'
+      - -X
+      - kid
+      timeout: 30
+      type: tool
+- id: param_fuzz
+  name: Parameter fuzzing
+  type: parallel
+  steps:
+  - id: hpp_test
+    name: HTTP parameter pollution
+    tool: curl
+    args:
+    - -s
+    - -X
+    - GET
+    - http://{target}/api/v2/endpoint?param=value&param=attacker_value
+    - -o
+    - '{case_dir}/hpp-test.txt'
+    timeout: 30
+    type: tool
+  - id: nuclei_api
+    name: Nuclei API templates
+    tool: nuclei
+    args:
+    - -u
+    - '{target}'
+    - -t
+    - exposures,technologies,security-misconfiguration
+    - -json
+    - -o
+    - '{case_dir}/nuclei-api.json'
+    timeout: 300
+    artifacts:
+    - '{case_dir}/nuclei-api.json'
+    type: tool
+- id: rate_limit
+  name: Rate-limit bypass test
+  tool: curl
+  args:
+  - -s
+  - -o
+  - /dev/null
+  - -w
+  - '%{http_code}'
+  - http://{target}/api/v2/endpoint
+  timeout: 60
+  foreach:
+    count: 50
+  type: tool
+- id: report
+  name: API assessment report
+  type: report
+  format: markdown
+  title: API Pentest Report — {target}
+  output: '{case_dir}/api-report.md'
+  sections:
+  - heading: Target
+    body: '- API Endpoint: {target}
 
-  # ---- Phase 6: Report ----
-  - id: report
-    name: "API assessment report"
-    type: report
-    format: markdown
-    title: "API Pentest Report — {target}"
-    output: "{case_dir}/api-report.md"
-    sections:
-      - heading: "Target"
-        body: "- API Endpoint: {target}\n- Case: {case_id}"
-      - heading: "Findings"
-        body: "See nuclei, graphql, and jwt outputs in case directory."
-
+      - Case: {case_id}'
+  - heading: Findings
+    body: See nuclei, graphql, and jwt outputs in case directory.
 postflight:
-  - id: done
-    type: notify
-    level: info
-    message: "API pentest complete — {case_dir}"
-    webhooks: ["slack"]
+- id: done
+  type: notify
+  level: info
+  message: API pentest complete — {case_dir}
+  webhooks:
+  - slack
+  name: Done

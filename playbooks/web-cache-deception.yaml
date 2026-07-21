@@ -1,6 +1,6 @@
 name: "Web Cache Deception"
 description: "Detect web cache deception vulnerabilities: cache key poisoning, CDN caching of sensitive responses, and cache-based data leaks"
-version: "1.0"
+version: "2.0"
 
 vars:
   wordlist: "/wordlists/webcontent-top-10000.txt"
@@ -164,8 +164,28 @@ steps:
         timeout: 10
 
       - id: report
-        name: "Cache assessment note"
-        type: log
-        message: |
-          Web Cache Deception scan complete for {target}.
-          Check {case_dir}/ for poison headers, WCD tests, and timing analysis.
+        name: "Cache deception report"
+        type: report
+        format: markdown
+        title: "Web Cache Deception Report — {target}"
+        output: "{case_dir}/cache-deception-report.md"
+        sections:
+          - heading: "Target"
+            body: "- URL: {target}"
+          - heading: "Cache Infrastructure"
+            body: "- Headers: {case_dir}/cache-headers.txt\n- Cache status: {case_dir}/cache-headers.txt\n- CDN detection: {case_dir}/whatweb-cache.txt"
+          - heading: "Cache Key Poisoning"
+            body: "- Header poison: {case_dir}/poison-header.txt\n- Query poison: {case_dir}/poison-query.txt\n- Host poison: {case_dir}/poison-host.txt\n- Method poison: {case_dir}/poison-method.txt\n- Cookie poison: {case_dir}/poison-cookie.txt"
+          - heading: "Cache Deception"
+            body: "- Account: {case_dir}/wcd-account.txt\n- Profile: {case_dir}/wcd-profile.txt\n- Dashboard: {case_dir}/wcd-dashboard.txt\n- API: {case_dir}/wcd-api.txt\n- Static: {case_dir}/wcd-static.txt"
+          - heading: "Timing Analysis"
+            body: "- Baseline: {case_dir}/timing-baseline.txt\n- Cached: {case_dir}/timing-cached.txt\n- Comparison: {case_dir}/timing-*.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Web Cache Deception scan complete — {case_dir}"
+  - id: notify_done
+    type: notify
+    level: success
+    message: "Web cache deception scan finished for {target}. Results in {case_dir}"

@@ -23,6 +23,9 @@
                     if (o.body && typeof o.body === "string") {
                         try { var b = JSON.parse(o.body);
                             if (!b.csrf_token) { b.csrf_token = c; o.body = JSON.stringify(b); }
+                            // Ensure Content-Type is set so Flask can parse the JSON
+                            if (h instanceof Headers) { if (!h.has("Content-Type")) h.set("Content-Type", "application/json"); }
+                            else if (!Array.isArray(h) && !h["Content-Type"]) { h["Content-Type"] = "application/json"; o.headers = h; }
                         } catch(e) {}
                     }
                 }
@@ -49,61 +52,99 @@
     {% block head %}{% endblock %}
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
-    <nav class="bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between sticky top-0 z-50">
-        <div class="flex items-center gap-4">
-            <a href="/" class="text-lg font-bold text-indigo-400 tracking-wide">CC<span class="text-gray-400">/dashboard</span></a>
-            <span class="text-gray-600 text-sm">|</span>
-            <select id="case-selector" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200"
-                    onchange="if(this.value) window.location='/case/'+this.value">
-                <option value="">Select case...</option>
-            </select>
+    <nav class="bg-gray-900 border-b border-gray-800 px-4 py-3 sticky top-0 z-50">
+         <div class="flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <a href="/" class="text-lg font-bold text-indigo-400 tracking-wide shrink-0">CC<span class="text-gray-400">/dashboard</span></a>
+                <span class="text-gray-600 text-sm">|</span>
+                <select id="case-selector" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 max-w-[160px]"
+                        onchange="if(this.value) window.location='/case/'+this.value">
+                    <option value="">Select case...</option>
+                </select>
+            </div>
+
+            <!-- Mobile hamburger -->
+            <button id="nav-toggle" class="md:hidden text-gray-400 hover:text-gray-100" onclick="toggleMobileNav()">
+                <i data-lucide="menu" class="w-5 h-5"></i>
+            </button>
+
+            <!-- Desktop nav -->
+            <div id="desktop-nav" class="hidden md:flex items-center gap-1">
+                {% macro dropdown(id, icon, label) %}
+                <div class="relative" data-dropdown="{{ id }}">
+                    <button onclick="toggleDropdown('{{ id }}')" class="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 rounded transition-colors whitespace-nowrap">
+                        <i data-lucide="{{ icon }}" class="w-4 h-4"></i>
+                        <span>{{ label }}</span>
+                        <i data-lucide="chevron-down" class="w-3 h-3 opacity-60"></i>
+                    </button>
+                    <div id="dropdown-{{ id }}" class="absolute top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px] hidden z-50">
+                        {{ caller() }}
+                    </div>
+                </div>
+                {% endmacro %}
+
+                {% call dropdown("engagement", "crosshair", "Engagement") %}
+                <a href="/projects" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="columns" class="w-3.5 h-3.5"></i> Projects</a>
+                <a href="/findings" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="search" class="w-3.5 h-3.5"></i> Findings</a>
+                <a href="/runbooks" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="book-open" class="w-3.5 h-3.5"></i> Runbooks</a>
+                <a href="/assets" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="hard-drive" class="w-3.5 h-3.5"></i> Assets</a>
+                <a href="/loot" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="database" class="w-3.5 h-3.5"></i> Loot</a>
+                {% endcall %}
+
+                {% call dropdown("infra", "terminal", "Infrastructure") %}
+                <a href="/terminal" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="terminal" class="w-3.5 h-3.5"></i> Terminal</a>
+                <a href="/tools" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="wrench" class="w-3.5 h-3.5"></i> Tools</a>
+                <a href="/burp" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Burp</a>
+                <a href="/wifi-monitor" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="wifi" class="w-3.5 h-3.5"></i> WiFi</a>
+                {% endcall %}
+
+                {% call dropdown("library", "book", "Library") %}
+                <a href="/flashcards" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="brain" class="w-3.5 h-3.5"></i> Brain</a>
+                <a href="/prompts" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="file-text" class="w-3.5 h-3.5"></i> Prompts</a>
+                <a href="/rules" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="shield" class="w-3.5 h-3.5"></i> Rules</a>
+                {% endcall %}
+
+                {% call dropdown("system", "settings", "System") %}
+                <a href="/ai" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> AI</a>
+                <a href="/jobs" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 relative"><i data-lucide="clock" class="w-3.5 h-3.5"></i> Jobs <span id="job-badge-nav" class="bg-indigo-500 text-white text-xs rounded-full px-1.5 ml-1 hidden">0</span></a>
+                <a href="/debug" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Debug</a>
+                <a href="/docs" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="book-open" class="w-3.5 h-3.5"></i> API Docs</a>
+                <a href="/mcp-resources" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="database" class="w-3.5 h-3.5"></i> MCP Resources</a>
+                {% endcall %}
+            </div>
         </div>
-        <div class="flex items-center gap-3">
-            <a href="/projects" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="columns" class="w-4 h-4"></i> Projects
-            </a>
-            <a href="/terminal" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="terminal" class="w-4 h-4"></i> Terminal
-            </a>
-            <a href="/tools" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="wrench" class="w-4 h-4"></i> Tools
-            </a>
-            <a href="/prompts" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="file-text" class="w-4 h-4"></i> Prompts
-            </a>
-            <a href="/findings" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="search" class="w-4 h-4"></i> Findings
-            </a>
-            <a href="/runbooks" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="book-open" class="w-4 h-4"></i> Runbooks
-            </a>
-            <a href="/rules" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="shield" class="w-4 h-4"></i> Rules
-            </a>
-            <a href="/assets" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="hard-drive" class="w-4 h-4"></i> Assets
-            </a>
-            <a href="/wifi-monitor" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="wifi" class="w-4 h-4"></i> WiFi
-            </a>
-            <a href="/flashcards" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="brain" class="w-4 h-4"></i> Brain
-            </a>
-            <a href="/ai" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="cpu" class="w-4 h-4"></i> AI
-            </a>
-            <a href="/jobs" class="text-gray-400 hover:text-gray-100 text-sm flex items-center gap-1 relative">
-                <i data-lucide="clock" class="w-4 h-4"></i> Jobs
-                <span id="job-badge" class="absolute -top-2 -right-3 bg-indigo-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center hidden" style="font-size:10px">0</span>
-            </a>
-            <a href="/debug" class="text-gray-500 hover:text-gray-100 text-sm flex items-center gap-1">
-                <i data-lucide="bug" class="w-4 h-4"></i> Debug
-            </a>
+
+        <!-- Mobile nav panel -->
+        <div id="mobile-nav" class="md:hidden hidden mt-2 border-t border-gray-800 pt-2 space-y-1">
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Engagement</div>
+            <a href="/projects" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="columns" class="w-4 h-4"></i> Projects</a>
+            <a href="/findings" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="search" class="w-4 h-4"></i> Findings</a>
+            <a href="/runbooks" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="book-open" class="w-4 h-4"></i> Runbooks</a>
+            <a href="/assets" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="hard-drive" class="w-4 h-4"></i> Assets</a>
+            <a href="/loot" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="database" class="w-4 h-4"></i> Loot</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Infrastructure</div>
+            <a href="/terminal" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="terminal" class="w-4 h-4"></i> Terminal</a>
+            <a href="/tools" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="wrench" class="w-4 h-4"></i> Tools</a>
+            <a href="/burp" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="bug" class="w-4 h-4"></i> Burp</a>
+            <a href="/wifi-monitor" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="wifi" class="w-4 h-4"></i> WiFi</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Library</div>
+            <a href="/flashcards" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="brain" class="w-4 h-4"></i> Brain</a>
+            <a href="/prompts" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="file-text" class="w-4 h-4"></i> Prompts</a>
+            <a href="/rules" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="shield" class="w-4 h-4"></i> Rules</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">System</div>
+            <a href="/ai" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="cpu" class="w-4 h-4"></i> AI</a>
+            <a href="/jobs" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="clock" class="w-4 h-4"></i> Jobs <span id="job-badge-mobile" class="bg-indigo-500 text-white text-xs rounded-full px-1.5 ml-1 hidden">0</span></a>
+            <a href="/debug" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="bug" class="w-4 h-4"></i> Debug</a>
+            <a href="/docs" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="book-open" class="w-4 h-4"></i> API Docs</a>
+            <a href="/mcp-resources" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="database" class="w-4 h-4"></i> MCP Resources</a>
         </div>
     </nav>
-    <main class="p-4 max-w-7xl mx-auto">
+    <main class="p-4">
         {% block content %}{% endblock %}
     </main>
+
+    <!-- Global Toast -->
+    <div id="global-toast" class="fixed bottom-20 right-4 z-50 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-sm shadow-xl hidden items-center gap-2"></div>
 
     <!-- Floating job queue widget -->
     <div id="job-queue-container" class="fixed bottom-4 right-4 z-40 w-80 max-h-96 flex flex-col">
@@ -141,19 +182,47 @@
             panel.classList.toggle('hidden');
         }
 
-        // Update mini badge from widget state
+        function toggleDropdown(id) {
+            const panel = document.getElementById('dropdown-' + id);
+            const isOpen = !panel.classList.contains('hidden');
+            // Close all dropdowns
+            document.querySelectorAll('[id^="dropdown-"]').forEach(p => p.classList.add('hidden'));
+            if (!isOpen) panel.classList.remove('hidden');
+        }
+
+        function toggleMobileNav() {
+            document.getElementById('mobile-nav').classList.toggle('hidden');
+            lucide.createIcons();
+        }
+
+        window.toast = function(msg, ok) {
+            var el = document.getElementById('global-toast');
+            if (!el) return;
+            el.textContent = msg;
+            el.className = 'fixed bottom-20 right-4 z-50 border rounded-lg px-4 py-2 text-sm shadow-xl flex items-center gap-2 ' +
+                (ok !== false ? 'bg-green-900 border-green-700 text-green-200' : 'bg-red-900 border-red-700 text-red-200');
+            el.classList.remove('hidden');
+            setTimeout(function() { el.classList.add('hidden'); }, 3000);
+        };
+
+        // Close dropdowns on click outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('[data-dropdown]'))
+                document.querySelectorAll('[id^="dropdown-"]').forEach(p => p.classList.add('hidden'));
+        });
+
+        // Update badge from widget state
         document.addEventListener('DOMContentLoaded', function() {
-            const origRender = window.renderWidget;
             setInterval(function() {
                 const container = document.getElementById('job-queue-widget');
                 if (!container) return;
-                const running = container.querySelectorAll('.job-row').length;
-                const mini = document.getElementById('job-badge-mini');
-                if (mini) {
-                    const count = container.querySelectorAll('[class*="animate-pulse"]').length;
-                    mini.textContent = count || '';
-                    mini.style.display = count ? 'inline' : 'none';
-                }
+                const count = container.querySelectorAll('[class*="animate-pulse"]').length;
+                ['job-badge','job-badge-mini','job-badge-nav','job-badge-mobile'].forEach(function(id) {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.textContent = count || '0';
+                    el.style.display = count ? 'inline' : 'none';
+                });
             }, 2000);
         });
     </script>

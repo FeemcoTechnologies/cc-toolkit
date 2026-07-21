@@ -7,6 +7,12 @@
 </style>
 {% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Jobs</span>
+</nav>
 <div class="max-w-5xl mx-auto">
     <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold flex items-center gap-2">
@@ -145,5 +151,17 @@
         lucide.createIcons();
     }
 })();
+
+window.cancelJob = function(jobId) {
+    if (!confirm('Cancel job ' + jobId + '?')) return;
+    fetch('/api/jobs/' + jobId + '/cancel', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) alert('Cancel failed: ' + data.error);
+        })
+        .catch(function(e) {
+            alert('Cancel error: ' + e.message);
+        });
+};
 </script>
 {% endblock %}

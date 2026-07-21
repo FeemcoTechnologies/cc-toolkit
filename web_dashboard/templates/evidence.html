@@ -1,12 +1,18 @@
 {% extends "base.html" %}
 {% block title %}{{ case.case_id }} / Evidence{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-4">
-    <div>
-        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back to {{ case.case_id }}</a>
-        <h1 class="text-xl font-semibold mt-1">Evidence</h1>
-    </div>
-</div>
+{% set active_section = 'evidence' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Evidence</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+<h1 class="text-xl font-semibold mb-4">Evidence</h1>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
     <div class="lg:col-span-2">
@@ -26,6 +32,7 @@
                     <option value="loot">Loot</option>
                 </select>
                 <input name="description" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm mb-2" placeholder="Description (optional)">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded text-sm">Upload</button>
             </form>
             <div id="upload-progress" class="mt-2 text-xs text-gray-500 hidden">Uploading...</div>
@@ -34,12 +41,19 @@
             <h2 class="text-sm font-semibold mb-2">Chain of Custody</h2>
             <button onclick="verifyEvidence()" class="text-xs text-indigo-400 hover:text-indigo-300">Verify integrity</button>
         </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mt-4">
+            <h2 class="text-sm font-semibold mb-2">Browse Files</h2>
+            <a href="/case/{{ case.case_id }}/files" class="text-xs text-indigo-400 hover:text-indigo-300">&rarr; View all case files</a>
+        </div>
     </div>
+</div>
+</div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+function escapeHtml(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 async function loadEvidence() {
     const el = document.getElementById('evidence-list');
     try {
@@ -48,15 +62,19 @@ async function loadEvidence() {
         const ev = await r.json();
         if (!Array.isArray(ev)) { el.innerHTML = '<p class="text-red-400">Unexpected response</p>'; return; }
         if (ev.length === 0) { el.innerHTML = '<p class="text-gray-500">No evidence uploaded</p>'; return; }
+        const caseId = '{{ case.case_id }}';
         el.innerHTML = ev.map(e =>
-        `<div class="bg-gray-900 rounded-lg border border-gray-800 p-3 flex justify-between items-center">
-            <div>
-                <p class="text-sm font-medium">${escapeHtml(e.filename)}</p>
+        `<a href="/cases/${encodeURIComponent(caseId)}/${encodeURIComponent(e.category)}/${encodeURIComponent(e.filename)}" class="block bg-gray-900 rounded-lg border border-gray-800 p-3 flex justify-between items-center hover:border-indigo-700 transition">
+            <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-gray-200 truncate">${escapeHtml(e.filename)}</p>
                 <p class="text-xs text-gray-500">${escapeHtml(e.category)} \u00b7 ${escapeHtml(e.description || '')} \u00b7 ${(e.size/1024).toFixed(1)}KB</p>
-                <p class="text-xs text-gray-600">SHA256: ${escapeHtml((e.sha256||'').slice(0,16))}...</p>
+                <p class="text-xs text-gray-600 truncate">SHA256: ${escapeHtml((e.sha256||'').slice(0,16))}...</p>
             </div>
-            <span class="text-xs ${escapeHtml(e.sha256) ? 'text-green-400' : 'text-gray-500'}">${escapeHtml(e.sha256) ? 'Hashed' : 'Pending'}</span>
-        </div>`
+            <div class="flex items-center gap-2 shrink-0 ml-3">
+                <span class="text-xs ${e.sha256 ? 'text-green-400' : 'text-gray-500'}">${escapeHtml(e.sha256) ? 'Hashed' : 'Pending'}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            </div>
+        </a>`
     ).join('');
     } catch (e) {
         el.innerHTML = '<p class="text-red-400">Error loading evidence: ' + e.message + '</p>';
@@ -65,16 +83,26 @@ async function loadEvidence() {
 async function uploadEvidence(e) {
     e.preventDefault();
     const form = document.getElementById('upload-form');
+    const btn = form.querySelector('button[type="submit"]');
     const progress = document.getElementById('upload-progress');
+    progress.innerHTML = '<i data-lucide="loader" class="w-4 h-4 inline animate-spin"></i> Uploading...';
     progress.classList.remove('hidden');
-    const fd = new FormData(form);
-    const r = await fetch('/api/case/{{ case.case_id }}/evidence/upload', {method:'POST', body: fd});
-    const result = await r.json();
-    progress.classList.add('hidden');
-    if (result.sha256) {
-        loadEvidence();
-    } else {
-        alert('Upload failed: ' + (result.error || 'unknown'));
+    if (btn) { btn.disabled = true; btn.textContent = 'Uploading...'; }
+    try {
+        const fd = new FormData(form);
+        const r = await fetch('/api/case/{{ case.case_id }}/evidence/upload', {method:'POST', body: fd});
+        const result = await r.json();
+        progress.classList.add('hidden');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="upload" class="w-4 h-4 inline"></i> Upload'; lucide.createIcons(); }
+        if (result.sha256) {
+            loadEvidence();
+        } else {
+            alert('Upload failed: ' + (result.error || 'unknown'));
+        }
+    } catch(e) {
+        progress.classList.add('hidden');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="upload" class="w-4 h-4 inline"></i> Upload'; lucide.createIcons(); }
+        alert('Upload error: ' + e.message);
     }
 }
 async function verifyEvidence() {

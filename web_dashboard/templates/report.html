@@ -1,73 +1,422 @@
 {% extends "base.html" %}
-{% block title %}{{ case.case_id }} / Report{% endblock %}
+{% block title %}{{ case.case_id }} / Report Editor{% endblock %}
+{% block head %}
+<link href="https://cdn.quilljs.com/2.0.3/quill.snow.css" rel="stylesheet">
+<style>
+  #editor-container .ql-editor { min-height: 60vh; font-size: 13px; line-height: 1.7; color: #222; }
+  #editor-container .ql-editor h1 { font-size: 1.6em; margin-top: 1em; }
+  #editor-container .ql-editor h2 { font-size: 1.3em; margin-top: 0.8em; }
+  #editor-container .ql-editor h3 { font-size: 1.1em; }
+  #editor-container .ql-editor pre { background: #1e1e2e; color: #cdd6f4; padding: 0.8em; border-radius: 4px; white-space: pre-wrap; }
+  #editor-container .ql-editor table { border-collapse: collapse; width: 100%; }
+  #editor-container .ql-editor table th { background: #000; color: #fff; font-weight: 600; border: 1px solid #444; }
+  #editor-container .ql-editor table td { background: #fff; color: #222; border: 1px solid #ccc; padding: 6px 10px; }
+  #editor-container { background: #fff; border-radius: 0 0 6px 6px; }
+</style>
+{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-4">
-    <div>
-        <a href="/case/{{ case.case_id }}" class="text-gray-500 hover:text-gray-300 text-sm">&larr; Back to {{ case.case_id }}</a>
-        <h1 class="text-xl font-semibold mt-1">Report Generator</h1>
-    </div>
+{% set active_section = 'report' %}
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Report Editor</span>
+</nav>
+
+<h1 class="text-xl font-semibold mb-4">Report Editor</h1>
+
+<div class="flex items-center gap-2 mb-3 flex-wrap">
+  <button id="load-report-btn" onclick="loadReport()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Load Report</button>
+  <span class="text-gray-600">|</span>
+  <button onclick="exportReport('md')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-md">Export MD</button>
+  <button onclick="exportReport('html')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-html">Export HTML</button>
+  <button onclick="exportReport('docx')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-docx">Export DOCX</button>
+  <button onclick="exportReport('pdf')" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-pdf">Export PDF</button>
+  <span id="editor-status" class="text-xs text-gray-500 ml-auto"></span>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
-    <div class="lg:col-span-3">
-        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
-            <h2 class="text-sm font-semibold mb-3">Report Preview</h2>
-            <div id="report-preview" class="text-sm text-gray-400">
-                <p>Generate a report to see preview here.</p>
-            </div>
-        </div>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4" style="min-height: 70vh;">
+  <div class="bg-gray-900 rounded-lg border border-gray-800 flex flex-col" style="min-height: 70vh;">
+    <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+      <span class="text-xs font-semibold text-gray-400">Editor</span>
+      <span class="text-xs text-gray-500">Format with toolbar above</span>
     </div>
-    <div class="space-y-4">
-        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
-            <h2 class="text-sm font-semibold mb-3">Export</h2>
-            <div class="space-y-2">
-                <button onclick="generateReport('md')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">Markdown (.md)</button>
-                <button onclick="generateReport('html')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">HTML</button>
-                <button onclick="generateReport('docx')" class="w-full bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-sm text-left">Word (.docx)</button>
-                <button onclick="generateReport('pdf')" class="w-full bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded text-sm text-left">PDF</button>
-            </div>
-        </div>
-        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
-            <h2 class="text-sm font-semibold mb-2">Sections</h2>
-            <div class="text-xs space-y-1 text-gray-400">
-                <p>&check; Executive Summary</p>
-                <p>&check; Methodology</p>
-                <p>&check; Findings</p>
-                <p>&check; Strengths & Weaknesses</p>
-                <p>&check; Recommendations</p>
-            </div>
-        </div>
+    <div id="editor-container" style="flex:1;"></div>
+  </div>
+  <div class="bg-white rounded-lg border border-gray-800 flex flex-col overflow-hidden">
+    <div class="flex items-center justify-between px-3 py-2 border-b border-gray-300 bg-gray-100">
+      <span class="text-xs font-semibold text-gray-600">Preview</span>
     </div>
+    <iframe id="report-preview" class="flex-1 w-full border-0" style="min-height: 60vh;"></iframe>
+  </div>
 </div>
 
-<div id="report-output" class="mt-4 bg-gray-900 rounded-lg border border-gray-800 p-4 hidden">
-    <h2 class="text-sm font-semibold mb-2">Output</h2>
-    <pre id="report-output-text" class="text-xs text-gray-300 whitespace-pre-wrap"></pre>
-</div>
+</div> {# /.min-w-0 flex-1 #}
+</div> {# /.flex #}
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.quilljs.com/2.0.3/quill.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
 <script>
-async function generateReport(format) {
-    const btn = event.target;
-    btn.textContent = 'Generating...';
-    btn.disabled = true;
+const quill = new Quill('#editor-container', {
+  theme: 'snow',
+  modules: {
+    table: true,
+    toolbar: [
+      [{ header: [1, 2, 3, 4, false] }],
+      ['bold', 'italic', 'underline', 'strike'],
+      [{ list: 'ordered' }, { list: 'bullet' }],
+      ['blockquote', 'code-block'],
+      ['link', 'clean']
+    ]
+  },
+  placeholder: 'Click "Load Report" to begin...'
+});
+
+const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+turndown.use(turndownPluginGfm.gfm);
+
+// --- HTML normalizers for Quill output quirks ---
+function normalizeQuillHtml(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html;
+  // 1. Convert Quill code-block divs to <pre><code> (turndown needs <code> child for fenced code blocks)
+  d.querySelectorAll('.ql-code-block-container').forEach(function(container) {
+    var lines = [];
+    container.querySelectorAll('.ql-code-block').forEach(function(block) {
+      lines.push(block.textContent);
+    });
+    var pre = document.createElement('pre');
+    var code = document.createElement('code');
+    code.textContent = lines.join('\n');
+    pre.appendChild(code);
+    container.replaceWith(pre);
+  });
+  // 2. Merge consecutive <table> siblings with data-row attrs into a single table.
+  //    Quill's table module can split rows into separate <table> elements.
+  //    Group <td> elements by their data-row value into unified <tr> elements.
+  //    Also remove any <table> whose entire content is duplicated by a following table
+  //    (identifiable by a proper <thead> neighbor).
+  (function mergeQuillTables() {
+    var tables = Array.from(d.querySelectorAll('table'));
+    // First pass: remove broken data-row tables that have a proper <thead> table as next sibling
+    tables.forEach(function(tbl, idx) {
+      if (!tbl.querySelector('td[data-row]')) return;
+      // Check if the very next sibling is also a <table> with a <thead>
+      var next = tbl.nextElementSibling;
+      if (next && next.tagName === 'TABLE' && next.querySelector('thead')) {
+        tbl.remove();
+      }
+    });
+    // Second pass: merge consecutive data-row tables
+    tables = Array.from(d.querySelectorAll('table'));
+    var merged = false;
+    do {
+      merged = false;
+      tables = Array.from(d.querySelectorAll('table'));
+      for (var i = 0; i < tables.length - 1; i++) {
+        var a = tables[i], b = tables[i + 1];
+        if (a.nextElementSibling !== b) continue;
+        var aRows = a.querySelectorAll('tr');
+        var bRows = b.querySelectorAll('tr');
+        if (aRows.length === 0 || bRows.length === 0) continue;
+        // Merge second table's rows into first
+        var targetTbody = a.querySelector('tbody') || a;
+        Array.from(bRows).forEach(function(tr) {
+          // Remove data-row attrs on cells
+          tr.querySelectorAll('td').forEach(function(td) { td.removeAttribute('data-row'); });
+          targetTbody.appendChild(tr);
+        });
+        b.remove();
+        merged = true;
+        break;
+      }
+    } while (merged);
+    // Remove any remaining data-row attrs (cleanup)
+    d.querySelectorAll('td[data-row]').forEach(function(td) { td.removeAttribute('data-row'); });
+  })();
+  // 3. Convert first row of any table from <td> to <th> if not already a header
+  d.querySelectorAll('table').forEach(function(table) {
+    if (table.querySelector('th') || table.querySelector('thead')) return;
+    var tbody = table.querySelector('tbody');
+    if (!tbody) return;
+    var rows = tbody.querySelectorAll('tr');
+    if (rows.length < 2) return;
+    var thead = document.createElement('thead');
+    var hr = document.createElement('tr');
+    rows[0].querySelectorAll('td').forEach(function(td) {
+      var th = document.createElement('th');
+      th.innerHTML = td.innerHTML;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.insertBefore(thead, tbody);
+    rows[0].remove();
+  });
+  // 4. Restore nested lists from Quill 2 flat format.
+  //    Quill 2 flattens <ol><ul> nesting into a single <ol> with
+  //    <li data-list="ordered|bullet" class="ql-indent-N">.
+  //    Reconstruct proper nesting so turndown emits correct markdown.
+  d.querySelectorAll('ol, ul').forEach(function(list) {
+    var hasQuill = list.querySelector('[data-list]') || list.querySelector('.ql-indent-1');
+    if (!hasQuill) return;
+    var items = Array.from(list.children).filter(function(el) { return el.tagName === 'LI'; });
+    if (items.length === 0) return;
+    var root = document.createElement(list.tagName);
+    var stack = [{list: root, indent: 0}];
+    items.forEach(function(li) {
+      var dataList = li.getAttribute('data-list') || 'ordered';
+      var indent = 0;
+      var m = li.className.match(/ql-indent-(\d+)/);
+      if (m) indent = parseInt(m[1], 10);
+      // Pop up to parent level
+      while (stack.length > 1 && indent < stack[stack.length - 1].indent) {
+        stack.pop();
+      }
+      // Create nested list if indent increased
+      if (indent > stack[stack.length - 1].indent) {
+        var tag = dataList === 'bullet' ? 'ul' : 'ol';
+        var nested = document.createElement(tag);
+        var prevLi = stack[stack.length - 1].list.lastElementChild;
+        if (prevLi && prevLi.tagName === 'LI') {
+          prevLi.appendChild(nested);
+        } else {
+          stack[stack.length - 1].list.appendChild(nested);
+        }
+        stack.push({list: nested, indent: indent});
+      }
+      // Switch list type at same indent (ordered→bullet or vice versa)
+      var curTag = stack[stack.length - 1].list.tagName.toLowerCase();
+      var wantTag = dataList === 'bullet' ? 'ul' : 'ol';
+      if (curTag !== wantTag) {
+        var parentEl = stack[stack.length - 1].list.parentNode;
+        if (parentEl) {
+          var switched = document.createElement(wantTag);
+          parentEl.insertBefore(switched, stack[stack.length - 1].list.nextSibling);
+          stack[stack.length - 1] = {list: switched, indent: indent};
+        }
+        // If parentEl is null (root not yet in DOM), just keep current list
+      }
+      var cleanLi = document.createElement('li');
+      cleanLi.innerHTML = li.innerHTML;
+      cleanLi.removeAttribute('data-list');
+      cleanLi.removeAttribute('class');
+      stack[stack.length - 1].list.appendChild(cleanLi);
+    });
+    list.replaceWith(root);
+  });
+  return d.innerHTML;
+}
+let loaded = false;
+
+// --- Load report ---
+async function loadReport() {
+  const btn = document.getElementById('load-report-btn');
+  btn.textContent = 'Loading...';
+  btn.disabled = true;
+  try {
     const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({format})
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: 'md'})
     });
     const result = await r.json();
-    btn.textContent = format.toUpperCase();
+    if (result.error) { showStatus('Error: ' + result.error, true); return; }
+
+    let md = result.output || '';
+    // Strip logo embeds (can't resolve in browser)
+    md = md.replace(/!\[Logo\]\(data:image\/[^)]+\)\n*/g, '');
+    md = md.replace(/!\[\[\.?\/?Data\/Logo[^\]]*\]\]\n*/g, '');
+    md = md.replace(/!\[.*?\]\(\.\/?Data\/Logo[^)]*\)\n*/g, '');
+    // Strip evidence screenshot embeds (filesystem paths, can't load in browser)
+    md = md.replace(/!\[.*?\]\(evidence\/[^)]*\)\n*/g, '');
+    md = md.replace(/!\[\[evidence\/[^\]]*\]\]\n*/g, '');
+    // Strip entire Evidence Screenshots section (images can't load in web context)
+    md = md.replace(/## Evidence Screenshots[\s\S]*?(?=\n---)/, '');
+    md = md.trimStart();
+
+    // Cache the clean markdown for exports (bypasses Quill round-trip which mangles tables)
+    window._cachedMd = md;
+    // Convert markdown to HTML
+    const html = marked.parse(md);
+    // Store original table HTMLs for preview repair (Quill's table module mangles tables)
+    window._originalTables = [];
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+    temp.querySelectorAll('table').forEach(function(table) {
+      window._originalTables.push(table.outerHTML);
+    });
+    quill.clipboard.dangerouslyPasteHTML(html);
+    loaded = true;
+    showStatus('Report loaded');
+    // Scroll to top
+    try { quill.root.scrollTop = 0; } catch(e) {}
+    refreshPreview();
+  } catch(e) {
+    showStatus('Error: ' + e.message, true);
+    console.error('loadReport error:', e);
+  } finally {
+    btn.textContent = 'Load Report';
     btn.disabled = false;
-    const output = document.getElementById('report-output');
-    const text = document.getElementById('report-output-text');
-    output.classList.remove('hidden');
-    if (result.error) {
-        text.textContent = 'Error: ' + result.error;
-    } else {
-        text.textContent = result.output || 'Report generated successfully';
-    }
+  }
 }
+
+// --- Export (WYSIWYG: captures preview iframe HTML, which has all JS fixes applied) ---
+async function exportReport(format) {
+  if (!loaded) { showStatus('Load a report first', true); return; }
+  const iframe = document.getElementById('report-preview');
+  if (!iframe || !iframe.contentDocument) { showStatus('Preview not ready', true); return; }
+
+  const btn = document.getElementById('export-' + format);
+  btn.textContent = 'Converting...';
+  btn.disabled = true;
+  try {
+    // Capture the preview iframe's fully-rendered HTML (includes JS table repair + PoC styling)
+    const previewHtml = iframe.contentDocument.documentElement.outerHTML;
+
+    if (format === 'html') {
+      const blob = new Blob([previewHtml], {type: 'text/html'});
+      triggerDownload(blob, 'report-{{ case.case_id }}.html');
+      showStatus('HTML downloaded');
+      return;
+    }
+    if (format === 'md') {
+      // Convert preview HTML to markdown via server
+      const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({format: 'md', html: previewHtml})
+      });
+      const result = await r.json();
+      if (result.error) { showStatus(result.error, true); return; }
+      const blob = new Blob([result.output || ''], {type: 'text/markdown'});
+      triggerDownload(blob, 'report-{{ case.case_id }}.md');
+      showStatus('MD downloaded');
+      return;
+    }
+    // DOCX/PDF: send preview HTML to server for direct conversion (bypasses markdown)
+    const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format, html: previewHtml})
+    });
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const result = await r.json();
+        if (result.error) {
+          showStatus(result.error, true);
+        } else if (result.output) {
+          const blob = new Blob([result.output], {type: 'text/html'});
+          triggerDownload(blob, 'report-{{ case.case_id }}.' + format);
+          showStatus(format.toUpperCase() + ' downloaded');
+        } else {
+          showStatus(format.toUpperCase() + ' complete');
+        }
+      } else {
+        const blob = await r.blob();
+        triggerDownload(blob, 'report-{{ case.case_id }}.' + format);
+        showStatus(format.toUpperCase() + ' downloaded');
+      }
+  } catch(e) {
+    showStatus('Error: ' + e.message, true);
+  } finally {
+    btn.textContent = 'Export ' + format.toUpperCase();
+    btn.disabled = false;
+  }
+}
+
+// --- Preview (client-side turndown → server-side _md_to_html_full) ---
+async function refreshPreview() {
+  const raw = quill.root.innerHTML;
+  if (!raw.trim() || raw === '<p><br></p>') { previewPlaceholder(); return; }
+  // Normalize Quill HTML quirks then convert to markdown via turndown
+  const md = turndown.turndown(normalizeQuillHtml(raw));
+  try {
+    const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: 'html', markdown: md})
+    });
+    const result = await r.json();
+    const iframe = document.getElementById('report-preview');
+    if (result.output && iframe.contentDocument) {
+      iframe.contentDocument.open();
+      iframe.contentDocument.write(result.output);
+      iframe.contentDocument.close();
+      // Repair tables mangled by Quill: replace tables lacking <thead> with originals by position
+      if (window._originalTables && window._originalTables.length > 0) {
+        var previewTables = iframe.contentDocument.querySelectorAll('table');
+        var brokenIdx = 0;
+        previewTables.forEach(function(tbl) {
+          if (!tbl.querySelector('thead') && brokenIdx < window._originalTables.length) {
+            var div = iframe.contentDocument.createElement('div');
+            div.innerHTML = window._originalTables[brokenIdx];
+            var replacement = div.querySelector('table');
+            if (replacement) { tbl.replaceWith(replacement); }
+            brokenIdx++;
+          }
+        });
+      }
+      // Style PoC <pre> blocks as terminal boxes (fallback if ```poc tag was lost in round-trip)
+      iframe.contentDocument.querySelectorAll('h4').forEach(function(h4) {
+        if (h4.textContent.indexOf('Proof of Concept') !== -1) {
+          var el = h4.nextElementSibling;
+          while (el && el.tagName !== 'PRE') { el = el.nextElementSibling; }
+          if (el && el.tagName === 'PRE' && !el.classList.contains('poc-shell')) {
+            el.style.background = '#000';
+            el.style.color = '#fff';
+            el.style.border = '1px solid #555';
+          }
+        }
+      });
+    } else if (result.error) {
+      showStatus('Preview error: ' + result.error, true);
+    }
+  } catch(e) {
+    console.error('preview error:', e);
+    showStatus('Preview error: ' + e.message, true);
+  }
+}
+
+function previewPlaceholder() {
+  const iframe = document.getElementById('report-preview');
+  if (!iframe.contentDocument) return;
+  iframe.contentDocument.open();
+  iframe.contentDocument.write('<html><body style="font-family:sans-serif;color:#555;padding:2em;text-align:center;margin-top:4em"><p>Click <strong>Load Report</strong> to begin.</p></body></html>');
+  iframe.contentDocument.close();
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function showStatus(msg, isError) {
+  const el = document.getElementById('editor-status');
+  el.textContent = msg;
+  el.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400') + ' ml-auto';
+}
+
+// Init
+previewPlaceholder();
+
+// Debounced auto-preview on Quill content change
+let previewTimer = null;
+quill.on('text-change', function() {
+  if (!loaded) return;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshPreview, 800);
+});
 </script>
 {% endblock %}

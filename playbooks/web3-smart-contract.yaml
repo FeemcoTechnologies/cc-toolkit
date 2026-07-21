@@ -1,0 +1,200 @@
+name: "Web3 / Smart Contract Audit"
+description: >
+  Blockchain and smart contract security assessment covering Solidity/EVM,
+  Rust/Solana, Move/Aptos, and Vyper. Tests reentrancy, access control,
+  flash loan attacks, oracle manipulation, integer overflows, front-running,
+  and governance exploits. Provider-agnostic — works with any EVM-compatible
+  chain plus non-EVM chains (Solana, Near, Aptos, Polkadot).
+version: "2.0"
+target_required: true
+
+vars:
+  chain: ""
+  contract_address: ""
+  rpc_url: ""
+  source_scan_type: "static"
+  abi_file: ""
+  solidity_dir: ""
+
+preflight:
+  - id: preamble
+    type: log
+    message: "Smart contract audit — {contract_address} on {chain} case: {case_id}"
+
+steps:
+  # Phase 1: Contract discovery & metadata
+  - id: discovery
+    name: "Contract discovery"
+    type: parallel
+    max_workers: 4
+    steps:
+      - id: contract_info
+        name: "Fetch contract metadata"
+        tool: python3
+        args: ["-c", "import sys; c=sys.argv[1]; r=sys.argv[2]; print(f'Contract {c} on chain with RPC {r}:\\n- Get bytecode: eth_getCode\\n- Get ABI: etherscan API or Sourcify\\n- Get source: verify on block explorer\\n- Check: proxy pattern, upgradeability, owner')",
+               "{contract_address}", "{rpc_url}"]
+        save: "{case_dir}/contract-metadata.txt"
+        timeout: 15
+
+      - id: code_hash
+        name: "Verify contract bytecode"
+        tool: python3
+        args: ["-c", "import sys; print(f'Bytecode verification:\\n- Compare deployed bytecode vs source compilation\\n- Check metadata hash in bytecode\\n- Verify bytecode doesn\\'t contain backdoors\\n- check contract creation tx for constructor args\\n- verify proxy admin/implementation match')"]
+        save: "{case_dir}/bytecode-verify.txt"
+        timeout: 15
+
+      - id: proxy_check
+        name: "Detect proxy patterns"
+        tool: python3
+        args: ["-c", "import sys; print('Proxy pattern detection:\\n- EIP-1967 (UUPS transparent proxy)\\n- EIP-1822 (Universal Upgradeable Proxy)\\n- OpenZeppelin Proxy pattern\\n- Beacon proxy (EIP-1967 beacon)\\n- Diamond proxy (EIP-2535)\\n- Check: initialize functions unprotected?\\n- Check: implementation selfdestruct?\\n- Check: proxy admin is EOA (not multisig)?')"]
+        save: "{case_dir}/proxy-detection.txt"
+        timeout: 15
+
+  # Phase 2: Static analysis
+  - id: static_analysis
+    name: "Static source code analysis"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: slither_scan
+        name: "Slither static analysis"
+        tool: slither
+        args: ["{solidity_dir}", "--json", "{case_dir}/slither-results.json"]
+        timeout: 120
+        artifacts:
+          - "{case_dir}/slither-results.json"
+
+      - id: mythril_scan
+        name: "Mythril security analysis"
+        tool: mythril
+        args: ["-a", "{contract_address}", "--rpc", "{rpc_url}",
+               "-o", "{case_dir}/mythril-results.json"]
+        timeout: 180
+        artifacts:
+          - "{case_dir}/mythril-results.json"
+
+      - id: aderyn_scan
+        name: "Aderyn static analysis (Rust)"
+        tool: python3
+        args: ["-c", "import sys; print(f'Static analysis for {sys.argv[1]}:\\n- Solidity: Slither, Mythril, Aderyn, Solhint\\n- Rust/Solana: cargo-audit, Anchor linter, Soteria\\n- Move/Aptos: Move Prover, Move linter\\n- Vyper: Vyper security tools\\n- Test: compiler version, pragma locking, unchecked blocks')",
+               "{solidity_dir}"]
+        save: "{case_dir}/static-analysis-summary.txt"
+        timeout: 15
+
+  # Phase 3: Vulnerability category testing
+  - id: vuln_categories
+    name: "Vulnerability category testing"
+    type: parallel
+    max_workers: 5
+    steps:
+      - id: reentrancy
+        name: "Reentrancy testing"
+        tool: python3
+        args: ["-c", "import sys; print('Reentrancy attack vectors:\\n1. Single-function reentrancy (classic)\\'\\n2. Cross-function reentrancy\\n3. Cross-contract reentrancy\\n4. Read-only reentrancy\\n5. ERC-721/1155 callback reentrancy\\n6. Delegate call reentrancy\\n7. ETH receive/fallback reentrancy\\nCheck: CEI pattern, reentrancy guards, OpenZeppelin ReentrancyGuard')"]
+        save: "{case_dir}/reentrancy.txt"
+        timeout: 15
+
+      - id: access_control
+        name: "Access control testing"
+        tool: python3
+        args: ["-c", "import sys; print('Access control vulnerability vectors:\\n1. Unprotected initialize() functions\\n2. Missing onlyOwner modifiers\\n3. tx.origin check (instead of msg.sender)\\n4. Role-based access control bypass:\\n5. Self-destruct with public access\\n6. Ownership renounce (default owner)\\n7. Pause/unpause function abuse\\n8. Timelock bypass via upgrade')"]
+        save: "{case_dir}/access-control.txt"
+        timeout: 15
+
+      - id: math_overflow
+        name: "Integer overflow/underflow"
+        tool: python3
+        args: ["-c", "import sys; print('Integer arithmetic vulnerabilities:\\n1. Unchecked overflow (Solidity <0.8)\\n2. SafeMath usage check\\n3. Rounding errors (division precision)\\n4. Price calculation manipulation\\n5. Rebasing token accounting\\n6. Staking reward calculation\\n7. Fee-on-transfer tokens\\n8. Balance snapshot manipulation')"]
+        save: "{case_dir}/math-issues.txt"
+        timeout: 15
+
+      - id: oracle_manip
+        name: "Oracle manipulation testing"
+        tool: python3
+        args: ["-c", "import sys; print('Price oracle manipulation:\\n1. Single-source oracle dependency\\n2. TWAP manipulation (low liquidity)\\n3. Flash loan assisted oracle attack\\n4. Stale price (chainlink heartbeat)\\n5. LP token price manipulation\\n6. Time-weighted vs spot price\\n7. Oracle deviation threshold bypass\\nTools: echidna (fuzzing), medusa (fuzzing)')"]
+        save: "{case_dir}/oracle-manipulation.txt"
+        timeout: 15
+
+      - id: flash_loan
+        name: "Flash loan attack vectors"
+        tool: python3
+        args: ["-c", "import sys; print('Flash loan attack scenarios:\\n1. Price manipulation via flash loan\\n2. Governance attack via flash loan\\n3. Liquidity pool draining\\n4. Cross-protocol MEV extraction\\n5. Lending protocol manipulation\\n6. Synthetic asset minting via flash loan\\nTools: Foundry test harness, Ape framework')"]
+        save: "{case_dir}/flash-loan.txt"
+        timeout: 15
+
+  # Phase 4: Advanced DeFi testing
+  - id: defi_test
+    name: "DeFi protocol testing"
+    type: parallel
+    max_workers: 3
+    steps:
+      - id: gov_attack
+        name: "Governance attack vectors"
+        tool: python3
+        args: ["-c", "import sys; print('Governance attack vectors:\\n1. Flash loan governance takeovers\\n2. Proposal creation without quorum\\n3. Vote delegation manipulation\\n4. Timelock bypass via upgrade\\n5. Emergency/council override abuse\\n6. Sybil attack on governance token\\n7. Quadratic voting bypass\\nFamous: Compound Proposal 62, Beanstalk Hack')"]
+        save: "{case_dir}/governance-attacks.txt"
+        timeout: 15
+
+      - id: mev_test
+        name: "MEV vulnerability analysis"
+        tool: python3
+        args: ["-c", "import sys; print('MEV vulnerability vectors:\\n1. Sandwich attack (DEX trades)\\n2. Frontrunning: tx ordering reliance\\n3. Backrunning: harvest/compound\\n4. Time-bandwidth profit extraction\\n5. JIT liquidity manipulation\\n6. Slippage protection bypass\\n7. Commit-reveal scheme flaws\\nMitigations: Flashbots, MEV-share, commit-reveal']"]
+        save: "{case_dir}/mev-analysis.txt"
+        timeout: 15
+
+  # Phase 5: Gas optimization & logic issues
+  - id: gas_logic
+    name: "Gas & logic optimization analysis"
+    type: sequential
+    steps:
+      - id: gas_issues
+        name: "Gas-related vulnerabilities"
+        tool: python3
+        args: ["-c", "import sys; print('Gas-related security issues:\\n1. Denial of service via gas griefing\\n2. Block gas limit overflow (loops over arrays)\\n3. Unbounded operations (DoS vector)\\n4. Gas griefing via reentrancy\\n5. Unchecked external call gas stipend\\n6. Dynamic array iteration bounds')"]
+        save: "{case_dir}/gas-vulns.txt"
+        timeout: 15
+
+  # Phase 6: Dynamic testing (Fork/Simulation)
+  - id: dynamic
+    name: "Dynamic analysis & simulation"
+    type: sequential
+    steps:
+      - id: foundry_setup
+        name: "Setup Foundry fork test"
+        tool: python3
+        args: ["-c", "import sys; c=sys.argv[1]; r=sys.argv[2]; print(f'Dynamic testing for {c}:\\n1. forge test --fork-url {r}\\n2. forge script TestContract --fork-url {r}\\n3. Test: specific vulnerability scenarios\\n4. Coverage: foundry coverage\\n5. Fuzzing: foundry invariant testing\\n6. Gas report: forge snapshot')",
+               "{contract_address}", "{rpc_url}"]
+        save: "{case_dir}/dynamic-test-plan.txt"
+        timeout: 15
+
+  # Phase 7: Report
+  - id: report
+    name: "Smart contract audit report"
+    type: report
+    format: markdown
+    title: "Smart Contract Audit — {contract_address}"
+    output: "{case_dir}/smart-contract-report.md"
+    sections:
+      - heading: "Target"
+        body: "- Contract: {contract_address}\n- Chain: {chain}\n- RPC: {rpc_url}\n- Case: {case_id}"
+      - heading: "Contract Metadata"
+        body: "- Metadata: {case_dir}/contract-metadata.txt\n- Bytecode: {case_dir}/bytecode-verify.txt\n- Proxy: {case_dir}/proxy-detection.txt"
+      - heading: "Static Analysis"
+        body: "- Slither: {case_dir}/slither-results.json\n- Mythril: {case_dir}/mythril-results.json\n- Summary: {case_dir}/static-analysis-summary.txt"
+      - heading: "Vulnerability Categories"
+        body: "- Reentrancy: {case_dir}/reentrancy.txt\n- Access control: {case_dir}/access-control.txt\n- Math: {case_dir}/math-issues.txt\n- Oracle: {case_dir}/oracle-manipulation.txt\n- Flash loans: {case_dir}/flash-loan.txt"
+      - heading: "DeFi & MEV"
+        body: "- Governance: {case_dir}/governance-attacks.txt\n- MEV: {case_dir}/mev-analysis.txt"
+      - heading: "Gas/Logic"
+        body: "- Gas issues: {case_dir}/gas-vulns.txt"
+      - heading: "Dynamic Analysis"
+        body: "- Test plan: {case_dir}/dynamic-test-plan.txt"
+
+postflight:
+  - id: cleanup
+    type: log
+    message: "Smart contract audit complete — {case_dir}"
+  - id: done
+    type: notify
+    level: success
+    message: "Smart contract audit finished for {contract_address}. Report at {case_dir}/smart-contract-report.md"

