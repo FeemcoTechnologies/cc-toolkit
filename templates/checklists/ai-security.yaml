@@ -1,0 +1,207 @@
+checklist_id: ai-security
+title: AI / LLM Application Security Checklist
+description: >
+  Security testing checklist for AI-powered applications and LLM integrations.
+  Covers prompt injection, model extraction, training data poisoning, supply chain,
+  and OWASP Top 10 for LLM Applications (LLM01-LLM10).
+version: "1.1"
+categories:
+  - name: Prompt Injection & Jailbreaking
+    items:
+      - id: AI-PI-1
+        description: Direct prompt injection — "Ignore previous instructions"
+        owasp: LLM01
+        mitre_attack: T1579
+      - id: AI-PI-2
+        description: Indirect prompt injection via retrieved context or tool output
+        owasp: LLM01
+        mitre_attack: T1579
+      - id: AI-PI-3
+        description: Role-playing / persona injection ("You are now DAN...")
+        owasp: LLM01
+      - id: AI-PI-4
+        description: Multilingual / encoded injection (base64, leetspeak, Unicode confusables)
+        owasp: LLM01
+      - id: AI-PI-5
+        description: Payload smashing through context window exhaustion
+        owasp: LLM01
+      - id: AI-PI-6
+        description: System prompt leakage via "Repeat your instructions"
+        owasp: LLM01
+
+  - name: Sensitive Information Disclosure
+    items:
+      - id: AI-SD-1
+        description: System prompt extraction — recover full prompt via adversarial queries
+        owasp: LLM02
+      - id: AI-SD-2
+        description: Training data extraction — recover memorized PII or secrets
+        owasp: LLM02
+        mitre_attack: T1592
+      - id: AI-SD-3
+        description: Model inversion — infer attributes of training data
+        owasp: LLM02
+      - id: AI-SD-4
+        description: Membership inference — determine if a record was in training set
+        owasp: LLM02
+      - id: AI-SD-5
+        description: Cross-session data leakage between users sharing a model
+        owasp: LLM02
+      - id: AI-SD-6
+        description: API key / credential leakage in generated responses
+        owasp: LLM02
+
+  - name: Supply Chain & Model Integrity
+    items:
+      - id: AI-SC-1
+        description: Verify model provenance — checksum / hash vs published weights
+        owasp: LLM03
+      - id: AI-SC-2
+        description: Poisoned base model — backdoor triggers in open-source weights
+        owasp: LLM03
+        mitre_attack: T1195
+      - id: AI-SC-3
+        description: Third-party plugin / extension security review
+        owasp: LLM03
+      - id: AI-SC-4
+        description: RAG pipeline supply chain — vector DB, embedding model, data source integrity
+        owasp: LLM03
+      - id: AI-SC-5
+        description: Model serialization deserialization (Pickle / Safetensors boundary)
+        owasp: LLM03
+
+  - name: Data & Model Poisoning
+    items:
+      - id: AI-DP-1
+        description: Training data poisoning — backdoor triggers in fine-tuning dataset
+        owasp: LLM04
+        mitre_attack: T1578
+      - id: AI-DP-2
+        description: RAG context poisoning — malicious documents in vector store
+        owasp: LLM04
+      - id: AI-DP-3
+        description: Feedback loop poisoning — adversarial user feedback corrupting RLHF
+        owasp: LLM04
+      - id: AI-DP-4
+        description: Model drift detection — monitor for degraded or poisoned outputs
+        owasp: LLM04
+
+  - name: Excessive Agency & Tool Usage
+    items:
+      - id: AI-EA-1
+        description: Tool/plugin invocation without user confirmation
+        owasp: LLM05
+      - id: AI-EA-2
+        description: Automated action chaining — "Send email AND delete records"
+        owasp: LLM05
+        mitre_attack: T1559
+      - id: AI-EA-3
+        description: Read/write filesystem access via tool calls
+        owasp: LLM05
+      - id: AI-EA-4
+        description: Network access from agent (SSRF, internal API calls)
+        owasp: LLM05
+        mitre_attack: T1190
+      - id: AI-EA-5
+        description: Tool output not sanitized before re-prompting
+        owasp: LLM05
+
+  - name: Over-reliance & Hallucination
+    items:
+      - id: AI-OR-1
+        description: Hallucinated API endpoints / library names (supply chain risk)
+        owasp: LLM06
+      - id: AI-OR-2
+        description: Hallucinated factual claims presented as authoritative
+        owasp: LLM06
+      - id: AI-OR-3
+        description: Lack of confidence threshold before taking action
+        owasp: LLM06
+      - id: AI-OR-4
+        description: No human-in-the-loop for high-impact decisions
+        owasp: LLM06
+
+  - name: Insecure Output Handling
+    items:
+      - id: AI-IO-1
+        description: LLM output rendered unsanitized as HTML (XSS via AI)
+        owasp: LLM07
+        mitre_attack: T1059
+      - id: AI-IO-2
+        description: LLM output evaluated as code (eval(), exec(), Function())
+        owasp: LLM07
+      - id: AI-IO-3
+        description: LLM output used in SQL queries without parameterization
+        owasp: LLM07
+        mitre_attack: T1190
+      - id: AI-IO-4
+        description: LLM output injected into system commands (shell injection)
+        owasp: LLM07
+        mitre_attack: T1202
+      - id: AI-IO-5
+        description: Markdown rendering of LLM output (XSS via rendered links)
+        owasp: LLM07
+
+  - name: Training Data Curation
+    items:
+      - id: AI-TD-1
+        description: PII / PHI in training data not identified or redacted
+        owasp: LLM08
+      - id: AI-TD-2
+        description: Copyrighted material in training set
+        owasp: LLM08
+      - id: AI-TD-3
+        description: Biased / toxic content in training set not filtered
+        owasp: LLM08
+      - id: AI-TD-4
+        description: Data de-duplication — near-identical records inflating bias
+        owasp: LLM08
+
+  - name: Denial of Service & Resource Exhaustion
+    items:
+      - id: AI-DS-1
+        description: Context window flooding (extremely long prompts)
+        owasp: LLM09
+      - id: AI-DS-2
+        description: Repetitive recursive tool calls (agent stuck in loop)
+        owasp: LLM09
+      - id: AI-DS-3
+        description: Expensive computation trigger (long chain-of-thought, infinite generation)
+        owasp: LLM09
+      - id: AI-DS-4
+        description: Rate limiting bypass on model inference API
+        owasp: LLM09
+
+  - name: Model Theft & Extraction
+    items:
+      - id: AI-MT-1
+        description: Model architecture extraction via probing queries
+        owasp: LLM10
+        mitre_attack: T1525
+      - id: AI-MT-2
+        description: Model weight theft via side channels or insider access
+        owasp: LLM10
+      - id: AI-MT-3
+        description: Distillation attack — train surrogate model on query outputs
+        owasp: LLM10
+      - id: AI-MT-4
+        description: Embedding vector leakage exposing model internals
+        owasp: LLM10
+
+  - name: Infrastructure & Access Control
+    items:
+      - id: AI-IA-1
+        description: Unauthenticated model API endpoint
+        mitre_attack: T1190
+      - id: AI-IA-2
+        description: Model API rate limiting absent or too permissive
+      - id: AI-IA-3
+        description: Audit logging of model queries and responses missing
+      - id: AI-IA-4
+        description: Model stored on world-readable filesystem or S3 bucket
+        mitre_attack: T1530
+      - id: AI-IA-5
+        description: Inference endpoint has network access to internal services
+        mitre_attack: T1190
+      - id: AI-IA-6
+        description: No input content filtering (NSFW, violence, malicious code)

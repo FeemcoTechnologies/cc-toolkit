@@ -1,0 +1,125 @@
+rules:
+  - id: angular.bypass-security-trust
+    pattern-either:
+      - pattern: |
+          bypassSecurityTrustHtml($INPUT)
+      - pattern: |
+          bypassSecurityTrustScript($INPUT)
+      - pattern: |
+          bypassSecurityTrustStyle($INPUT)
+      - pattern: |
+          bypassSecurityTrustUrl($INPUT)
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: Angular security bypass with non-constant input — XSS risk
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: angular.domsanitizer-sanitize-user
+    pattern: |
+      sanitizer.sanitize($CONTEXT, $INPUT)
+    severity: WARNING
+    languages: [typescript, javascript]
+    message: Sanitizer fed directly with user input — verify the context actually neutralizes it
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: angular.innerhtml-binding
+    pattern: |
+      [innerHTML]="$BINDING"
+    severity: WARNING
+    languages: [html]
+    message: Angular [innerHTML] binding — XSS if the binding contains user input; use interpolation or sanitize
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: angular.router-navigate-user-input
+    pattern-either:
+      - pattern: |
+          router.navigate([$INPUT])
+      - pattern: |
+          router.navigateByUrl($INPUT)
+    severity: WARNING
+    languages: [typescript, javascript]
+    message: Open redirect / client-side navigation from user input — validate target
+    metadata:
+      cwe: CWE-601
+
+  - id: angular.localstorage-token
+    pattern: |
+      localStorage.setItem($KEY, $TOKEN)
+    severity: WARNING
+    languages: [typescript, javascript]
+    message: Auth tokens in localStorage are XSS-readable — prefer httpOnly cookies
+    metadata:
+      cwe: CWE-922
+      owasp: A3
+
+  - id: angular.window-open-input
+    pattern: |
+      window.open($INPUT)
+    severity: WARNING
+    languages: [typescript, javascript]
+    message: Open redirect — validate URLs before window.open
+    metadata:
+      cwe: CWE-601
+
+  - id: angular.eval-user-input
+    pattern: |
+      eval($INPUT)
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: Code injection — never eval user input
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: angular.new-function-user-input
+    pattern: |
+      new Function($INPUT)
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: Code injection — new Function() with dynamic input
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: angular.type-any-http
+    pattern: |
+      this.http.$METHOD($URL).subscribe($CALLBACK)
+    severity: INFO
+    languages: [typescript]
+    message: HTTP response typed as any — object may expose sensitive fields via over-binding
+    metadata:
+      cwe: CWE-915
+
+  - id: angular.rxjs-user-join-to-string
+    pattern: |
+      $OBS.pipe(map($F)).toPromise()
+    severity: INFO
+    languages: [typescript]
+    message: Review async data flow — ensure no sensitive data is leaked to template without sanitization
+    metadata:
+      cwe: CWE-200
+
+  - id: angular.disable-host-check
+    pattern: |
+      "disableHostCheck": true
+    severity: INFO
+    languages: [json]
+    message: disableHostCheck enabled in Angular dev configuration — DNS rebinding risk
+    metadata:
+      cwe: CWE-345
+
+  - id: angular.window-open-scheme-inject
+    pattern: |
+      window.open("javascript:" + $INPUT)
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: "XSS via javascript: URI — never build URLs from user input"
+    metadata:
+      cwe: CWE-79
+      owasp: A7

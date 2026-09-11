@@ -6,16 +6,14 @@ History stored as append-only JSONL per domain.
 """
 
 import json
-import os
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 try:
-    from .constants import CC_DIR
+from .config import CC_DIR
 except ImportError:
     CC_DIR = Path("/workspace")
 
@@ -85,6 +83,16 @@ def _save_config(domain: str, cfg: dict):
     (d / "config.json").write_text(json.dumps(cfg, indent=2))
 
 
+def _is_error_value(value: str) -> bool:
+    """NXDOMAIN / ERROR: results are failure states, not real record values."""
+    return value.startswith("NXDOMAIN") or value.startswith("ERROR:")
+
+
+def _real_values(records: dict, rtype: str) -> Set[str]:
+    return {e["value"] for e in records.get(rtype, [])
+            if not _is_error_value(e["value"])}
+
+
 def _append_history(domain: str, records: dict, prev_records: dict):
     """Append resolution results to history.jsonl."""
     d = _domain_dir(domain)
@@ -93,8 +101,8 @@ def _append_history(domain: str, records: dict, prev_records: dict):
     ts = datetime.now(timezone.utc).isoformat()
     lines = []
     for rtype, entries in records.items():
-        prev_entries = prev_records.get(rtype, [])
-        prev_values = {e["value"] for e in prev_entries}
+        prev_values = {e["value"] for e in prev_records.get(rtype, [])
+                       if not _is_error_value(e["value"])}
         for e in entries:
             changed = e["value"] not in prev_values if prev_values else False
             lines.append(json.dumps({
@@ -135,7 +143,6 @@ def start_monitor(domain: str, types: Optional[List[str]] = None,
                   interval: int = 300, duration: int = 0) -> dict:
     """Start monitoring a domain for DNS changes."""
     types = types or ["A", "AAAA"]
-    d = _domain_dir(domain)
     existing = _load_config(domain)
     if existing.get("active"):
         return {"error": f"Already monitoring {domain}", "config": existing}
@@ -198,7 +205,12 @@ _monitor_stop = threading.Event()
 
 
 def _check_all_monitors():
-    """Check all active monitors and resolve if due."""
+    """Check all active monitors and resolve if due.
+
+    Change detection compares the current resolution against the last
+    persisted baseline (previous check), NOT against a fresh snapshot
+    taken 0.5s earlier — the old approach flagged transient noise.
+    """
     for cfg in list_monitors():
         if not cfg.get("active"):
             continue
@@ -209,25 +221,30 @@ def _check_all_monitors():
 
         domain = cfg["domain"]
         types = cfg.get("record_types", ["A", "AAAA"])
-        prev_records = resolve(domain, types)["records"]
-        # Wait a moment, then resolve again to compare
-        time.sleep(0.5)
         records = resolve(domain, types)["records"]
 
+        baseline = cfg.get("last_values") or {}
         changed = False
         for rtype, entries in records.items():
-            prev = {e["value"] for e in prev_records.get(rtype, [])}
+            prev = set(baseline.get(rtype, []))
             for e in entries:
+                if _is_error_value(e["value"]):
+                    continue
                 if e["value"] not in prev:
                     changed = True
                     break
 
-        _append_history(domain, records, prev_records)
+        _append_history(domain, records, baseline)
 
+        # Persist the new baseline (real values only) for the next check.
+        cfg["last_values"] = {rtype: sorted(_real_values(records, rtype))
+                              for rtype in records}
+        cfg["last_check"] = now
         interval = cfg.get("interval", 300)
-        next_dt = datetime.now(timezone.utc).timestamp() + interval
-        cfg["last_check"] = datetime.now(timezone.utc).isoformat()
-        cfg["next_check"] = datetime.fromtimestamp(next_dt, tz=timezone.utc).isoformat()
+        cfg["next_check"] = datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() + interval,
+            tz=timezone.utc,
+        ).isoformat()
         if changed:
             cfg["change_count"] = cfg.get("change_count", 0) + 1
         _save_config(domain, cfg)

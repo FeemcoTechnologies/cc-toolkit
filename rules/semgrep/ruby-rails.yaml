@@ -1,0 +1,117 @@
+rules:
+  - id: ruby.sql-injection-where
+    pattern: |
+      $MODEL.where($COND)
+    severity: WARNING
+    languages: [ruby]
+    message: SQL injection — where() with string interpolation/concat builds injectable SQL; use ? placeholders
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: ruby.sql-injection-interp
+    pattern: |
+      $MODEL.where("#{$INPUT}")
+    severity: ERROR
+    languages: [ruby]
+    message: SQL injection — string interpolation into ActiveRecord queries
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: ruby.open-redirect-redirect_to
+    pattern: |
+      redirect_to $INPUT
+    severity: WARNING
+    languages: [ruby]
+    message: Open redirect — ensure redirect_to targets are allowlisted
+    metadata:
+      cwe: CWE-601
+
+  - id: ruby.ssti-render-inline
+    pattern: |
+      render inline: $INPUT
+    severity: ERROR
+    languages: [ruby]
+    message: SSTI — render inline evaluates ERB; never pass user input
+    metadata:
+      cwe: CWE-1336
+
+  - id: ruby.eval-input
+    pattern: |
+      eval($INPUT)
+    severity: ERROR
+    languages: [ruby]
+    message: Code injection via eval() — never evaluate user input
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: ruby.system-input
+    pattern: |
+      system($INPUT)
+    severity: ERROR
+    languages: [ruby]
+    message: Command injection — validate/sanitize input used with system()
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: ruby.file-read-input
+    pattern: |
+      File.read($INPUT)
+    severity: WARNING
+    languages: [ruby]
+    message: Arbitrary file read / path traversal — validate the path
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: ruby.mass-assignment
+    pattern: |
+      $MODEL.update($HASH)
+    severity: WARNING
+    languages: [ruby]
+    message: Mass assignment — if $hash comes from params and require is too broad, rollback risk; use strong parameters
+    metadata:
+      cwe: CWE-915
+      owasp: A1
+
+  - id: ruby.weak-crypto-md5
+    pattern: |
+      Digest::MD5.hexdigest($INPUT)
+    severity: WARNING
+    languages: [ruby]
+    message: MD5 for security hashing — use BCrypt
+    metadata:
+      cwe: CWE-327
+      owasp: A3
+
+  - id: ruby.auth-bypass-skip-before
+    pattern: |
+      skip_before_action :$AUTH
+    severity: WARNING
+    languages: [ruby]
+    message: Auth check skipped for controller — verify scope of skip_before_action
+    metadata:
+      cwe: CWE-306
+      owasp: A1
+
+  - id: ruby.unnamed-render-partial
+    pattern: |
+      render partial: $INPUT
+    severity: WARNING
+    languages: [ruby]
+    message: Potential SSTI / arbitrary partial rendering if the partial name is user-controlled
+    metadata:
+      cwe: CWE-1336
+
+  # ERB templates — semgrep has no erb language; scan as generic with regex for raw() sink.
+  - id: ruby.unescaped-html-raw
+    pattern-regex: <%=.*?raw\((.*?)\)\s*%>
+    severity: WARNING
+    languages: [generic]
+    message: XSS — raw() disables HTML escaping in ERB templates; never wrap user input
+    metadata:
+      cwe: CWE-79
+      owasp: A7

@@ -1,0 +1,24 @@
+services:
+  edr-server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    ports:
+      - "127.0.0.1:8900:8900"
+    volumes:
+      - edr-data:/app/data
+      - ../rules:/app/rules:ro
+    environment:
+      - EDR_DB_PATH=/app/data/edr.db
+      - EDR_SECRET_KEY=${EDR_SECRET_KEY}
+      - EDR_ADMIN_API_KEY=${EDR_ADMIN_API_KEY}
+    restart: unless-stopped
+    networks:
+      - edr-internal
+
+networks:
+  edr-internal:
+    driver: bridge
+
+volumes:
+  edr-data:

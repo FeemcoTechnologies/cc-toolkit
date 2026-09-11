@@ -1,0 +1,142 @@
+rules:
+  - id: go.sql-injection
+    pattern: |
+      db.Query("SELECT * FROM $TABLE WHERE " + $INPUT)
+    severity: ERROR
+    languages: [go]
+    message: SQL injection — use parameterized queries with $1 placeholders
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: go.command-injection
+    pattern: exec.Command("bash", "-c", $INPUT)
+    severity: ERROR
+    languages: [go]
+    message: Command injection — avoid shell invocation with user input
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: go.xss-template
+    pattern: |
+      tmpl.Execute($WRITER, $INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Potential XSS if template does not escape HTML
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: go.path-traversal
+    pattern: |
+      os.Open($INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Path traversal risk — validate/sanitize file path
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: go.insecure-deserialization
+    pattern: |
+      encoding/gob.NewDecoder($INPUT).Decode($OUT)
+    severity: WARNING
+    languages: [go]
+    message: Unsafe deserialization — gob/gob does not validate input types
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: go.ssrf
+    pattern: |
+      http.Get($INPUT)
+    severity: WARNING
+    languages: [go]
+    message: SSRF risk — validate URLs from user input
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: go.hardcoded-secret
+    pattern: |
+      $VAR := "$SECRET"
+    severity: ERROR
+    languages: [go]
+    message: Hardcoded credential
+    metadata:
+      cwe: CWE-798
+      owasp: A2
+
+  - id: go.insecure-crypto
+    pattern: |
+      md5.New()
+    severity: WARNING
+    languages: [go]
+    message: MD5 is not cryptographically secure — use SHA-256 or better
+    metadata:
+      cwe: CWE-327
+      owasp: A3
+
+  - id: go.race-channel
+    pattern: |
+      go func() { $VAR = $VALUE }()
+    severity: INFO
+    languages: [go]
+    message: Potential race condition on shared variable — use mutex
+    metadata:
+      cwe: CWE-362
+
+  - id: go.template-html-trusted-type
+    pattern: |
+      template.HTML($INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Casting to template.HTML bypasses auto-escaping — XSS risk
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: go.open-redirect
+    pattern: |
+      http.Redirect($W, $R, $INPUT, $CODE)
+    severity: WARNING
+    languages: [go]
+    message: Open redirect — validate that the redirect target is local/allowlisted
+    metadata:
+      cwe: CWE-601
+
+  - id: go.path-traversal-join
+    pattern: |
+      filepath.Join($ROOT, $INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Path traversal via filepath.Join — ensure $INPUT cannot escape $ROOT
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: go.xss-inline-handler
+    pattern-either:
+      - pattern: |
+          w.Header().Set("Content-Type", "text/html" + $INPUT)
+      - pattern: |
+          fmt.Fprintf($W, $INPUT)
+    severity: WARNING
+    languages: [go]
+    message: Potential XSS — HTML written directly with user input
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: go.weak-random
+    patterns:
+      - pattern: rand.Intn($N)
+      - metavariable-regex:
+          metavariable: $N
+          regex: ^[^$]
+    severity: INFO
+    languages: [go]
+    message: math/rand is not cryptographically secure — use crypto/rand for security purposes
+    metadata:
+      cwe: CWE-338

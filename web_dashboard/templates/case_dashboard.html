@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}CC / {{ case.case_id }}{% endblock %}
 {% block head %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
 {% endblock %}
 {% block content %}
 {% set active_section = 'overview' %}
@@ -248,6 +248,10 @@
                 </div>
             </div>
             <div>
+                <label class="text-xs text-gray-500 block mb-1">CPE</label>
+                <input id="af-cpe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*">
+            </div>
+            <div>
                 <label class="text-xs text-gray-500 block mb-1">Affected Host(s)</label>
                 <input id="af-affected_hosts" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" placeholder="IP, hostname, or URL">
             </div>
@@ -347,6 +351,7 @@ async function submitFinding() {
         description: document.getElementById('af-description').value.trim(),
         cve: document.getElementById('af-cve').value.trim(),
         cwe: document.getElementById('af-cwe').value.trim(),
+        cpe: document.getElementById('af-cpe').value.trim(),
         affected_hosts: document.getElementById('af-affected_hosts').value.trim(),
         impact: document.getElementById('af-impact').value.trim(),
         remediation: document.getElementById('af-remediation').value.trim(),

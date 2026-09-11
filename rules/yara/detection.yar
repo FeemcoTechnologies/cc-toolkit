@@ -22,7 +22,8 @@ rule webshell_detect_common
     $backdoor = "backdoor" ascii nocase
     $cmd = "cmd.exe" ascii nocase
   condition:
-    any of ($php*) or any of ($jsp*) or any of ($asp*)
+    any of ($php*) or any of ($jsp*) or any of ($asp*) or
+    ($backdoor and 2 of ($php*, $cmd))
 }
 
 rule cobalt_strike_beacon
@@ -35,15 +36,16 @@ rule cobalt_strike_beacon
   strings:
     $m1 = "MZ" fullword
     $ref1 = "ReflectiveLoader"
-    $pipe1 = "\msagent_"
-    $pipe2 = "\postex_"
+    $pipe1 = "\\msagent_"
+    $pipe2 = "\\postex_"
     $namedpipe = "\\\\.\\pipe\\"
     $watermark = "x00x00x00x00"     // MZ header watermark offset pattern
     $config1 = "0x2e"               // common config marker
     $beacon = "beacon" ascii nocase
     $x64 = "x64" ascii nocase
   condition:
-    ($m1 at 0) and (any of ($ref1,$beacon,$x64))
+    ($m1 at 0) and (any of ($ref1, $pipe1, $pipe2, $namedpipe,
+                            $watermark, $config1, $beacon, $x64))
 }
 
 rule mimikatz_detect

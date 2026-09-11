@@ -1,0 +1,301 @@
+title: SecurityX
+description: CompTIA SecurityX (formerly CASP+) — Advanced cybersecurity practitioner certification covering security architecture, operations, engineering, cryptography, and GRC.
+
+cards:
+  # --- SecurityX Domains ---
+  - question: What are the four domains of SecurityX (CAS-005)?
+    answer: Security Architecture (29%), Security Operations (24%), Security Engineering and Cryptography (21%), Governance Risk and Compliance (26%).
+
+  # --- Hardware Security ---
+  - question: What is a Trusted Platform Module (TPM)?
+    answer: A hardware chip that stores cryptographic keys, measures platform integrity, and supports secure boot and attestation.
+
+  - question: What is measured boot and how does it differ from secure boot?
+    answer: Secure boot verifies signatures of boot components. Measured boot hashes each component and stores measurements in TPM PCRs for remote attestation.
+
+  - question: What is a Hardware Security Module (HSM)?
+    answer: A tamper-resistant appliance for generating, storing, and managing cryptographic keys at scale. Used for PKI, payment systems, and key escrow.
+
+  - question: What is the difference between a TPM and an HSM?
+    answer: TPM is a motherboard chip for local integrity and key storage. HSM is an enterprise-grade appliance with FIPS validation for centralized key management.
+
+  - question: What is a Virtual TPM (vTPM)?
+    answer: A virtualized TPM instance for VMs, enabling BitLocker, attestation, and key protection per-VM.
+
+  - question: What is a secure enclave or trusted execution environment (TEE)?
+    answer: An isolated CPU region (Intel SGX, AMD SEV, ARM TrustZone) protecting code and data from privileged attackers including the host OS.
+
+  # --- Operating System Security ---
+  - question: What is a Trusted OS?
+    answer: "An OS enforcing mandatory access control, least privilege, and security labels. Examples: SELinux, AppArmor, SEAndroid."
+
+  - question: What is container escape?
+    answer: Breaking out of container namespaces to access the host. Mitigated by rootless containers, seccomp, and dropping Linux capabilities.
+
+  # --- Virtualization & Cloud ---
+  - question: What is a Type 1 vs Type 2 hypervisor?
+    answer: Type 1 runs directly on hardware. Type 2 runs on a host OS. Type 1 has lower attack surface and is preferred for production.
+
+  - question: What is micro-segmentation?
+    answer: Fine-grained isolation of workloads using per-application firewall policies, typically via SDN or hypervisor enforcement.
+
+  - question: What is SASE?
+    answer: Secure Access Service Edge — cloud-delivered SD-WAN, SWG, CASB, ZTNA, and FWaaS.
+
+  - question: What is CASB?
+    answer: Cloud Access Security Broker — enforces policies between users and cloud apps, providing visibility, DLP, and threat protection.
+
+  - question: What is SWG?
+    answer: Secure Web Gateway — proxies web traffic, blocks malware, enforces URL filtering and DLP.
+
+  - question: What is the Shared Responsibility Model?
+    answer: Cloud provider secures the cloud (physical, hypervisor). Customer secures in the cloud (OS, apps, IAM, data).
+
+  # --- Identity & Access Control ---
+  - question: What is a federated identity system?
+    answer: Cross-organization authentication using shared trust. SAML, OIDC, OAuth.
+
+  - question: What is the difference between SAML and OAuth?
+    answer: SAML provides authentication via XML assertions. OAuth provides delegated authorization; OIDC adds authentication on top of OAuth.
+
+  - question: What is XACML?
+    answer: Attribute-based access control standard defining PEP and PDP components.
+
+  - question: What is FIDO2/WebAuthn?
+    answer: Passwordless authentication using public-key cryptography and hardware-backed credentials.
+
+  - question: What is Zero Trust Architecture (ZTA)?
+    answer: Never trust, always verify. No implicit trust based on network location. Every request is authenticated, authorized, and encrypted.
+
+  - question: What are the three pillars of Zero Trust?
+    answer: User/entity authentication, device health verification, and application-level authorization.
+
+  # --- Cryptography ---
+  - question: What is the difference between symmetric and asymmetric encryption?
+    answer: Symmetric uses one key (AES). Asymmetric uses key pairs (RSA, ECC).
+
+  - question: What are AES key lengths?
+    answer: 128, 192, 256 bits.
+
+  - question: What is the difference between CBC, GCM, and CCM modes?
+    answer: CBC is not authenticated. GCM and CCM are AEAD modes providing integrity and confidentiality.
+
+  - question: What is ephemeral Diffie-Hellman (DHE/ECDHE)?
+    answer: Per-session key exchange providing forward secrecy.
+
+  - question: What is forward secrecy?
+    answer: Compromise of long-term keys does not expose past sessions.
+
+  - question: What is the difference between RSA and ECC?
+    answer: ECC provides equivalent security with smaller keys and better performance.
+
+  - question: What is a digital signature?
+    answer: A hash signed with a private key to provide integrity and non-repudiation.
+
+  - question: What is certificate chain validation?
+    answer: Verifying signatures from end-entity → intermediate → root, plus expiration and revocation.
+
+  - question: What is certificate pinning?
+    answer: Hard-coding expected certificates or keys. Deprecated in favor of Certificate Transparency.
+
+  - question: What is Certificate Transparency (CT)?
+    answer: Public append-only logs of issued certificates to detect mis-issuance.
+
+  - question: What is post-quantum cryptography?
+    answer: "Algorithms resistant to quantum attacks. NIST selections: Kyber (KEM) and Dilithium (signatures)."
+
+  - question: What is a hybrid or quantum-safe certificate?
+    answer: Certificates containing both classical and post-quantum keys for compatibility and quantum resistance.
+
+  # --- Network Security ---
+  - question: What is defense in depth for network security?
+    answer: "Multiple layers: firewall → IDS/IPS → segmentation → NAC → VPN → endpoint protection → SIEM."
+
+  - question: What is the difference between IDS and IPS?
+    answer: IDS detects. IPS blocks.
+
+  - question: What is NIDS vs HIDS?
+    answer: NIDS monitors network traffic. HIDS monitors host logs and file integrity.
+
+  - question: What is IPsec vs TLS?
+    answer: IPsec protects Layer 3 traffic. TLS protects application connections.
+
+  - question: What is a jump box?
+    answer: Hardened admin access point that logs all sessions.
+
+  - question: What is a DMZ?
+    answer: A network segment between internal and external networks hosting public-facing services.
+
+  - question: What is a honeypot?
+    answer: A decoy system to attract attackers for detection and intelligence.
+
+  - question: What is a deception network?
+    answer: Distributed decoys, honeytokens, and breadcrumbs to detect lateral movement.
+
+  # --- Access Control Models ---
+  - question: What is the Bell-LaPadula model?
+    answer: "Confidentiality model: No read up, no write down."
+
+  - question: What is the Biba model?
+    answer: "Integrity model: No read down, no write up."
+
+  - question: What is the Clark-Wilson model?
+    answer: Integrity model using well-formed transactions and separation of duties.
+
+  - question: What is the Brewer-Nash model?
+    answer: Prevents conflicts of interest by restricting access to competing datasets.
+
+  # --- Email & DNS Security ---
+  - question: What is SPF, DKIM, and DMARC?
+    answer: SPF authorizes senders. DKIM signs messages. DMARC enforces policy on SPF/DKIM failures.
+
+  - question: What is DNSSEC?
+    answer: DNS integrity via cryptographic signatures.
+
+  - question: What is RPZ?
+    answer: DNS firewall overriding responses for malicious domains.
+
+  # --- Threat Intelligence & Detection ---
+  - question: What is the MITRE ATT&CK framework?
+    answer: A matrix of adversary tactics and techniques based on real-world observations.
+
+  - question: What is the Cyber Kill Chain?
+    answer: Recon → Weaponization → Delivery → Exploitation → Installation → C2 → Actions on Objectives.
+
+  - question: What is the Diamond Model?
+    answer: Analyzes adversary, infrastructure, capability, and victim relationships.
+
+  - question: What are IOCs vs IOAs?
+    answer: IOCs are artifacts of compromise. IOAs are behavioral indicators of attack intent.
+
+  - question: What is the Pyramid of Pain?
+    answer: Ranking IOC types by difficulty for attackers to change.
+
+  - question: What is STIX/TAXII?
+    answer: STIX is a structured intel format. TAXII is the transport protocol.
+
+  - question: What is TLP?
+    answer: Traffic Light Protocol — Red, Amber, Green, White for information sharing sensitivity.
+
+  # --- Vulnerability & Risk ---
+  - question: What is CVSS?
+    answer: Standardized vulnerability scoring from 0–10 across Base, Temporal, and Environmental metrics.
+
+  - question: What is EPSS?
+    answer: Predicts likelihood a CVE will be exploited in the next 30 days.
+
+  - question: What is CWE vs CVE?
+    answer: CWE is a weakness category. CVE is a specific vulnerability instance.
+
+  - question: What is a zero-day?
+    answer: A vulnerability unknown to the vendor with no patch available.
+
+  # --- Compliance & GRC ---
+  - question: What is DIACAP/RMF?
+    answer: DoD certification/accreditation process replaced by NIST RMF.
+
+  - question: What are the six steps of NIST RMF?
+    answer: Categorize, Select, Implement, Assess, Authorize, Monitor.
+
+  - question: What is a System Security Plan (SSP)?
+    answer: Documentation of system boundaries and implemented controls.
+
+  - question: What is certification vs accreditation?
+    answer: Certification evaluates controls. Accreditation authorizes system operation.
+
+  - question: What is an MOU vs SLA?
+    answer: MOU defines shared goals. SLA defines enforceable performance metrics.
+
+  - question: What is a BPA vs ISA?
+    answer: BPA defines business partnership terms. ISA defines security controls for system interconnections.
+
+  - question: What is data sovereignty?
+    answer: Data is subject to laws of the country where it resides.
+
+  - question: What is PCI DSS scope?
+    answer: Systems storing, processing, or transmitting cardholder data and connected systems affecting its security.
+
+  - question: What is SOC 2 Type I vs Type II?
+    answer: Type I evaluates design at a point in time. Type II evaluates effectiveness over months.
+
+  - question: What are SOC 2 trust service criteria?
+    answer: Security, Availability, Processing Integrity, Confidentiality, Privacy.
+
+  - question: What is ISO 27001?
+    answer: International ISMS standard requiring risk assessment and control selection.
+
+  - question: What is FedRAMP?
+    answer: US federal cloud authorization program using NIST SP 800-53 controls.
+
+  # --- Business Continuity & DR ---
+  - question: What is RPO vs RTO?
+    answer: RPO is max acceptable data loss. RTO is max acceptable downtime.
+
+  - question: What is a hot, warm, and cold site?
+    answer: "Hot: live replication. Warm: partial infrastructure. Cold: empty facility."
+
+  - question: What is a full-interruption test?
+    answer: DR test where primary systems are taken offline to validate failover.
+
+  # --- Forensics ---
+  - question: What is chain of custody?
+    answer: Documented evidence handling trail ensuring admissibility.
+
+  - question: What is order of volatility?
+    answer: CPU/registers → RAM → network → processes → temp files → disk → backups.
+
+  # --- Application Security ---
+  - question: What is fuzz testing?
+    answer: Sending malformed inputs to find crashes or unexpected behavior.
+
+  - question: What is SAST?
+    answer: Static code analysis without executing the application.
+
+  - question: What is DAST?
+    answer: Dynamic testing of a running application for runtime vulnerabilities.
+
+  - question: What is the difference between a vulnerability scan and a penetration test?
+    answer: Scan finds known issues automatically. Pen test manually exploits to show impact.
+
+  - question: What is a red team vs blue team vs purple team?
+    answer: Red attacks. Blue defends. Purple collaborates to improve detection and response.
+
+  # --- Password Security ---
+  - question: What is PBKDF2, bcrypt, and Argon2?
+    answer: Key derivation functions that slow password cracking; Argon2 is memory-hard.
+
+  - question: What is a salt vs pepper?
+    answer: Salt is per-password random value stored with the hash. Pepper is a secret value stored separately.
+
+  # --- Architecture Frameworks ---
+  - question: What is TOGAF?
+    answer: Enterprise architecture framework using the ADM lifecycle.
+
+  - question: What is the Zachman Framework?
+    answer: 6x6 matrix organizing architecture by perspectives and abstractions.
+
+  - question: What is SABSA?
+    answer: Risk-driven security architecture framework aligned with business attributes.
+
+  # --- Additional High-Value SecurityX Questions ---
+  - question: What is an IAM wildcard risk?
+    answer: Wildcards can unintentionally broaden or bypass deny rules, enabling privilege escalation or unintended access.
+
+  - question: What is Zero Trust drift?
+    answer: Gradual reintroduction of implicit trust (e.g., IP allowlists) that undermines Zero Trust principles.
+
+  - question: What is an API token confusion attack?
+    answer: Using a valid token for one service to access another due to missing audience validation.
+
+  - question: What is microservice mTLS?
+    answer: Mutual TLS between services ensuring identity and encryption for every hop.
+
+  - question: What is behavioral detection?
+    answer: Identifying anomalies such as unusual SMB fan-out, privilege escalation patterns, or lateral movement.
+
+  - question: What is an SCP in AWS?
+    answer: Organization-wide guardrail policy restricting account permissions; cannot grant permissions.
+
+  - question: What is a compensating control?
+    answer: Alternative control meeting the same security objective when the primary control cannot be implemented.
+

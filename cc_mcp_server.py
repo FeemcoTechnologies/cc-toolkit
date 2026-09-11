@@ -11,17 +11,37 @@ Register in opencode.json alongside hexstrike, configure timeout via env:
     }
   }
 }
+
+Optional env vars:
+  CC_MCP_TIMEOUT   timeout in seconds for thread-pool and subprocess calls (default: 300)
+  CC_MCP_TOOLS     comma-separated tool-name prefixes to expose (default: all).
+                   e.g. "bb,case,rules,web" keeps only tools whose names start
+                   with bb/case/rules/web; "*" or empty keeps everything.
+
+Feature toggles (lightweight MCP):
+  By default the exposed tool set is taken from the "features" block in
+  config.json (~/.config/kali-command-center/config.json), so it can be
+  managed with `cc features` or the web dashboard (System -> Features) without
+  editing opencode.json. Env CC_MCP_TOOLS always overrides the config.
+
+  Manage from the CLI:
+    cc features                 # list groups + state
+    cc features disable ad      # turn a group off
+    cc features tool-add caido  # per-tool override: force a prefix on
+    cc features tool-rm burp    # per-tool override: force a prefix off
+
+  `doctor_run` (capability/health check) is always exposed.
+  The full tool-name index is written to cc_tool_index.json at startup.
 """
 
-import atexit
-import concurrent.futures
+import asyncio
 import datetime
 import json
 import os
 import subprocess
 import sys
-import threading
 import uuid
+import threading
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -29,23 +49,31 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from mcp.server.fastmcp import FastMCP
-from modules.config import TOOLS_DIR, SCRIPTS_DIR, CASES_DIR
+from modules.config import TOOLS_DIR, SCRIPTS_DIR, CASES_DIR, CC_DIR
+from modules.case_manager import CaseManager
+from modules.findings_db import FindingsDB
+from modules.checklist_manager import list_templates as list_checklist_templates, get_template_source
 
 mcp = FastMCP("CC Toolkit")
 
 _TIMEOUT = int(os.environ.get("CC_MCP_TIMEOUT", "300"))
-_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
 _TOOLS_DIR = os.environ.get("CC_TOOLS_DIR", str(TOOLS_DIR))
-atexit.register(_POOL.shutdown)
 
 
 def _run(fn, *args, **kwargs):
-    """Run a function with the configured timeout. Raises TimeoutError if exceeded."""
-    fut = _POOL.submit(fn, *args, **kwargs)
-    try:
-        return fut.result(timeout=_TIMEOUT)
-    except concurrent.futures.TimeoutError:
-        return {"error": f"Timed out after {_TIMEOUT}s (increase CC_MCP_TIMEOUT env var)"}
+    """Run a function directly (no thread pool — fast MCP startup)."""
+    return fn(*args, **kwargs)
+
+
+async def _run_async(fn, *args, **kwargs):
+    """Run a blocking function in a worker thread so the MCP event loop stays responsive.
+
+    Use this instead of _run() for tools that can take minutes (scans, attacks,
+    monitoring). FastMCP runs async tool functions with await, so the loop keeps
+    servicing other requests while the blocking call runs in a thread.
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 def _path_is_inside(child: Path, parent: Path) -> bool:
@@ -64,6 +92,14 @@ def _require(val: str, name: str = "value") -> None:
         raise ValueError(f"'{name}' must not be empty")
 
 
+def _case_dir(case_id: str) -> Path:
+    """Resolve a validated case directory under CASES_DIR. Raises ValueError on traversal."""
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", case_id or ""):
+        raise ValueError(f"Invalid case_id: {case_id!r}")
+    return CASES_DIR / case_id
+
+
 # ---------------------------------------------------------------------------
 # AD Security
 # ---------------------------------------------------------------------------
@@ -73,12 +109,6 @@ def ad_certipy_find(domain: str, target: str, username: str = "",
     """
     Enumerate AD Certificate Services misconfigurations (ESC1-ESC8) on a domain controller.
     Phase: Active Directory Security
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      ca: Certificate Authority server name (str) [default: '']
     Related: ad_certipy_request, ad_bloodyad_exec, ad_bloodyad_dump, ad_kerbrute_userenum, ad_ldapnomnom_enum, ad_netexec_pre2k, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import certipy_find
@@ -92,14 +122,6 @@ def ad_certipy_request(domain: str, target: str, template: str,
     """
     Request a certificate via Certipy (ESC1/ESC3 attack).
     Phase: Active Directory Security
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      target: Target hostname, IP, or URL (str)
-      template: Template name or path (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      upn: User Principal Name for certificate (str) [default: '']
-      dns: DNS name for certificate (str) [default: '']
     Related: ad_certipy_find, ad_bloodyad_exec, ad_bloodyad_dump, ad_kerbrute_userenum, ad_ldapnomnom_enum, ad_netexec_pre2k, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import certipy_request
@@ -115,16 +137,6 @@ def ad_bloodyad_exec(server: str, action: str, username: str = "",
     """
     Execute a BloodyAD action (add/remove ACL, modify object, etc) against an AD server.
     Phase: Active Directory Security
-    Parameters:
-      server: Target server address (IP or hostname) (str)
-      action: Action to perform (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      target_dn: Target Distinguished Name (str) [default: '']
-      ldap_filter: LDAP search filter (str) [default: '']
-      attribute: LDAP attribute to modify (str) [default: '']
-      value: Value to set (str) [default: '']
     Related: ad_certipy_find, ad_certipy_request, ad_bloodyad_dump, ad_kerbrute_userenum, ad_ldapnomnom_enum, ad_netexec_pre2k, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import bloodyad_exec
@@ -139,12 +151,6 @@ def ad_bloodyad_dump(server: str, username: str = "", password: str = "",
     """
     Dump AD objects (users, computers, groups) via BloodyAD.
     Phase: Active Directory Security
-    Parameters:
-      server: Target server address (IP or hostname) (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      object_class: AD object class (user, computer, group) (str) [default: 'user']
     Related: ad_certipy_find, ad_certipy_request, ad_bloodyad_exec, ad_kerbrute_userenum, ad_ldapnomnom_enum, ad_netexec_pre2k, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import bloodyad_dump
@@ -158,10 +164,6 @@ def ad_kerbrute_userenum(domain: str, wordlist: str,
     """
     Enumerate valid AD usernames via Kerberos pre-authentication.
     Phase: Active Directory Security
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      wordlist: Path to wordlist file (str)
-      dc_ip: Domain controller IP address (str) [default: '']
     Related: ad_certipy_find, ad_certipy_request, ad_bloodyad_exec, ad_bloodyad_dump, ad_ldapnomnom_enum, ad_netexec_pre2k, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import kerbrute_userenum
@@ -173,9 +175,6 @@ def ad_ldapnomnom_enum(target: str, base_dn: str = "") -> str:
     """
     Perform anonymous LDAP enumeration against a domain controller.
     Phase: Active Directory Security
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      base_dn: LDAP base DN (str) [default: '']
     Related: ad_certipy_find, ad_certipy_request, ad_bloodyad_exec, ad_bloodyad_dump, ad_kerbrute_userenum, ad_netexec_pre2k, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import ldapnomnom_enum
@@ -187,10 +186,6 @@ def ad_netexec_pre2k(domain: str, dc_ip: str, wordlist: str) -> str:
     """
     Check for pre-created computer accounts via NetExec (pre2k attack).
     Phase: Active Directory Security
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      dc_ip: Domain controller IP address (str)
-      wordlist: Path to wordlist file (str)
     Related: ad_certipy_find, ad_certipy_request, ad_bloodyad_exec, ad_bloodyad_dump, ad_kerbrute_userenum, ad_ldapnomnom_enum, ad_kerbrute_bruteforce
     """
     from modules.tool_wrappers import netexec_pre2k
@@ -202,10 +197,6 @@ def ad_kerbrute_bruteforce(domain: str, user: str, wordlist: str) -> str:
     """
     Brute-force password for a single AD user via Kerberos.
     Phase: Active Directory Security
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      user: Target username (str)
-      wordlist: Path to wordlist file (str)
     Related: ad_certipy_find, ad_certipy_request, ad_bloodyad_exec, ad_bloodyad_dump, ad_kerbrute_userenum, ad_ldapnomnom_enum, ad_netexec_pre2k
     """
     from modules.tool_wrappers import kerbrute_bruteforce
@@ -220,8 +211,6 @@ def web_jwt_scan(token: str) -> str:
     """
     Analyze a JWT token for vulnerabilities (alg none, weak signing, etc).
     Phase: Web Application Testing
-    Parameters:
-      token: JWT token string (str)
     Related: web_jwt_attack, web_graphw00f_scan, web_nuclei_scan
     """
     from modules.tool_wrappers import jwt_tool_scan
@@ -235,12 +224,6 @@ def web_jwt_attack(token: str, attack: str = "none",
     """
     Exploit a JWT with a specific attack (none, kid, alg confusion, etc).
     Phase: Web Application Testing
-    Parameters:
-      token: JWT token string (str)
-      attack: Attack type (str) [default: 'none']
-      payload_field: JWT payload field name (str) [default: '']
-      payload_value: JWT payload value to inject (str) [default: '']
-      signing_key: Custom signing key for JWT forgery (str) [default: '']
     Related: web_jwt_scan, web_graphw00f_scan, web_nuclei_scan
     """
     from modules.tool_wrappers import jwt_tool_attack
@@ -253,8 +236,6 @@ def web_graphw00f_scan(target: str) -> str:
     """
     Fingerprint a GraphQL endpoint to identify engine and version.
     Phase: Web Application Testing
-    Parameters:
-      target: Target hostname, IP, or URL (str)
     Related: web_jwt_scan, web_jwt_attack, web_nuclei_scan
     """
     from modules.tool_wrappers import graphw00f_scan
@@ -266,9 +247,6 @@ def web_nuclei_scan(target: str, template: str = "") -> str:
     """
     Run Nuclei vulnerability scanner against a target with optional template filter.
     Phase: Web Application Testing
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      template: Template name or path (str) [default: '']
     Related: web_jwt_scan, web_jwt_attack, web_graphw00f_scan
     """
     from modules.tool_wrappers import nuclei_scan
@@ -279,39 +257,29 @@ def web_nuclei_scan(target: str, template: str = "") -> str:
 # WiFi / Wireless
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def wifi_eaphammer_attack(bssid: str, essid: str, iface: str,
-                          auth_type: str = "WPA2-EAP",
-                          pmkid: bool = False,
-                          captive: bool = False) -> str:
+async def wifi_eaphammer_attack(bssid: str, essid: str, iface: str,
+                                auth_type: str = "WPA2-EAP",
+                                pmkid: bool = False,
+                                captive: bool = False) -> str:
     """
     Execute EAPHammer enterprise WiFi attack (PMKID capture, captive portal, downgrade).
     Phase: Wireless Pentesting
-    Parameters:
-      bssid: Target BSSID/MAC address (str)
-      essid: Target network name (ESSID) (str)
-      iface: Network interface for monitor mode (str)
-      auth_type: Authentication type (WPA2-EAP, WPA-EAP, EAP-TLS) (str) [default: 'WPA2-EAP']
-      pmkid: Capture PMKID during attack (bool) [default: False]
-      captive: Start captive portal (bool) [default: False]
     Related: wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.tool_wrappers import eaphammer_attack
-    return _fmt(_run(eaphammer_attack, bssid, essid, iface, auth_type=auth_type,
-                     pmkid=pmkid, captive=captive))
+    return _fmt(await _run_async(eaphammer_attack, bssid, essid, iface, auth_type=auth_type,
+                                 pmkid=pmkid, captive=captive))
 
 
 @mcp.tool()
-def wifi_scan(iface: str = "wlan0", timeout: int = 45) -> str:
+async def wifi_scan(iface: str = "wlan0", timeout: int = 45) -> str:
     """
     Scan for nearby WiFi networks. Returns list of APs with BSSID, channel, signal, encryption, ESSID.
     Phase: Wireless Pentesting
-    Parameters:
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      timeout: Operation timeout in seconds (int) [default: 45]
     Related: wifi_eaphammer_attack, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_scan as _scan
-    result = _run(_scan, iface=iface, timeout=timeout)
+    result = await _run_async(_scan, iface=iface, timeout=timeout)
     if result.get("error"):
         return f"Error: {result['error']}"
     aps = result.get("aps", [])
@@ -327,41 +295,30 @@ def wifi_scan(iface: str = "wlan0", timeout: int = 45) -> str:
 
 
 @mcp.tool()
-def wifi_deauth(bssid: str, iface: str = "wlan0",
-                station: str = "", count: int = 5) -> str:
+async def wifi_deauth(bssid: str, iface: str = "wlan0",
+                      station: str = "", count: int = 5) -> str:
     """
     Send deauthentication frames to a BSSID (optionally target a specific station).
     Phase: Wireless Pentesting
-    Parameters:
-      bssid: Target BSSID/MAC address (str)
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      station: Client station MAC (str) [default: '']
-      count: Number of deauth packets (int) [default: 5]
     Related: wifi_eaphammer_attack, wifi_scan, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_deauth as _deauth
-    result = _run(_deauth, bssid, iface=iface, station=station, count=count)
+    result = await _run_async(_deauth, bssid, iface=iface, station=station, count=count)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", "Deauth sent")
 
 
 @mcp.tool()
-def wifi_handshake_capture(bssid: str, channel: str, iface: str = "wlan0",
-                           essid: str = "", timeout: int = 60) -> str:
+async def wifi_handshake_capture(bssid: str, channel: str, iface: str = "wlan0",
+                                 essid: str = "", timeout: int = 60) -> str:
     """
     Capture WPA 4-way handshake. Returns path to capture file if successful.
     Phase: Wireless Pentesting
-    Parameters:
-      bssid: Target BSSID/MAC address (str)
-      channel: Wireless channel number (str)
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      essid: Target network name (ESSID) (str) [default: '']
-      timeout: Operation timeout in seconds (int) [default: 60]
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_handshake_capture as _hs
-    result = _run(_hs, bssid, channel, iface=iface, essid=essid, timeout=timeout)
+    result = await _run_async(_hs, bssid, channel, iface=iface, essid=essid, timeout=timeout)
     if result.get("error"):
         return f"Error: {result['error']}"
     if result.get("capture"):
@@ -370,35 +327,28 @@ def wifi_handshake_capture(bssid: str, channel: str, iface: str = "wlan0",
 
 
 @mcp.tool()
-def wifi_connect(ssid: str, password: str = "", iface: str = "wlan0") -> str:
+async def wifi_connect(ssid: str, password: str = "", iface: str = "wlan0") -> str:
     """
     Connect to a WiFi network. For open networks omit password.
     Phase: Wireless Pentesting
-    Parameters:
-      ssid: Ssid (str)
-      password: Password for authentication (str) [default: '']
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_connect as _conn
-    result = _run(_conn, ssid, password=password, iface=iface)
+    result = await _run_async(_conn, ssid, password=password, iface=iface)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", f"Connected to {ssid}")
 
 
 @mcp.tool()
-def wifi_network_scan(iface: str = "wlan0", subnet: str = "") -> str:
+async def wifi_network_scan(iface: str = "wlan0", subnet: str = "") -> str:
     """
     Scan the local network for hosts (ARP scan / ping sweep) after connecting.
     Phase: Wireless Pentesting
-    Parameters:
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      subnet: Subnet (str) [default: '']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_network_scan as _netscan
-    result = _run(_netscan, iface=iface, subnet=subnet)
+    result = await _run_async(_netscan, iface=iface, subnet=subnet)
     if result.get("error"):
         return f"Error: {result['error']}"
     hosts = result.get("hosts", [])
@@ -412,143 +362,110 @@ def wifi_network_scan(iface: str = "wlan0", subnet: str = "") -> str:
 
 
 @mcp.tool()
-def wifi_arp_spoof(target: str, gateway: str = "", iface: str = "wlan0") -> str:
+async def wifi_arp_spoof(target: str, gateway: str = "", iface: str = "wlan0") -> str:
     """
     Start ARP spoofing between target and gateway to intercept traffic.
     Phase: Wireless Pentesting
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      gateway: Gateway (str) [default: '']
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_arp_spoof as _arp
-    result = _run(_arp, target, gateway=gateway, iface=iface)
+    result = await _run_async(_arp, target, gateway=gateway, iface=iface)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", "ARP spoofing started")
 
 
 @mcp.tool()
-def wifi_proxy(port: int = 8080, iface: str = "wlan0",
-               sslstrip: bool = True) -> str:
+async def wifi_proxy(port: int = 8080, iface: str = "wlan0",
+                     sslstrip: bool = True) -> str:
     """
     Start BetterCAP transparent HTTP proxy with optional SSL stripping.
     Phase: Wireless Pentesting
-    Parameters:
-      port: Port number (int) [default: 8080]
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      sslstrip: Sslstrip (bool) [default: True]
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wifi_proxy as _proxy
-    result = _run(_proxy, port=port, iface=iface, sslstrip=sslstrip)
+    result = await _run_async(_proxy, port=port, iface=iface, sslstrip=sslstrip)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", f"Proxy started on :{port}")
 
 
 @mcp.tool()
-def wifi_rogue_ap(essid: str, iface: str = "wlan0", channel: str = "6",
-                  bssid: str = "") -> str:
+async def wifi_rogue_ap(essid: str, iface: str = "wlan0", channel: str = "6",
+                        bssid: str = "") -> str:
     """
     Create a rogue access point with the given ESSID using airbase-ng (or hostapd).
     Phase: Wireless Pentesting
-    Parameters:
-      essid: Target network name (ESSID) (str)
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      channel: Wireless channel number (str) [default: '6']
-      bssid: Target BSSID/MAC address (str) [default: '']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import airbase_rogue_ap
-    result = _run(airbase_rogue_ap, essid, iface=iface, channel=channel, bssid=bssid)
+    result = await _run_async(airbase_rogue_ap, essid, iface=iface, channel=channel, bssid=bssid)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", f"Rogue AP '{essid}' started")
 
 
 @mcp.tool()
-def wifi_sycophant_relay(iface: str = "wlan0", target_bssid: str = "",
-                         target_essid: str = "") -> str:
+async def wifi_sycophant_relay(iface: str = "wlan0", target_bssid: str = "",
+                               target_essid: str = "") -> str:
     """
     Relay WPA 4-way handshake using wpa_sycophant (MITM without password cracking).
     Phase: Wireless Pentesting
-    Parameters:
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      target_bssid: Target Bssid (str) [default: '']
-      target_essid: Target Essid (str) [default: '']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_mitmproxy, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import wpa_sycophant_relay
-    result = _run(wpa_sycophant_relay, iface=iface, target_bssid=target_bssid,
-                  target_essid=target_essid)
+    result = await _run_async(wpa_sycophant_relay, iface=iface, target_bssid=target_bssid,
+                              target_essid=target_essid)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", "wpa_sycophant relay started")
 
 
 @mcp.tool()
-def wifi_mitmproxy(port: int = 8080, listen_addr: str = "0.0.0.0",
-                   mode: str = "transparent") -> str:
+async def wifi_mitmproxy(port: int = 8080, listen_addr: str = "0.0.0.0",
+                         mode: str = "transparent") -> str:
     """
     Start mitmproxy in transparent or regular mode for traffic interception.
     Phase: Wireless Pentesting
-    Parameters:
-      port: Port number (int) [default: 8080]
-      listen_addr: Listen Addr (str) [default: '0.0.0.0']
-      mode: Mode (str) [default: 'transparent']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_evil_twin, wifi_auto_attack
     """
     from modules.wifi_wrapper import mitmproxy_intercept
-    result = _run(mitmproxy_intercept, port=port, listen_addr=listen_addr, mode=mode)
+    result = await _run_async(mitmproxy_intercept, port=port, listen_addr=listen_addr, mode=mode)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", f"mitmproxy started on :{port}")
 
 
 @mcp.tool()
-def wifi_evil_twin(essid: str, iface: str = "wlan0", channel: str = "6",
-                   bssid: str = "", portal_dir: str = "",
-                   proxy_port: int = 8080) -> str:
+async def wifi_evil_twin(essid: str, iface: str = "wlan0", channel: str = "6",
+                         bssid: str = "", portal_dir: str = "",
+                         proxy_port: int = 8080) -> str:
     """Full evil twin: rogue AP + captive portal on :80 + transparent proxy.
 
     Victims connect to the rogue AP, get a captive portal login page,
     entered credentials are logged, and all HTTP traffic is proxied.
     Phase: Wireless Pentesting
-    Parameters:
-      essid: Target network name (ESSID) (str)
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      channel: Wireless channel number (str) [default: '6']
-      bssid: Target BSSID/MAC address (str) [default: '']
-      portal_dir: Portal Dir (str) [default: '']
-      proxy_port: Proxy port for agent (int) [default: 8080]
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_auto_attack
     """
     from modules.wifi_wrapper import evil_twin_full
-    result = _run(evil_twin_full, essid, iface=iface, channel=channel, bssid=bssid,
-                  portal_dir=portal_dir, proxy_port=proxy_port)
+    result = await _run_async(evil_twin_full, essid, iface=iface, channel=channel, bssid=bssid,
+                              portal_dir=portal_dir, proxy_port=proxy_port)
     if result.get("error"):
         return f"Error: {result['error']}"
     return result.get("status", f"Evil twin '{essid}' running")
 
 
 @mcp.tool()
-def wifi_auto_attack(iface: str = "wlan0", target_bssid: str = "",
-                     target_essid: str = "", channel: str = "") -> str:
+async def wifi_auto_attack(iface: str = "wlan0", target_bssid: str = "",
+                           target_essid: str = "", channel: str = "") -> str:
     """
     Automatically try multiple attack vectors: handshake capture, deauth, evil twin, relay.
     Phase: Wireless Pentesting
-    Parameters:
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      target_bssid: Target Bssid (str) [default: '']
-      target_essid: Target Essid (str) [default: '']
-      channel: Wireless channel number (str) [default: '']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin
     """
     from modules.wifi_wrapper import wifi_auto_attack
-    result = _run(wifi_auto_attack, iface=iface, target_bssid=target_bssid,
-                  target_essid=target_essid, channel=channel)
+    result = await _run_async(wifi_auto_attack, iface=iface, target_bssid=target_bssid,
+                              target_essid=target_essid, channel=channel)
     attacks = result.get("attacks", {})
     lines = [f"Auto-attack against {result.get('target', '?')}:"]
     for name, res in attacks.items():
@@ -558,62 +475,48 @@ def wifi_auto_attack(iface: str = "wlan0", target_bssid: str = "",
 
 
 @mcp.tool()
-def wifi_wireless_graph(pcap: str = "", iface: str = "") -> str:
+async def wifi_wireless_graph(pcap: str = "", iface: str = "") -> str:
     """
     Parse wireless PCAP or live capture and generate an HTML signal graph.
     Phase: Wireless Pentesting
-    Parameters:
-      pcap: Path to PCAP file (str) [default: '']
-      iface: Network interface for monitor mode (str) [default: '']
     Related: wifi_eaphammer_attack, wifi_scan, wifi_deauth, wifi_handshake_capture, wifi_connect, wifi_network_scan, wifi_arp_spoof, wifi_proxy, wifi_rogue_ap, wifi_sycophant_relay, wifi_mitmproxy, wifi_evil_twin
     """
     from modules.tool_wrappers import wireless_graph
-    return _fmt(_run(wireless_graph, pcap=pcap, iface=iface))
+    return _fmt(await _run_async(wireless_graph, pcap=pcap, iface=iface))
 
 
 @mcp.tool()
-def forensics_yara_scan(rule_path: str, target: str) -> str:
+async def forensics_yara_scan(rule_path: str, target: str) -> str:
     """
     Scan files with YARA rules (rule file/dir vs target file/dir).
     Phase: Digital Forensics
-    Parameters:
-      rule_path: Path to YARA rule file or directory (str)
-      target: Target hostname, IP, or URL (str)
     Related: forensics_kape_collect, forensics_semgrep_scan
     """
     from modules.tool_wrappers import yara_scan
-    return _fmt(_run(yara_scan, rule_path, target), fmt="yara")
+    return _fmt(await _run_async(yara_scan, rule_path, target), fmt="yara")
 
 
 @mcp.tool()
-def forensics_kape_collect(target: str, targets: str = "!BasicCollection",
-                           module: str = "", binary_path: str = "kape") -> str:
+async def forensics_kape_collect(target: str, targets: str = "!BasicCollection",
+                                 module: str = "", binary_path: str = "kape") -> str:
     """
     Run KAPE Windows forensic artifact collection against a target drive or image.
     Phase: Digital Forensics
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      targets: Comma-separated target list (str) [default: '!BasicCollection']
-      module: KAPE module name (str) [default: '']
-      binary_path: Path to the binary file (str) [default: 'kape']
     Related: forensics_yara_scan, forensics_semgrep_scan
     """
     from modules.tool_wrappers import kape_collect
-    return _fmt(_run(kape_collect, target, targets=targets, module=module, binary_path=binary_path))
+    return _fmt(await _run_async(kape_collect, target, targets=targets, module=module, binary_path=binary_path))
 
 
 @mcp.tool()
-def forensics_semgrep_scan(config: str, target: str) -> str:
+async def forensics_semgrep_scan(config: str, target: str) -> str:
     """
     Run Semgrep SAST scanner against source code.
     Phase: Digital Forensics
-    Parameters:
-      config: Config (str)
-      target: Target hostname, IP, or URL (str)
     Related: forensics_yara_scan, forensics_kape_collect
     """
     from modules.tool_wrappers import semgrep_scan
-    return _fmt(_run(semgrep_scan, config, target))
+    return _fmt(await _run_async(semgrep_scan, config, target))
 
 
 # ---------------------------------------------------------------------------
@@ -628,18 +531,6 @@ def util_swaks_send(to: str, server: str, from_addr: str = "",
     """
     Send a test email via SMTP (useful for phishing simulation or mail server testing).
     Phase: Utility / Infrastructure
-    Parameters:
-      to: To (str)
-      server: Target server address (IP or hostname) (str)
-      from_addr: Sender email address (str) [default: '']
-      subject: Email subject (str) [default: 'Test']
-      body: Email body text (str) [default: '']
-      port: Port number (int) [default: 25]
-      tls: Use TLS for SMTP (bool) [default: False]
-      auth_user: SMTP auth username (str) [default: '']
-      auth_pass: SMTP auth password (str) [default: '']
-      attach: Attachment file path (str) [default: '']
-      header: Custom email header (str) [default: '']
     Related: util_wsgidav_serve, util_mitm_start, util_route_scan, util_sigma_convert
     """
     from modules.tool_wrappers import swaks_send
@@ -650,18 +541,11 @@ def util_swaks_send(to: str, server: str, from_addr: str = "",
 
 @mcp.tool()
 def util_wsgidav_serve(directory: str, host: str = "0.0.0.0",
-                       port: int = 8080, auth: bool = False,
+                       port: int = 8080, auth: bool = True,
                        username: str = "", password: str = "") -> str:
     """
     Start a WebDAV server for file sharing (background process).
     Phase: Utility / Infrastructure
-    Parameters:
-      directory: Directory to serve (str)
-      host: Hostname or IP (str) [default: '0.0.0.0']
-      port: Port number (int) [default: 8080]
-      auth: Enable authentication (bool) [default: False]
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
     Related: util_swaks_send, util_mitm_start, util_route_scan, util_sigma_convert
     """
     from modules.tool_wrappers import wsgidav_serve
@@ -678,9 +562,6 @@ def util_mitm_start(port: int = 8080, upstream: str = "") -> str:
     """
     Start a MITM proxy server for traffic interception.
     Phase: Utility / Infrastructure
-    Parameters:
-      port: Port number (int) [default: 8080]
-      upstream: Upstream proxy URL (str) [default: '']
     Related: util_swaks_send, util_wsgidav_serve, util_route_scan, util_sigma_convert
     """
     from modules.tool_wrappers import mitm_start
@@ -691,20 +572,16 @@ def util_mitm_start(port: int = 8080, upstream: str = "") -> str:
 
 
 @mcp.tool()
-def util_route_scan(target_range: str = "172.16.0.0/12",
-                    max_workers: int = 10, arp_only: bool = False) -> str:
+async def util_route_scan(target_range: str = "172.16.0.0/12",
+                          max_workers: int = 10, arp_only: bool = False) -> str:
     """
     Trace routes to IPs in a range and report suspicious private IPs in transit.
     Phase: Utility / Infrastructure
-    Parameters:
-      target_range: IP range in CIDR notation (str) [default: '172.16.0.0/12']
-      max_workers: Maximum parallel workers (int) [default: 10]
-      arp_only: Only send ARP pings (bool) [default: False]
     Related: util_swaks_send, util_wsgidav_serve, util_mitm_start, util_sigma_convert
     """
     from modules.tool_wrappers import route_scan
-    r = _run(route_scan, target_range=target_range,
-             max_workers=max_workers, arp_only=arp_only)
+    r = await _run_async(route_scan, target_range=target_range,
+                         max_workers=max_workers, arp_only=arp_only)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
     lines = [f"Route scan of {target_range}:"]
@@ -719,10 +596,6 @@ def util_sigma_convert(input_file: str, target_format: str = "siem",
     """
     Convert Sigma rules to other formats (splunk, elk, qradar, etc.).
     Phase: Utility / Infrastructure
-    Parameters:
-      input_file: Input File (str)
-      target_format: Target Format (str) [default: 'siem']
-      output: Output (str) [default: '']
     Related: util_swaks_send, util_wsgidav_serve, util_mitm_start, util_route_scan
     """
     from modules.tool_wrappers import sigma_convert
@@ -741,8 +614,6 @@ def ref_ldap_filters(keyword: str = "") -> str:
     """
     Search LDAP query filters for AD enumeration (AS-REP roastable, Kerberoastable, delegation, etc).
     Phase: Reference Data Lookup
-    Parameters:
-      keyword: Search keyword (str) [default: '']
     Related: ref_event_ids, ref_cves
     """
     from modules.references import search_ldap
@@ -757,8 +628,6 @@ def ref_event_ids(keyword: str = "") -> str:
     """
     Search Windows Event IDs (security, sysmon, PowerShell). Keyword can be ID, log, or description.
     Phase: Reference Data Lookup
-    Parameters:
-      keyword: Search keyword (str) [default: '']
     Related: ref_ldap_filters, ref_cves
     """
     from modules.references import search_event_ids
@@ -773,8 +642,6 @@ def ref_cves(keyword: str = "") -> str:
     """
     Search curated CVE database for high-value exploits (PrintNightmare, ZeroLogon, Log4Shell, etc).
     Phase: Reference Data Lookup
-    Parameters:
-      keyword: Search keyword (str) [default: '']
     Related: ref_ldap_filters, ref_event_ids
     """
     from modules.references import search_cves
@@ -790,16 +657,37 @@ def ref_cves(keyword: str = "") -> str:
 
 _playbook_jobs: dict = {}
 _PB_LOCK = threading.Lock()
+_PB_MAX_JOBS = 100
+
+
+def _pb_prune():
+    """Cap _playbook_jobs size so a long-running server doesn't leak memory.
+
+    Completed/failed entries are only history, so those are dropped first
+    (oldest first); running jobs fall back to oldest-insertion-order drops.
+    """
+    with _PB_LOCK:
+        if len(_playbook_jobs) <= _PB_MAX_JOBS:
+            return
+        excess = len(_playbook_jobs) - _PB_MAX_JOBS
+        terminal = [k for k, v in _playbook_jobs.items()
+                    if v.get("status") in ("completed", "failed")]
+        for k in terminal[:excess]:
+            del _playbook_jobs[k]
+        if len(_playbook_jobs) > _PB_MAX_JOBS:
+            for k in list(_playbook_jobs)[:len(_playbook_jobs) - _PB_MAX_JOBS]:
+                del _playbook_jobs[k]
+
 
 def _pb_run_background(name: str, target: str, case_id: str, job_id: str, vars_override: dict = None):
     """Run a playbook in background and store results."""
     from modules.playbook_engine import RunbookEngine
-    from modules.case_manager import CaseManager
     try:
         engine = RunbookEngine()
         cm = CaseManager()
         with _PB_LOCK:
-            _playbook_jobs[job_id] = {"status": "running", "progress": 0}
+            _playbook_jobs[job_id] = {"status": "running", "progress": 0,
+                                      "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         results = engine.run_file(
             name, targets=[target] if target else [],
             case_id=case_id, vars_override=vars_override or {}, verbose=False,
@@ -818,21 +706,25 @@ def _pb_run_background(name: str, target: str, case_id: str, job_id: str, vars_o
                     lines.append(f"- {sid}: {status}")
                 cm.add_note(case_id, "\n".join(lines), tags=["runbook", "mcp"])
         except Exception as _e:
-            print(f"[runbook] Failed to save runbook log: {_e}", flush=True)
+            _log(f"Failed to save runbook log: {_e}")
         with _PB_LOCK:
             _playbook_jobs[job_id] = {
                 "status": "completed",
                 "progress": 100,
                 "step_count": len(results) if results else 0,
                 "case_id": case_id,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
+        _pb_prune()
     except Exception as e:
         with _PB_LOCK:
             _playbook_jobs[job_id] = {
                 "status": "failed",
                 "error": str(e),
                 "case_id": case_id,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
+        _pb_prune()
 
 
 @mcp.tool()
@@ -860,11 +752,6 @@ def playbook_list() -> str:
 def playbook_launch(name: str, target: str = "", case_id: str = "", vars_json: str = "") -> str:
     """Launch a playbook asynchronously. Returns a job_id for status polling.
     Phase: Runbook Orchestration
-    Parameters:
-      name: Name (str)
-      target: Target hostname, IP, or URL (str) [default: '']
-      case_id: Case ID to scope results (str) [default: '']
-      vars_json: JSON object to override playbook variables (str) [default: '']
     Related: playbook_list, playbook_status, playbook_log
     Use playbook_status(job_id) to check progress, playbook_log(case_id) to get results."""
     import json as _json
@@ -873,17 +760,19 @@ def playbook_launch(name: str, target: str = "", case_id: str = "", vars_json: s
     resolved_case_id = case_id or f"mcp-{name.replace('.yaml','')}-{datetime.datetime.now(datetime.timezone.utc):%Y%m%d_%H%M%S}"
 
     # Create case upfront
-    from modules.case_manager import CaseManager
     try:
         cm = CaseManager()
         cm.create(resolved_case_id,
                   description=f"MCP-runbook: {name} against {target or '(no target)'}",
                   targets=[target] if target else [])
     except Exception as _e:
-        print(f"[runbook] Case may already exist (expected): {_e}", flush=True)
+        _log(f"Case may already exist (expected): {_e}")
 
     with _PB_LOCK:
-        _playbook_jobs[job_id] = {"status": "queued", "progress": 0, "case_id": resolved_case_id}
+        _playbook_jobs[job_id] = {"status": "queued", "progress": 0,
+                                  "case_id": resolved_case_id,
+                                  "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        _pb_prune()
     t = threading.Thread(target=_pb_run_background,
                          args=(name, target, resolved_case_id, job_id, vars_override), daemon=True)
     t.start()
@@ -895,8 +784,6 @@ def playbook_status(job_id: str) -> str:
     """
     Check the status of an async playbook launch. Returns JSON with status, progress, and result.
     Phase: Runbook Orchestration
-    Parameters:
-      job_id: Job Id (str)
     Related: playbook_list, playbook_launch, playbook_log
     """
     with _PB_LOCK:
@@ -912,12 +799,8 @@ def playbook_log(case_id: str) -> str:
     """
     Get the runbook execution log for a case. Returns JSON with step outputs.
     Phase: Runbook Orchestration
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: playbook_list, playbook_launch, playbook_status
     """
-    from modules.case_manager import CaseManager
-    from pathlib import Path
     cm = CaseManager()
     log_path = cm._case_path(case_id) / "runbook-log.json"
     if not log_path.exists():
@@ -933,8 +816,6 @@ def runbook_list(search: str = "") -> str:
     """
     List all available runbook templates with step counts and descriptions.
     Phase: Runbook Orchestration
-    Parameters:
-      search: Filter by name keyword (str) [default: '']
     Related: runbook_get_steps, runbook_get, runbook_set, playbook_list, playbook_launch
     """
     from modules.playbook_engine import RunbookEngine
@@ -964,8 +845,6 @@ def runbook_get_steps(name: str) -> str:
     """
     Get the detailed steps for a named runbook template.
     Phase: Runbook Orchestration
-    Parameters:
-      name: Runbook filename (e.g. 'quick-recon.yaml') (str)
     Related: runbook_list, runbook_get, runbook_set, playbook_launch
     """
     from modules.playbook_engine import RunbookEngine
@@ -985,12 +864,8 @@ def runbook_get(case_id: str) -> str:
     """
     Get the current runbook/playbook configuration for a specific case.
     Phase: Runbook Orchestration
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: runbook_set, runbook_list, runbook_get_steps, playbook_log
     """
-    from modules.case_manager import CaseManager
-    from pathlib import Path
     cm = CaseManager()
     runbook_path = cm._case_path(case_id) / "playbook.json"
     if not runbook_path.exists():
@@ -1004,12 +879,8 @@ def runbook_set(case_id: str, steps_json: str) -> str:
     """
     Set/replace the runbook for a case with new steps.
     Phase: Runbook Orchestration
-    Parameters:
-      case_id: Case ID to scope results (str)
-      steps_json: JSON array of step objects (str)
     Related: runbook_get, runbook_list, runbook_get_steps
     """
-    from modules.case_manager import CaseManager
     import json as _json
     cm = CaseManager()
     runbook_path = cm._case_path(case_id) / "playbook.json"
@@ -1036,12 +907,10 @@ def runbook_set(case_id: str, steps_json: str) -> str:
 def burp_health() -> str:
     """Check Burp Suite REST API connectivity and version.
     Phase: Burp Integration
-    Parameters:
-      (none)
     Related: burp_scan_start, burp_scan_status, burp_issues_list
     Use this first to verify Burp is reachable."""
     from modules.burp_client import BurpClient
-    from modules.constants import BURP_API_URL, BURP_API_KEY
+from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     h = bc.health()
     v = bc.versions()
@@ -1052,12 +921,10 @@ def burp_health() -> str:
 def burp_scan_start(urls: str) -> str:
     """Start a new Burp Suite scan. Returns scan ID for status polling.
     Phase: Burp Integration
-    Parameters:
-      urls: Comma-separated target URLs (str)
     Related: burp_scan_status, burp_issues_list
     """
     from modules.burp_client import BurpClient
-    from modules.constants import BURP_API_URL, BURP_API_KEY
+from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     url_list = [u.strip() for u in urls.split(",") if u.strip()]
     r = bc.scan_start(url_list)
@@ -1070,12 +937,10 @@ def burp_scan_start(urls: str) -> str:
 def burp_scan_status(scan_id: str) -> str:
     """Get the status and progress of a Burp scan.
     Phase: Burp Integration
-    Parameters:
-      scan_id: Scan ID returned from burp_scan_start (str)
     Related: burp_scan_start, burp_issues_list
     """
     from modules.burp_client import BurpClient
-    from modules.constants import BURP_API_URL, BURP_API_KEY
+from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     r = bc.scan_status(scan_id)
     import json as _json
@@ -1086,13 +951,10 @@ def burp_scan_status(scan_id: str) -> str:
 def burp_issues_list(scan_id: str, severity: str = "") -> str:
     """List security issues found by a Burp scan.
     Phase: Burp Integration
-    Parameters:
-      scan_id: Scan ID (str)
-      severity: Filter by severity — high/medium/low/info (str) [default: '']
     Related: burp_scan_start, burp_scan_status
     """
     from modules.burp_client import BurpClient
-    from modules.constants import BURP_API_URL, BURP_API_KEY
+from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     issues = bc.issues_list(scan_id, severity=severity)
     if not issues:
@@ -1112,6 +974,114 @@ def burp_issues_list(scan_id: str, severity: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# ZAP DAST — OWASP ZAP REST/JSON API with daemon auto-start
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def zap_health(api_url: str = "") -> str:
+    """Check ZAP API connectivity and version. Optionally point at a custom URL.
+    Phase: DAST
+    Related: zap_scan_start, zap_scan_status, zap_issues_list
+    Use this first to verify ZAP is reachable."""
+    from modules.zap_client import ZapClient
+    api_url = api_url or _zap_cfg().get("url", "http://127.0.0.1:8080")
+    h = ZapClient(api_url=api_url, api_key=_zap_cfg().get("api_key", "")).health()
+    return f"ZAP: {h.get('status')} v{h.get('version', '?')}" if h.get("status") == "ok" else f"ZAP: {h}"
+
+
+@mcp.tool()
+def zap_scan_start(url: str, mode: str = "active", api_url: str = "",
+                   recurse: bool = True, policy: str = "", auto_start: bool = True) -> str:
+    """Start a ZAP scan of a URL. mode: 'active' (default), 'spider', or 'ajax'.
+    If ZAP isn't running it can be auto-started as a daemon (auto_start).
+    Phase: DAST
+    Related: zap_scan_status, zap_issues_list, zap_health
+    """
+    from modules.zap_client import ZapClient
+    cfg = _zap_cfg()
+    api_url = api_url or cfg.get("url", "http://127.0.0.1:8080")
+    zc = ZapClient(api_url=api_url, api_key=cfg.get("api_key", ""))
+    if auto_start:
+        st = zc.ensure_running(zap_bin=cfg.get("bin", "zaproxy"))
+        if st.get("status") != "ok":
+            return f"Error: ZAP unreachable and could not auto-start: {st.get('error')}"
+    mode = (mode or "active").lower()
+    if mode not in ("active", "spider", "ajax"):
+        return (f"Error: unknown mode '{mode}' (expected 'active', 'spider' or 'ajax'). "
+                f"No scan was started.")
+    if mode == "spider":
+        r = zc.spider_start(url, recurse=recurse)
+        if "error" in r:
+            return f"Error: {r['error']}"
+        return f"Spider started. scan_id={r['scan_id']} (type=spider)"
+    if mode == "ajax":
+        r = zc.ajax_spider_start(url)
+        if "error" in r:
+            return f"Error: {r['error']}"
+        return "AJAX spider started (no scan_id; check status with zap_scan_status)."
+    r = zc.active_scan_start(url, recurse=recurse, policy=policy)
+    if "error" in r:
+        return f"Error: {r['error']}"
+    return f"Active scan started. scan_id={r['scan_id']} (type=active)"
+
+
+@mcp.tool()
+def zap_scan_status(scan_id: str = "", mode: str = "active", api_url: str = "") -> str:
+    """Check ZAP scan progress. mode: active (default), spider, or ajax.
+    Returns a percentage (0-100) for active/spider; status text for ajax.
+    Phase: DAST
+    Related: zap_scan_start, zap_issues_list, zap_health
+    """
+    from modules.zap_client import ZapClient
+    cfg = _zap_cfg()
+    zc = ZapClient(api_url=api_url or cfg.get("url", "http://127.0.0.1:8080"),
+                   api_key=cfg.get("api_key", ""))
+    mode = (mode or "active").lower()
+    if mode == "ajax":
+        r = zc.ajax_spider_status()
+        return f"AJAX spider: {r.get('status', 'stopped')}"
+    if mode == "spider":
+        r = zc.spider_status(scan_id)
+        return f"Spider {scan_id}: {r.get('status', '?')}% complete"
+    r = zc.active_scan_status(scan_id)
+    return f"Active scan {scan_id}: {r.get('status', '?')}% complete"
+
+
+@mcp.tool()
+def zap_issues_list(api_url: str = "", risk: str = "", baseurl: str = "",
+                    count: int = 200) -> str:
+    """List security issues/alerts found by ZAP. Filter by risk
+    (High/Medium/Low/Informational).
+    Phase: DAST
+    Related: zap_scan_start, zap_scan_status, zap_health
+    """
+    from modules.zap_client import ZapClient
+    cfg = _zap_cfg()
+    zc = ZapClient(api_url=api_url or cfg.get("url", "http://127.0.0.1:8080"),
+                   api_key=cfg.get("api_key", ""))
+    alerts = zc.alerts(baseurl=baseurl, risk=risk, count=count)
+    if not alerts:
+        return "No alerts found."
+    if isinstance(alerts, list) and alerts and "error" in alerts[0]:
+        return f"Error: {alerts[0]['error']}"
+    lines = [f"{'Risk':<14} {'Name':<48} {'URL':<40}", "-" * 102]
+    for a in alerts:
+        sev = a.get("risk", "?")
+        name = (a.get("name") or "")[:48]
+        url = (a.get("url") or "")[:40]
+        lines.append(f"{sev:<14} {name:<48} {url:<40}")
+    lines.append("")
+    lines.append("Use case_finding_add with the alert details to log findings.")
+    return "\n".join(lines)
+
+
+def _zap_cfg() -> dict:
+from modules.config import load_config
+    cfg = load_config()
+    return cfg.get("zap", {})
+
+
+# ---------------------------------------------------------------------------
 # Rules — Semgrep / Sigma / YARA / Suricata / Nuclei
 # ---------------------------------------------------------------------------
 
@@ -1121,11 +1091,6 @@ def rules_list(rule_format: str = "", severity: str = "",
     """
     List security rules across all formats (semgrep, sigma, yara, suricata, nuclei). Optionally filter by format, severity (comma-separated), text search, or category/family.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str) [default: '']
-      severity: Filter by severity (str) [default: '']
-      search: Text search in rule metadata (str) [default: '']
-      category: Rule category filter (str) [default: '']
     Related: rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1140,7 +1105,6 @@ def rules_list(rule_format: str = "", severity: str = "",
         sev = r.get("severity", "?")
         rid = r.get("id", r.get("rule_id", "?"))
         title = r.get("title", rid)
-        path = r.get("relpath", r.get("filepath", ""))
         lines.append(f"  [{sev:<7}] {rid:<30} {title}")
     return "\n".join(lines)
 
@@ -1150,9 +1114,6 @@ def rules_get(rule_format: str, rule_id: str) -> str:
     """
     Get full details for a single rule by format (semgrep/sigma/yara/suricata/nuclei) and rule ID. Returns parsed metadata + raw source.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      rule_id: Unique rule identifier (str)
     Related: rules_list, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1182,9 +1143,6 @@ def rules_create(rule_format: str, content: str) -> str:
     """
     Create a new rule file. Format is one of: semgrep, sigma, yara, suricata, nuclei. Content must be valid for the format.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      content: Full rule content (str)
     Related: rules_list, rules_get, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1201,10 +1159,6 @@ def rules_save(rule_format: str, rule_id: str, content: str) -> str:
     """
     Save/update an existing rule's content. Validates format-specific syntax before writing.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      rule_id: Unique rule identifier (str)
-      content: Full rule content (str)
     Related: rules_list, rules_get, rules_create, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1223,9 +1177,6 @@ def rules_delete(rule_format: str, rule_id: str) -> str:
     """
     Delete a rule file by format and rule ID.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      rule_id: Unique rule identifier (str)
     Related: rules_list, rules_get, rules_create, rules_save, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1262,8 +1213,6 @@ def rules_template(rule_format: str) -> str:
     """
     Get a starter template for creating a new rule in the given format (semgrep/sigma/yara/suricata/nuclei).
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_bulk_delete, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1279,9 +1228,6 @@ def rules_bulk_delete(rule_format: str, rule_ids: str) -> str:
     """
     Delete multiple rules at once. Provide rule_format and a comma-separated list of rule IDs. Returns summary of deleted vs errors.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      rule_ids: Rule Ids (str)
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_export, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1301,9 +1247,6 @@ def rules_export(rule_format: str, rule_ids: str = "") -> str:
     """
     Export rules as a ZIP archive. Provide rule_format and optional comma-separated rule_ids. If rule_ids is empty, exports all rules of the format. Returns file path to the exported ZIP on disk.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      rule_ids: Rule Ids (str) [default: '']
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_import, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1325,10 +1268,6 @@ def rules_import(rule_format: str, content: str, target_dir: str = "") -> str:
     """
     Import rules from raw text content. Attempts to split multi-rule bundles into individual files. Provide format and the full rule text content.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei) (str)
-      content: Full rule content (str)
-      target_dir: Target directory (str) [default: '']
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_scan_target, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1341,15 +1280,10 @@ def rules_import(rule_format: str, content: str, target_dir: str = "") -> str:
 
 
 @mcp.tool()
-def rules_scan_target(rule_format: str, rule_id: str, target: str, language: str = "") -> str:
+async def rules_scan_target(rule_format: str, rule_id: str, target: str, language: str = "") -> str:
     """
     Scan a target with a specific rule (nuclei/yara/semgrep/codeql). For nuclei provide a URL, for yara provide a file/directory path, for semgrep/codeql provide a source code directory.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei, codeql) (str)
-      rule_id: Unique rule identifier (str)
-      target: Target hostname, IP, or URL (str)
-      language: Source language for CodeQL scan (python, javascript, java, go, cpp, csharp, ruby, rust, swift). Auto-detected from file extensions if omitted. Required when target directory contains mixed languages. (str) [default: '']
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_all
     """
     from modules.rules_manager import RuleManager
@@ -1363,16 +1297,16 @@ def rules_scan_target(rule_format: str, rule_id: str, target: str, language: str
 
     if rule_format == "nuclei":
         from modules.tool_wrappers import nuclei_scan
-        result = _run(nuclei_scan, target, template=filepath)
+        result = await _run_async(nuclei_scan, target, template=filepath)
     elif rule_format == "yara":
         from modules.tool_wrappers import yara_scan
-        result = _run(yara_scan, filepath, target)
+        result = await _run_async(yara_scan, filepath, target)
     elif rule_format == "semgrep":
         from modules.tool_wrappers import semgrep_scan
-        result = _run(semgrep_scan, filepath, target)
+        result = await _run_async(semgrep_scan, filepath, target)
     elif rule_format == "codeql":
         from modules.tool_wrappers import codeql_scan
-        result = _run(codeql_scan, filepath, target, language=language)
+        result = await _run_async(codeql_scan, filepath, target, language=language)
     else:
         return f"Scan not supported for format: {rule_format}"
 
@@ -1380,38 +1314,35 @@ def rules_scan_target(rule_format: str, rule_id: str, target: str, language: str
 
 
 @mcp.tool()
-def rules_scan_all(rule_format: str, target: str) -> str:
+async def rules_scan_all(rule_format: str, target: str) -> str:
     """
     Scan a target with ALL rules of a given format (nuclei/yara/semgrep). For codeql, use rules_scan_target per-query.
     Phase: Rule Management
-    Parameters:
-      rule_format: Rule format (semgrep, sigma, yara, suricata, nuclei, codeql) (str)
-      target: Target hostname, IP, or URL (str)
     Related: rules_list, rules_get, rules_create, rules_save, rules_delete, rules_stats, rules_template, rules_bulk_delete, rules_export, rules_import, rules_scan_target
     """
-    from modules.rules_manager import RULE_ROOTS, FLAT_ROOTS
-    from pathlib import Path
+    from modules.rules_manager import get_scan_roots
 
     if rule_format == "nuclei":
-        root = RULE_ROOTS.get("nuclei") or FLAT_ROOTS.get("nuclei")
-        if not root or not root.exists():
+        roots = get_scan_roots("nuclei")
+        if not roots:
             return "Nuclei rules directory not found"
         from modules.tool_wrappers import nuclei_scan
-        result = _run(nuclei_scan, target, templates_dir=str(root))
+        result = await _run_async(nuclei_scan, target,
+                                  templates_dir=[str(r) for r in roots])
         return _fmt(result, fmt="nuclei")
     elif rule_format == "yara":
-        root = RULE_ROOTS.get("yara") or FLAT_ROOTS.get("yara")
-        if not root or not root.exists():
+        roots = get_scan_roots("yara")
+        if not roots:
             return "YARA rules directory not found"
         from modules.tool_wrappers import yara_scan
-        result = _run(yara_scan, str(root), target)
+        result = await _run_async(yara_scan, [str(r) for r in roots], target)
         return _fmt(result, fmt="yara")
     elif rule_format == "semgrep":
-        root = RULE_ROOTS.get("semgrep")
-        if not root or not root.exists():
+        roots = get_scan_roots("semgrep")
+        if not roots:
             return "Semgrep rules directory not found"
         from modules.tool_wrappers import semgrep_scan
-        result = _run(semgrep_scan, str(root), target)
+        result = await _run_async(semgrep_scan, [str(r) for r in roots], target)
         return _fmt(result, fmt="semgrep")
     elif rule_format == "codeql":
         return "CodeQL batch scan not supported. Use rules_scan_target for single-query scanning."
@@ -1425,7 +1356,6 @@ def rules_scan_all(rule_format: str, target: str) -> str:
 @mcp.tool()
 def papermill_list() -> str:
     """List available Jupyter notebooks that can be executed via papermill."""
-    from modules.constants import SCRIPTS_DIR
     nbs = list((SCRIPTS_DIR / "automation-tools").glob("*.ipynb"))
     return "\n".join(f"  {nb.stem:<25} {nb.name}" for nb in nbs) or "No notebooks found."
 
@@ -1435,13 +1365,9 @@ def papermill_run(notebook: str, params: str = "") -> str:
     """
     Execute a Jupyter notebook with papermill. Format params as 'key=value,key=value'.
     Phase: Notebook Execution
-    Parameters:
-      notebook: Notebook filename to execute (str)
-      params: Comma-separated key=value parameters (str) [default: '']
     Related: papermill_list
     """
     import papermill as pm
-    from modules.constants import SCRIPTS_DIR
     nb_dir = SCRIPTS_DIR / "automation-tools"
     nb_path = nb_dir / f"{notebook}.ipynb"
     if not nb_path.exists():
@@ -1463,17 +1389,13 @@ def papermill_run(notebook: str, params: str = "") -> str:
 # DNS / Network
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def dns_track_domain(domain: str, interval: int = 300, duration: int = 0) -> str:
+async def dns_track_domain(domain: str, interval: int = 300, duration: int = 0) -> str:
     """
     Track DNS resolutions for a domain over time (detect load balancers, CDN, fast-flux).
     Phase: DNS / Network
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      interval: Interval (int) [default: 300]
-      duration: Duration in seconds (int) [default: 0]
     """
     from modules.tool_wrappers import dns_track
-    history = _run(dns_track, domain, interval=interval, duration=duration)
+    history = await _run_async(dns_track, domain, interval=interval, duration=duration)
     records = history.get(domain, [])
     return f"Tracked {len(records)} DNS resolutions for {domain}"
 
@@ -1484,7 +1406,6 @@ def dns_track_domain(domain: str, interval: int = 300, duration: int = 0) -> str
 @mcp.tool()
 def case_list() -> str:
     """List all pentest/forensic cases with status and creation date."""
-    from modules.case_manager import CaseManager
     cases = _run(CaseManager().list_cases)
     if not cases:
         return "No cases found."
@@ -1501,21 +1422,13 @@ def case_create(case_id: str, client: str = "", case_type: str = "pentest",
     pentest_cloud, pentest_physical, ir, forensics, osint.
     Goals are pipe-separated for multiple (e.g. 'goal1|goal2|goal3').
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      client: Client or organization name (str) [default: '']
-      case_type: Case type (pentest, ir, forensics) (str) [default: 'pentest']
-      description: Case or task description (str) [default: '']
-      targets: Comma-separated target list (str) [default: '']
-      goals: Goals (str) [default: '']
     Related: case_list, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     target_list = [t.strip() for t in targets.split(",") if t.strip()] if targets else []
     goal_list = [g.strip() for g in goals.split("|") if g.strip()] if goals else []
     try:
-        manifest = _run(CaseManager().create, case_id, client=client, case_type=case_type,
-                        description=description, targets=target_list, goals=goal_list)
+        _run(CaseManager().create, case_id, client=client, case_type=case_type,
+             description=description, targets=target_list, goals=goal_list)
         return f"Case '{case_id}' created (type: {case_type}, goals: {len(goal_list)})"
     except ValueError as e:
         return f"Error: {e}"
@@ -1526,12 +1439,8 @@ def case_goal_add(case_id: str, goal: str) -> str:
     """
     Add an analysis goal to a case. Required for all case types.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      goal: Analysis goal description (str)
     Related: case_list, case_create, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     r = _run(CaseManager().goal_add, case_id, goal)
     if r is None:
         return "Case not found"
@@ -1543,11 +1452,8 @@ def case_goal_list(case_id: str) -> str:
     """
     List all analysis goals for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     result = _run(CaseManager().goal_list, case_id)
     if isinstance(result, dict) and "error" in result:
         return result["error"]
@@ -1567,15 +1473,8 @@ def ir_timeline_add(case_id: str, timestamp: str, event: str,
     """
     Add a timestamped event to the IR timeline.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
-      timestamp: Timestamp (str)
-      event: Event (str)
-      severity: Filter by severity (str) [default: 'info']
-      source: Source of finding (str) [default: '']
     Related: ir_timeline_list, ir_ttp_add, ir_ttp_list, ir_containment_add, ir_containment_list, ir_summary
     """
-    from modules.case_manager import CaseManager
     r = _run(CaseManager().ir_timeline_add, case_id, timestamp=timestamp,
              event=event, severity=severity, source=source)
     if r is None:
@@ -1588,11 +1487,8 @@ def ir_timeline_list(case_id: str) -> str:
     """
     List all IR timeline events for a case.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: ir_timeline_add, ir_ttp_add, ir_ttp_list, ir_containment_add, ir_containment_list, ir_summary
     """
-    from modules.case_manager import CaseManager
     events = _run(CaseManager().ir_timeline_list, case_id)
     if not events:
         return "No timeline events."
@@ -1608,15 +1504,8 @@ def ir_ttp_add(case_id: str, tactic: str, technique: str,
     """
     Log a MITRE ATT&CK TTP observed during incident response.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
-      tactic: MITRE ATT&CK tactic (str)
-      technique: MITRE ATT&CK technique name (str)
-      technique_id: MITRE ATT&CK technique ID (str) [default: '']
-      notes: Notes (str) [default: '']
     Related: ir_timeline_add, ir_timeline_list, ir_ttp_list, ir_containment_add, ir_containment_list, ir_summary
     """
-    from modules.case_manager import CaseManager
     r = _run(CaseManager().ir_ttp_add, case_id, tactic=tactic,
              technique=technique, technique_id=technique_id, notes=notes)
     if r is None:
@@ -1629,11 +1518,8 @@ def ir_ttp_list(case_id: str) -> str:
     """
     List all logged MITRE ATT&CK TTPs.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: ir_timeline_add, ir_timeline_list, ir_ttp_add, ir_containment_add, ir_containment_list, ir_summary
     """
-    from modules.case_manager import CaseManager
     ttps = _run(CaseManager().ir_ttp_list, case_id)
     if not ttps:
         return "No TTPs logged."
@@ -1649,14 +1535,8 @@ def ir_containment_add(case_id: str, action: str,
     """
     Document a containment/remediation step.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
-      action: Action to perform (str)
-      status: Status value (str) [default: 'pending']
-      owner: Owner (str) [default: '']
     Related: ir_timeline_add, ir_timeline_list, ir_ttp_add, ir_ttp_list, ir_containment_list, ir_summary
     """
-    from modules.case_manager import CaseManager
     r = _run(CaseManager().ir_containment_add, case_id, action=action,
              status=status, owner=owner)
     if r is None:
@@ -1669,11 +1549,8 @@ def ir_containment_list(case_id: str) -> str:
     """
     List all containment steps.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: ir_timeline_add, ir_timeline_list, ir_ttp_add, ir_ttp_list, ir_containment_add, ir_summary
     """
-    from modules.case_manager import CaseManager
     steps = _run(CaseManager().ir_containment_list, case_id)
     if not steps:
         return "No containment steps."
@@ -1688,11 +1565,8 @@ def ir_summary(case_id: str) -> str:
     """
     Get a summary of all IR data for a case.
     Phase: Incident Response
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: ir_timeline_add, ir_timeline_list, ir_ttp_add, ir_ttp_list, ir_containment_add, ir_containment_list
     """
-    from modules.case_manager import CaseManager
     s = _run(CaseManager().ir_summary, case_id)
     if s.get("error"):
         return f"Error: {s['error']}"
@@ -1708,11 +1582,8 @@ def case_info(case_id: str) -> str:
     """
     Get detailed case information including evidence count, findings, tasks, and scope.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     info = _run(CaseManager().info, case_id)
     if not info:
         return f"Case '{case_id}' not found."
@@ -1738,11 +1609,8 @@ def case_close(case_id: str) -> str:
     """
     Close a case by ID.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     _run(CaseManager().update_status, case_id, "closed")
     return f"Case '{case_id}' closed."
 
@@ -1752,11 +1620,8 @@ def case_archive(case_id: str) -> str:
     """
     Compress a closed case to a tar.gz archive and remove the live directory.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_unarchive, case_delete, case_list, case_create, case_info, case_close
     """
-    from modules.case_manager import CaseManager
     result = _run(CaseManager().archive_case, case_id)
     return (f"Case '{case_id}' archived: {result['archived_size']} bytes "
             f"(was {result['original_size']}, saved {result['savings_pct']}%)")
@@ -1767,12 +1632,9 @@ def case_unarchive(case_id: str) -> str:
     """
     Extract a tar.gz archive back to a live case directory.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_archive, case_delete, case_list, case_create, case_info, case_close
     """
-    from modules.case_manager import CaseManager
-    result = _run(CaseManager().unarchive_case, case_id)
+    _run(CaseManager().unarchive_case, case_id)
     return f"Case '{case_id}' unarchived successfully."
 
 
@@ -1781,11 +1643,8 @@ def case_delete(case_id: str) -> str:
     """
     Permanently delete a case directory and all its data.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_archive, case_unarchive, case_list, case_create, case_info, case_close
     """
-    from modules.case_manager import CaseManager
     success = _run(CaseManager().delete, case_id)
     if success:
         return f"Case '{case_id}' permanently deleted."
@@ -1798,16 +1657,10 @@ def case_evidence_add(case_id: str, filepath: str, category: str = "evidence",
     """
     Add an evidence file to a case with SHA256/MD5 hashing for chain of custody.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      filepath: Path to file on disk (str)
-      category: Evidence category (str) [default: 'evidence']
-      description: Evidence description (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
     _require(case_id, "case_id")
     _require(filepath, "filepath")
-    from modules.case_manager import CaseManager
     src = Path(filepath)
     if not src.exists():
         return f"File not found: {filepath}"
@@ -1830,11 +1683,8 @@ def case_evidence_verify(case_id: str) -> str:
     """
     Verify all evidence files in a case by re-computing hashes and comparing to manifest.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_scope_add, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     results = _run(CaseManager().verify_evidence, case_id)
     if not results:
         return f"No evidence found for case '{case_id}'"
@@ -1850,14 +1700,9 @@ def case_scope_add(case_id: str, target: str, in_scope: bool = True) -> str:
     """
     Add a target to case scope (in-scope or out-of-scope).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      target: Target hostname, IP, or URL (str)
-      in_scope: Whether target is in scope (bool) [default: True]
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_check, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
-    scope = _run(CaseManager().scope_add, case_id, target, in_scope=in_scope)
+    _run(CaseManager().scope_add, case_id, target, in_scope=in_scope)
     return f"Target '{target}' added to {'in' if in_scope else 'out of'}-scope for '{case_id}'"
 
 
@@ -1866,12 +1711,8 @@ def case_scope_check(case_id: str, target: str) -> str:
     """
     Check if a target is in scope for a case. Returns in_scope status and reason.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      target: Target hostname, IP, or URL (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_task_add, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     result = _run(CaseManager().scope_check, case_id, target)
     return f"Target '{target}': {'IN SCOPE' if result['in_scope'] else 'OUT OF SCOPE'} — {result['reason']}"
 
@@ -1881,12 +1722,8 @@ def case_scope_remove(case_id: str, target: str) -> str:
     """
     Remove a target from case scope (in-scope or out-of-scope).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      target: Target hostname, IP, or URL (str)
     Related: case_scope_add, case_scope_check, case_scope_list, case_info, case_list, case_create
     """
-    from modules.case_manager import CaseManager
     _run(CaseManager().scope_remove, case_id, target)
     return f"Target '{target}' removed from scope for '{case_id}'"
 
@@ -1896,11 +1733,8 @@ def case_scope_list(case_id: str) -> str:
     """
     List all in-scope and out-of-scope targets for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_scope_add, case_scope_check, case_scope_remove, case_info, case_list, case_create
     """
-    from modules.case_manager import CaseManager
     scope = _run(CaseManager().scope_list, case_id)
     lines = [f"Scope for '{case_id}':"]
     in_scope = scope.get("in_scope", [])
@@ -1923,13 +1757,8 @@ def case_task_add(case_id: str, description: str, priority: str = "medium") -> s
     """
     Add a task to the case checklist.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      description: Case or task description (str)
-      priority: Priority (low, medium, high) (str) [default: 'medium']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_done, case_task_list
     """
-    from modules.case_manager import CaseManager
     task = _run(CaseManager().task_add, case_id, description, priority=priority)
     return f"Task {task['id']} added to '{case_id}': {task['description']} [{task['priority']}]"
 
@@ -1939,12 +1768,8 @@ def case_task_done(case_id: str, task_id: str) -> str:
     """
     Mark a task as completed in the case checklist.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      task_id: Task Id (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_list
     """
-    from modules.case_manager import CaseManager
     task = _run(CaseManager().task_done, case_id, task_id)
     if not task:
         return f"Task '{task_id}' not found in case '{case_id}'"
@@ -1956,12 +1781,8 @@ def case_task_list(case_id: str, show_done: bool = False) -> str:
     """
     List pending (or all) tasks for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      show_done: Show Done (bool) [default: False]
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.case_manager import CaseManager
     tasks = _run(CaseManager().task_list, case_id, show_done=show_done)
     if not tasks:
         return "No tasks found."
@@ -1969,6 +1790,351 @@ def case_task_list(case_id: str, show_done: bool = False) -> str:
         f"  {t['id']:<8} {'[x]' if t.get('done') else '[ ]'} {t['description']:<50} [{t.get('priority','?')}]"
         for t in tasks
     )
+
+
+# ---------------------------------------------------------------------------
+# Checklist
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def case_checklist_templates() -> str:
+    """
+    List all available checklist templates with item counts.
+    Phase: Case Management
+    Related: case_checklist_init, case_checklist_list, case_checklist_template_get
+    """
+    
+    templates = _run(list_checklist_templates)
+    if not templates:
+        return "No checklist templates found."
+    return "\n".join(
+        f"  {t['id']:<45} {t['title']:<50} {t['item_count']:3d} items"
+        for t in templates
+    )
+
+
+@mcp.tool()
+def case_checklist_template_get(template_id: str) -> str:
+    """
+    Get the full YAML source and parsed metadata of a checklist template.
+    Phase: Case Management
+    Related: case_checklist_templates, case_checklist_init
+    """
+    templates = _run(list_checklist_templates)
+    match = [t for t in templates if t["id"] == template_id]
+    if not match:
+        return f"Template '{template_id}' not found."
+    source = _run(get_template_source, template_id)
+    return json.dumps({"metadata": match[0], "source": source}, indent=2)
+
+
+@mcp.tool()
+def case_checklist_init(case_id: str, template_id: str,
+                        replace: bool = False) -> str:
+    """
+    Initialize a new checklist instance in a case from a template.
+    Phase: Case Management
+    Related: case_checklist_templates, case_checklist_list, case_checklist_update, case_checklist_delete
+    """
+    _require(case_id, "case_id")
+    _require(template_id, "template_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    result = _run(cl.initialize, template_id, replace=replace)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    iid = result.get("instance_id", "?")[:8]
+    count = len(result.get("items", {}))
+    return f"Checklist '{template_id}' initialized (id={iid}, {count} items) — {'replaced' if replace else 'appended'}"
+
+
+@mcp.tool()
+def case_checklist_list(case_id: str) -> str:
+    """
+    List checklist instances for a case with progress summary.
+    Phase: Case Management
+    Related: case_checklist_init, case_checklist_update, case_checklist_delete, case_checklist_items
+    """
+    _require(case_id, "case_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    instances = _run(cl.get)
+    if not instances:
+        return f"No checklists for '{case_id}'. Use case_checklist_init to create one."
+    lines = []
+    for inst in instances:
+        iid = inst.get("instance_id", "?")
+        title = inst.get("title", "Untitled")
+        items = inst.get("items", {})
+        total = len(items)
+        passed = sum(1 for v in items.values() if v.get("status") == "passed")
+        failed = sum(1 for v in items.values() if v.get("status") == "failed")
+        na = sum(1 for v in items.values() if v.get("status") == "not_applicable")
+        ip = sum(1 for v in items.values() if v.get("status") == "in_progress")
+        ns = sum(1 for v in items.values() if v.get("status") == "not_started")
+        pct = round((passed + na) / total * 100) if total else 0
+        lines.append(f"  [{iid[:8]}] {title}  ({pct}% — {passed} passed, {failed} failed, {ip} in_progress, {ns} not_started, {na} n/a)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def case_checklist_update(case_id: str, item_id: str, status: str,
+                          notes: str = "", instance_id: str = "") -> str:
+    """
+    Update a checklist item's status (not_started, in_progress, passed, failed, not_applicable).
+    Phase: Case Management
+    Related: case_checklist_list, case_checklist_items, case_checklist_init
+    """
+    _require(case_id, "case_id")
+    _require(item_id, "item_id")
+    _require(status, "status")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    result = _run(cl.update_item, item_id, status=status,
+                  notes=notes or None, instance_id=instance_id)
+    if result:
+        return f"  {item_id} -> {status}"
+    return f"Item '{item_id}' not found"
+
+
+@mcp.tool()
+def case_checklist_delete(case_id: str, instance_id: str) -> str:
+    """
+    Delete a checklist instance from a case.
+    Phase: Case Management
+    Related: case_checklist_list, case_checklist_init
+    """
+    _require(case_id, "case_id")
+    _require(instance_id, "instance_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    ok = _run(cl.delete_instance, instance_id)
+    return "Deleted." if ok else "Instance not found."
+
+
+@mcp.tool()
+def case_checklist_items(case_id: str, instance_id: str = "",
+                         status_filter: str = "") -> str:
+    """
+    Get checklist items grouped by category with current status.
+    Phase: Case Management
+    Related: case_checklist_list, case_checklist_update, case_checklist_init
+    """
+    _require(case_id, "case_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    cats = _run(cl.items_by_category, instance_id=instance_id)
+    if not cats:
+        return f"No checklist items for '{case_id}'."
+    lines = []
+    for cat in cats:
+        if status_filter:
+            cat["items"] = [i for i in cat.get("items", [])
+                            if i.get("status") == status_filter]
+            cat["total"] = len(cat["items"])
+        if not cat.get("items"):
+            continue
+        label = f"{cat.get('instance_title', cat.get('name',''))} — {cat['name']}"
+        lines.append(f"\n{'='*60}")
+        lines.append(f"  {label}  ({cat.get('passed',0)} passed, {cat.get('failed',0)} failed)")
+        lines.append(f"{'='*60}")
+        for item in cat.get("items", []):
+            st = item.get("status", "not_started")
+            icons = {"passed": "\u2713", "failed": "\u2717",
+                     "in_progress": "\u25D8", "not_started": "\u25CB",
+                     "not_applicable": "\u2014"}
+            icon = icons.get(st, "\u25CB")
+            finding = f" [{item.get('finding_id','')}]" if item.get("finding_id") else ""
+            notes = f" — {item['notes'][:60]}" if item.get("notes") else ""
+            lines.append(f"    {icon} {item['id']:<12} {item['description']:<55} {st:<14}{finding}{notes}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def case_checklist_progress(case_id: str, instance_id: str = "") -> str:
+    """
+    Get progress summary for a checklist instance.
+    Phase: Case Management
+    Related: case_checklist_list, case_checklist_items, case_checklist_update
+    """
+    _require(case_id, "case_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    prog = _run(cl.get_progress, instance_id=instance_id)
+    return json.dumps(prog, indent=2)
+
+
+@mcp.tool()
+def case_checklist_finding(case_id: str, item_id: str, finding_id: str,
+                           instance_id: str = "") -> str:
+    """
+    Link a finding to a checklist item (associate a proven finding with a checklist item).
+    Phase: Case Management
+    Related: case_checklist_update, case_checklist_items, case_finding_add
+    """
+    _require(case_id, "case_id")
+    _require(item_id, "item_id")
+    _require(finding_id, "finding_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    result = _run(cl.set_finding, item_id, finding_id, instance_id=instance_id)
+    if result:
+        return f"Finding {finding_id} linked to {item_id}"
+    return f"Item '{item_id}' not found"
+
+
+@mcp.tool()
+def case_checklist_from_findings(case_id: str, title: str = "",
+                                 replace: bool = False) -> str:
+    """
+    Build a checklist instance directly from a case's findings (grouped by severity).
+    Each finding becomes an item pre-linked via finding_id.
+    Phase: Case Management
+    Related: case_checklist_init, case_checklist_list, case_checklist_update, case_finding_add
+    """
+    _require(case_id, "case_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    db = FindingsDB(_case_dir(case_id))
+    findings = _run(db.list)
+    if not findings:
+        return "No findings to build a checklist from."
+    result = _run(cl.from_findings, findings, title=title, replace=replace)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    iid = result.get("instance_id", "?")[:8]
+    return (f"Checklist built from {len(findings)} findings (id={iid}, "
+            f"{len(result.get('items', {}))} items) — {'replaced' if replace else 'appended'}")
+
+
+@mcp.tool()
+def case_export(case_id: str, fmt: str = "sarif", output: str = "",
+                include_checklist: bool = True) -> str:
+    """
+    Export a case's findings in an interoperable format.
+    fmt: sarif (SARIF 2.1.0) or xccdf (XCCDF 1.2 SCAP results).
+    include_checklist (xccdf only): also emit checklist controls as scored rules.
+    Writes to cases/<case_id>/exports/ unless output is given.
+    Phase: Case Management
+    Related: case_finding_add, case_checklist_list, case_report_engagement
+    """
+    _require(case_id, "case_id")
+    from modules.compliance_export import export_case as _export
+    result = _run(_export, case_id, fmt=fmt, output=output,
+                  include_checklist=include_checklist)
+    if "error" in result:
+        return result["error"]
+    parts = [f"Exported {result.get('format', '?')} -> {result.get('path', '')}"]
+    for k in ("findings", "checklist_items", "total_rules", "passed", "score"):
+        if k in result:
+            parts.append(f"  {k}: {result[k]}")
+    if result.get("validate_hint"):
+        parts.append(f"  Validate: {result['validate_hint']}")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def case_checklist_status(case_id: str, status: str = "",
+                          instance_id: str = "") -> str:
+    """
+    List checklist items filtered by status.
+    Phase: Case Management
+    Related: case_checklist_items, case_checklist_update, case_checklist_list
+    """
+    _require(case_id, "case_id")
+    from modules.checklist_manager import ChecklistInstance
+    cl = ChecklistInstance(_case_dir(case_id))
+    items = _run(cl.items_by_status, status=status, instance_id=instance_id)
+    if not items:
+        return f"No items with status '{status or 'any'}'."
+    lines = []
+    for tmpl, meta, cat in items:
+        st = meta.get("status", "not_started")
+        icons = {"passed": "\u2713", "failed": "\u2717",
+                 "in_progress": "\u25D8", "not_started": "\u25CB",
+                 "not_applicable": "\u2014"}
+        icon = icons.get(st, "\u25CB")
+        finding = f" [{meta.get('finding_id','')}]" if meta.get("finding_id") else ""
+        lines.append(f"    {icon} {tmpl['id']:<12} {cat:<25} {tmpl['description']:<55} {st:<14}{finding}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Retest
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def case_finding_retests(case_id: str, finding_id: str) -> str:
+    """
+    List all retest entries for a finding.
+    Phase: Case Management
+    Related: case_finding_retest_add, case_finding_retest_delete
+    """
+    _require(case_id, "case_id")
+    _require(finding_id, "finding_id")
+    db = FindingsDB(_case_dir(case_id))
+    retests = _run(db.get_retests, finding_id)
+    if not retests:
+        return f"No retests for finding '{finding_id}'."
+    return json.dumps(retests, indent=2)
+
+
+@mcp.tool()
+def case_finding_retest_add(case_id: str, finding_id: str, status: str,
+                            notes: str = "", tester: str = "") -> str:
+    """
+    Add a retest entry to a finding. Status: resolved, not_resolved, partial.
+    Phase: Case Management
+    Related: case_finding_retests, case_finding_retest_delete, case_finding_add
+    """
+    _require(case_id, "case_id")
+    _require(finding_id, "finding_id")
+    _require(status, "status")
+    db = FindingsDB(_case_dir(case_id))
+    result = _run(db.add_retest, finding_id, status, notes=notes, tester=tester)
+    if result:
+        return f"Retest {result['id']} added to {finding_id}: {result['status']}"
+    return f"Finding '{finding_id}' not found or invalid status"
+
+
+@mcp.tool()
+def case_finding_retest_delete(case_id: str, finding_id: str,
+                               retest_id: str) -> str:
+    """
+    Delete a retest entry from a finding.
+    Phase: Case Management
+    Related: case_finding_retests, case_finding_retest_add
+    """
+    _require(case_id, "case_id")
+    _require(finding_id, "finding_id")
+    _require(retest_id, "retest_id")
+    db = FindingsDB(_case_dir(case_id))
+    ok = _run(db.delete_retest, finding_id, retest_id)
+    return "Deleted." if ok else "Retest not found."
+
+
+@mcp.tool()
+def case_retests_summary(case_id: str) -> str:
+    """
+    List all findings across a case that have retest data.
+    Phase: Case Management
+    Related: case_finding_retests, case_finding_retest_add
+    """
+    _require(case_id, "case_id")
+    db = FindingsDB(_case_dir(case_id))
+    findings = _run(db.list)
+    result = []
+    for f in findings:
+        retests = f.get("retests", [])
+        if retests:
+            result.append({
+                "finding_id": f["id"],
+                "title": f["title"],
+                "severity": f["severity"],
+                "retest_count": len(retests),
+                "last_retest": retests[-1],
+            })
+    if not result:
+        return "No findings with retest data."
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -1979,48 +2145,33 @@ def case_finding_add(case_id: str, title: str, severity: str = "medium",
                      references: str = "",
                      command_output: str = "",
                      cvss_score: float = None, cvss_vector: str = "",
-                     tags: str = "") -> str:
+                     tags: str = "", cpe: str = "") -> str:
     """Add a structured finding to a case (severity: info/low/medium/high/critical).
 
     Supports optional CVE/CWE references, impact description, PoC, CVSS score/vector,
-    tag labels (comma-separated, e.g. 'cwe:79,mitre-attack:T1078.001'), and
-    comma-separated reference URLs.
+    tag labels (comma-separated, e.g. 'cwe:79,mitre-attack:T1078.001'), comma-separated
+    reference URLs, and a CPE 2.3 identifier (e.g. 'cpe:2.3:a:mitmproxy:mitmproxy:10.2.4:*:*:*:*:*:*:*')
+    for the affected component.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      title: Title (str)
-      severity: Severity of the finding (str) [default: 'medium']
-      description: Finding description (str) [default: '']
-      remediation: Remediation steps (str) [default: '']
-      source: Source of finding (str) [default: '']
-      cve: CVE identifier (str) [default: '']
-      cwe: CWE identifier (str) [default: '']
-      impact: Impact description (str) [default: '']
-      poc: Proof of concept text (str) [default: '']
-      references: Reference URLs (comma-separated) (str) [default: '']
-      command_output: Actual command output / evidence text (str) [default: '']
-      cvss_score: CVSS score (0-10) (float) [default: null]
-      cvss_vector: CVSS vector string (str) [default: '']
-      tags: Comma-separated tags (e.g. 'cwe:79,mitre-attack:T1078.001') (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
     ref_list = [r.strip() for r in references.split(",") if r.strip()] if references else []
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-    db = FindingsDB(Path(CASES_DIR) / case_id)
+    db = FindingsDB(_case_dir(case_id))
     finding = _run(db.add, title, severity=severity, description=description,
                    remediation=remediation, source=source,
                    cve=cve, cwe=cwe, impact=impact, poc=poc,
                    references=ref_list,
                    command_output=command_output,
                    cvss_score=cvss_score, cvss_vector=cvss_vector,
-                   tags=tag_list)
+                   tags=tag_list, cpe=cpe)
     parts = [f"Finding {finding['id']} added: {finding['title']} [{finding['severity']}]"]
     if finding.get('cve'):
         parts.append(f"  CVE: {finding['cve']}")
     if finding.get('cwe'):
         parts.append(f"  CWE: {finding['cwe']}")
+    if finding.get('cpe'):
+        parts.append(f"  CPE: {finding['cpe']}")
     if finding.get('cvss_score') is not None:
         parts.append(f"  CVSS: {finding['cvss_score']} ({finding.get('cvss_vector', '')})")
     if finding.get('tags'):
@@ -2036,37 +2187,21 @@ def case_finding_update(case_id: str, finding_id: str,
                         poc: str = "",
                         command_output: str = "",
                         cvss_score: float = None, cvss_vector: str = "",
-                        tags: str = "") -> str:
+                        tags: str = "", cpe: str = "") -> str:
     """
     Update an existing finding's fields. Empty strings are skipped.
-    Supports CVSS score/vector and tag labels.
+    Supports CVSS score/vector, tag labels, and a CPE 2.3 component identifier.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      finding_id: Finding identifier (str)
-      severity: New severity value (str) [default: '']
-      status: Status value (str) [default: '']
-      description: New description (str) [default: '']
-      remediation: Remediation steps (str) [default: '']
-      cve: CVE identifier (str) [default: '']
-      cwe: CWE identifier (str) [default: '']
-      impact: Impact description (str) [default: '']
-      poc: Proof of concept text (str) [default: '']
-      command_output: Actual command output / evidence text (str) [default: '']
-      cvss_score: CVSS score (0-10) (float) [default: null]
-      cvss_vector: CVSS vector string (str) [default: '']
-      tags: Comma-separated tags (e.g. 'cwe:79,mitre-attack:T1078.001') (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
-    db = FindingsDB(Path(CASES_DIR) / case_id)
+    db = FindingsDB(_case_dir(case_id))
     kwargs = {}
     for k, v in [("severity", severity), ("status", status),
                  ("description", description), ("remediation", remediation),
                  ("cve", cve), ("cwe", cwe), ("impact", impact), ("poc", poc),
                  ("command_output", command_output),
-                 ("cvss_score", cvss_score), ("cvss_vector", cvss_vector)]:
+                 ("cvss_score", cvss_score), ("cvss_vector", cvss_vector),
+                 ("cpe", cpe)]:
         if v is not None and v != "":
             kwargs[k] = v
     if tags:
@@ -2081,15 +2216,9 @@ def case_finding_update(case_id: str, finding_id: str,
 def case_finding_add_tag(case_id: str, finding_id: str, tag: str) -> str:
     """Add a tag (e.g. 'cwe:79', 'mitre-attack:T1078.001') to a finding.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      finding_id: Finding identifier (str)
-      tag: Tag to add (e.g. 'cwe:79', 'owasp-web:A01:2021') (str)
     Related: case_finding_remove_tag, case_finding_update, findings_list
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
-    db = FindingsDB(Path(CASES_DIR) / case_id)
+    db = FindingsDB(_case_dir(case_id))
     result = _run(db.add_tag, finding_id, tag)
     if not result:
         return f"Finding '{finding_id}' not found in case '{case_id}'"
@@ -2100,15 +2229,9 @@ def case_finding_add_tag(case_id: str, finding_id: str, tag: str) -> str:
 def case_finding_remove_tag(case_id: str, finding_id: str, tag: str) -> str:
     """Remove a tag from a finding.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      finding_id: Finding identifier (str)
-      tag: Tag to remove (e.g. 'cwe:79') (str)
     Related: case_finding_add_tag, case_finding_update, findings_list
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
-    db = FindingsDB(Path(CASES_DIR) / case_id)
+    db = FindingsDB(_case_dir(case_id))
     result = _run(db.remove_tag, finding_id, tag)
     if not result:
         return f"Finding '{finding_id}' not found in case '{case_id}'"
@@ -2119,13 +2242,9 @@ def case_finding_remove_tag(case_id: str, finding_id: str, tag: str) -> str:
 def case_tags_list(case_id: str) -> str:
     """List all tags used across findings in a case with usage counts.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: findings_list, case_finding_add_tag, case_finding_detail
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
-    db = FindingsDB(Path(CASES_DIR) / case_id)
+    db = FindingsDB(_case_dir(case_id))
     tags = _run(db.tags)
     if not tags:
         return "No tags found in this case."
@@ -2139,9 +2258,6 @@ def case_tags_list(case_id: str) -> str:
 def tags_search(query: str, namespace: str = "") -> str:
     """Search the built-in tag reference database (CWE, MITRE ATT&CK, OWASP, CAPEC, D3FEND).
     Phase: Reference Data Lookup
-    Parameters:
-      query: Search text (e.g. 'xss', 'injection', 'T1078') (str)
-      namespace: Filter by namespace (cwe, mitre-attack, owasp-web, owasp-ai, capec, d3fend) (str) [default: '']
     Related: tags_resolve, case_finding_add_tag
     """
     from modules.tag_refs import search as _search
@@ -2158,8 +2274,6 @@ def tags_search(query: str, namespace: str = "") -> str:
 def tags_resolve(tag: str) -> str:
     """Resolve a single tag string (like 'cwe:79') to its human-readable name and namespace.
     Phase: Reference Data Lookup
-    Parameters:
-      tag: Tag string to resolve (e.g. 'cwe:79', 'mitre-attack:T1078.001') (str)
     Related: tags_search, case_finding_add_tag
     """
     from modules.tag_refs import resolve as _resolve
@@ -2175,15 +2289,9 @@ def case_finding_link_evidence(case_id: str, finding_id: str,
     """
     Link evidence file(s) to a finding (comma-separated filenames).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      finding_id: Finding identifier (str)
-      evidence: Comma-separated evidence filenames (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
-    db = _run(FindingsDB, CASES_DIR / case_id)
+    db = _run(FindingsDB, _case_dir(case_id))
     f = _run(db.get, finding_id)
     if not f:
         return f"Finding '{finding_id}' not found"
@@ -2202,15 +2310,9 @@ def case_finding_unlink_evidence(case_id: str, finding_id: str,
     """
     Unlink evidence file(s) from a finding (comma-separated filenames).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      finding_id: Finding identifier (str)
-      evidence: Comma-separated evidence filenames (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.findings_db import FindingsDB
-    from modules.constants import CASES_DIR
-    db = _run(FindingsDB, CASES_DIR / case_id)
+    db = _run(FindingsDB, _case_dir(case_id))
     f = _run(db.get, finding_id)
     if not f:
         return f"Finding '{finding_id}' not found"
@@ -2228,11 +2330,8 @@ def evidence_list(case_id: str) -> str:
     """
     List all evidence files for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: evidence_upload, evidence_download_url, evidence_delete, case_finding_link_evidence
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -2253,14 +2352,8 @@ def evidence_upload(case_id: str, filepath: str,
     """
     Upload a file from disk as evidence for a case. File is copied into the case directory and hashed.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      filepath: Absolute path to file on disk (str)
-      category: Evidence category (str) [default: 'evidence']
-      description: Description of the evidence (str) [default: '']
     Related: evidence_list, evidence_download_url, evidence_delete, case_finding_link_evidence
     """
-    from modules.case_manager import CaseManager
     from pathlib import Path
     p = Path(filepath)
     if not p.is_file():
@@ -2281,12 +2374,8 @@ def evidence_download_url(case_id: str, filename: str) -> str:
     """
     Get the download URL for an evidence file.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      filename: Evidence filename (str)
     Related: evidence_list, evidence_upload, evidence_delete
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     ev = _run(cm.get_evidence, case_id)
     if not ev:
@@ -2308,12 +2397,8 @@ def evidence_delete(case_id: str, filename: str) -> str:
     """
     Delete an evidence record from a case manifest by filename.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      filename: Evidence filename to delete (str)
     Related: evidence_list, evidence_upload, evidence_download_url
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -2336,20 +2421,8 @@ def case_update_meta(case_id: str, client: str = "",
     contacts can be a Markdown table or free text.
     methodology_tools is a comma-separated list of tools used.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      client: Client or organization name (str) [default: '']
-      description: Case or task description (str) [default: '']
-      assessment_dates: Assessment Dates (str) [default: '']
-      executive_summary: Executive Summary (str) [default: '']
-      key_observations: Key Observations (str) [default: '']
-      recommendations: Recommendations (str) [default: '']
-      methodology_tools: Methodology Tools (str) [default: '']
-      contacts: Contacts (str) [default: '']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.case_manager import CaseManager
-    from modules.constants import CASES_DIR
     kwargs = {}
     for k, v in [("client", client), ("description", description),
                  ("assessment_dates", assessment_dates),
@@ -2371,12 +2444,8 @@ def case_strength_add(case_id: str, text: str) -> str:
     """
     Add an identified strength/positive finding to a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      text: Text (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.case_manager import CaseManager
     result = _run(CaseManager().add_strength, case_id, text)
     if not result:
         return f"Case '{case_id}' not found"
@@ -2388,11 +2457,8 @@ def case_strength_list(case_id: str) -> str:
     """
     List identified strengths for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.case_manager import CaseManager
     strengths = _run(CaseManager().list_strengths, case_id)
     if not strengths:
         return "No strengths documented."
@@ -2404,12 +2470,8 @@ def case_weakness_add(case_id: str, text: str) -> str:
     """
     Add an identified weakness/vulnerability observation to a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      text: Text (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.case_manager import CaseManager
     result = _run(CaseManager().add_weakness, case_id, text)
     if not result:
         return f"Case '{case_id}' not found"
@@ -2421,11 +2483,8 @@ def case_weakness_list(case_id: str) -> str:
     """
     List identified weaknesses for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
-    from modules.case_manager import CaseManager
     weaknesses = _run(CaseManager().list_weaknesses, case_id)
     if not weaknesses:
         return "No weaknesses documented."
@@ -2437,13 +2496,10 @@ def case_report_engagement(case_id: str) -> str:
     """
     Generate an HTML + Markdown engagement report from case data, findings, and evidence.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
     from modules.report_generator import generate_engagement_report
-    from modules.constants import CASES_DIR
-    case_dir = Path(CASES_DIR) / case_id
+    case_dir = _case_dir(case_id)
     if not case_dir.exists():
         return f"Case '{case_id}' not found"
     result = _run(generate_engagement_report, case_dir)
@@ -2459,15 +2515,10 @@ def case_report_obsidian(case_id: str, write_sections: bool = False,
     list (md,html,docx,pdf). Produces ![[...]] embedded Markdown plus flat Markdown,
     and converts to HTML, DOCX, and PDF if converters are available.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      write_sections: Write Sections (bool) [default: False]
-      formats: Formats (str) [default: 'md,html,docx,pdf']
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
     from modules.report_generator import generate_obsidian_report
-    from modules.constants import CASES_DIR
-    case_dir = Path(CASES_DIR) / case_id
+    case_dir = _case_dir(case_id)
     if not case_dir.exists():
         return f"Case '{case_id}' not found"
     fmt_list = [f.strip() for f in formats.split(",") if f.strip()]
@@ -2484,15 +2535,10 @@ def case_report_generate(case_id: str, formats: str = "md") -> str:
     """
     Generate a report for a case in the given format(s). Uses Obsidian report generator.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      formats: Comma-separated formats (md,html,docx,pdf) (str) [default: 'md']
     Related: case_report_engagement, case_report_obsidian, case_info, case_list, case_create
     """
     from modules.report_generator import generate_obsidian_report
-    from modules.constants import CASES_DIR
-    from modules.case_manager import CaseManager
-    case_dir = Path(CASES_DIR) / case_id
+    case_dir = _case_dir(case_id)
     if not case_dir.exists():
         return f"Case '{case_id}' not found"
     fmt_list = [f.strip() for f in formats.split(",") if f.strip()]
@@ -2513,13 +2559,10 @@ def case_timeline(case_id: str) -> str:
     """
     Generate an HTML timeline visualization from case activity (evidence, findings, runbooks).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_list, case_create, case_goal_add, case_goal_list, case_info, case_close, case_evidence_add, case_evidence_verify, case_scope_add, case_scope_check, case_task_add, case_task_done
     """
     from modules.report_generator import generate_timeline_html
-    from modules.constants import CASES_DIR
-    case_dir = Path(CASES_DIR) / case_id
+    case_dir = _case_dir(case_id)
     if not case_dir.exists():
         return f"Case '{case_id}' not found"
     html = _run(generate_timeline_html, case_dir)
@@ -2549,8 +2592,6 @@ def tools_discover(filter: str = "") -> str:
     """
     Scan /share/tools/ and list available tools, optionally filtered by keyword.
     Phase: Tool Discovery
-    Parameters:
-      filter: Filter by keyword (str) [default: '']
     Related: tools_search, tools_run_in_dir
     """
     td = Path(_TOOLS_DIR)
@@ -2589,8 +2630,6 @@ def tools_search(name: str) -> str:
     """
     Search for a tool by name in /share/tools/, return full path and type.
     Phase: Tool Discovery
-    Parameters:
-      name: Name (str)
     Related: tools_discover, tools_run_in_dir
     """
     td = Path(_TOOLS_DIR)
@@ -2613,10 +2652,6 @@ def tools_run_in_dir(tool_name: str, args: str = "",
     """
     Run a tool from /share/tools/ in its directory (cd, run, restore).
     Phase: Tool Discovery
-    Parameters:
-      tool_name: Tool name from /share/tools/ (str)
-      args: Additional arguments (str) [default: '']
-      workdir_subpath: Subdirectory within tool dir (str) [default: '']
     Related: tools_discover, tools_search
     """
     td = Path(_TOOLS_DIR)
@@ -2648,15 +2683,62 @@ def tools_run_in_dir(tool_name: str, args: str = "",
 
 
 @mcp.tool()
+def daemon_list() -> str:
+    """
+    List background processes started by this server (chisel/ligolo/etc.) with
+    PID, command and liveness. Dead processes are pruned from the registry.
+    Phase: Utility / Infrastructure
+    """
+    rows = _daemons_snapshot()
+    if not rows:
+        return "No tracked daemons."
+    lines = [f"{'Name':<18} {'PID':<8} Alive  Started (UTC)  Command"]
+    for d in rows:
+        lines.append(f"{d['name']:<18} {d['pid']:<8} {str(d['alive']):<5}  "
+                     f"{d['started'][:19]}  {d['cmd'][:60]}")
+    return "\n".join(lines)
+
+
+_DAEMONS: dict = {}
+_DAEMON_PROCS: dict = {}
+_DAEMONS_LOCK = threading.Lock()
+
+
+def _register_daemon(name: str, proc) -> str:
+    """Track a spawned background process so it can be listed/cleaned up."""
+    with _DAEMONS_LOCK:
+        _DAEMON_PROCS[name] = proc
+        _DAEMONS[name] = {
+            "name": name,
+            "pid": proc.pid,
+            "cmd": " ".join(getattr(proc, "args", [])) or "?",
+            "started": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+    return proc.pid
+
+
+def _daemons_snapshot() -> list:
+    """Return live daemon metadata, pruning dead entries from the registry."""
+    with _DAEMONS_LOCK:
+        out = []
+        for name, d in list(_DAEMONS.items()):
+            proc = _DAEMON_PROCS.get(name)
+            if proc is not None and proc.poll() is None:
+                row = dict(d)
+                row["alive"] = True
+                out.append(row)
+            else:
+                _DAEMONS.pop(name, None)
+                _DAEMON_PROCS.pop(name, None)
+        return out
+
+
+@mcp.tool()
 def tool_ligolo_proxy(lport: int = 11601, laddr: str = "0.0.0.0",
                       self_cert_dir: str = "") -> str:
     """
     Start ligolo-ng proxy (receive reverse connections from agents).
     Phase: Tool Execution
-    Parameters:
-      lport: Listen port (int) [default: 11601]
-      laddr: Listen address (str) [default: '0.0.0.0']
-      self_cert_dir: Directory for self-signed certificates (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     proxy = Path(_TOOLS_DIR) / "ligo-proxy"
@@ -2669,6 +2751,7 @@ def tool_ligolo_proxy(lport: int = 11601, laddr: str = "0.0.0.0",
                 "-keyfile", str(cert_dir/"ligolo_key")]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _register_daemon("ligolo-proxy", proc)
         return f"ligolo-ng proxy started on {laddr}:{lport} (PID: {proc.pid})"
     except Exception as e:
         return f"Error starting ligolo proxy: {e}"
@@ -2680,10 +2763,6 @@ def tool_ligolo_agent(proxy_addr: str, proxy_port: int = 11601,
     """
     Start ligolo-ng agent connecting back to the proxy.
     Phase: Tool Execution
-    Parameters:
-      proxy_addr: Proxy address for agent (str)
-      proxy_port: Proxy port for agent (int) [default: 11601]
-      tun_iface: TUN interface name (str) [default: 'ligolo']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     agent = Path(_TOOLS_DIR) / "ligo-agent"
@@ -2693,6 +2772,7 @@ def tool_ligolo_agent(proxy_addr: str, proxy_port: int = 11601,
            "-tun", tun_iface]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _register_daemon("ligolo-agent", proc)
         return f"ligolo-ng agent started → {proxy_addr}:{proxy_port} (PID: {proc.pid})"
     except Exception as e:
         return f"Error starting ligolo agent: {e}"
@@ -2706,14 +2786,6 @@ def tool_windapsearch_enum(domain: str, server: str = "",
     """
     Enumerate AD via windapsearch (users, groups, computers, DACLs).
     Phase: Tool Execution
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      server: Target server address (IP or hostname) (str) [default: '']
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      ldap_filter: LDAP search filter (str) [default: '']
-      attrs: Attrs (str) [default: '']
-      all_attrs: All Attrs (bool) [default: False]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     binary = Path(_TOOLS_DIR) / "windapsearch-linux-amd64"
@@ -2747,9 +2819,6 @@ def tool_pspy_monitor(pspy_path: str = "", duration: int = 30) -> str:
     """
     Run pspy process monitor for N seconds to capture process execution events.
     Phase: Tool Execution
-    Parameters:
-      pspy_path: Path to pspy binary (str) [default: '']
-      duration: Duration in seconds (int) [default: 30]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     candidates = [Path(pspy_path)] if pspy_path else []
@@ -2775,23 +2844,16 @@ def tool_pspy_monitor(pspy_path: str = "", duration: int = 30) -> str:
 
 
 @mcp.tool()
-def tool_bloodhound_py_ingest(domain: str, username: str, password: str,
-                              dc_ip: str = "", dns_server: str = "",
-                              collection_method: str = "All") -> str:
+async def tool_bloodhound_py_ingest(domain: str, username: str, password: str,
+                                    dc_ip: str = "", dns_server: str = "",
+                                    collection_method: str = "All") -> str:
     """
     Run BloodHound.py Python ingestor against a domain.
     Phase: Tool Execution
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      username: Username for authentication (str)
-      password: Password for authentication (str)
-      dc_ip: Domain controller IP address (str) [default: '']
-      dns_server: Dns Server (str) [default: '']
-      collection_method: Collection Method (str) [default: 'All']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     from modules.tool_wrappers import bloodhound_ingest
-    r = _run(bloodhound_ingest, domain=domain, username=username,
+    r = await _run_async(bloodhound_ingest, domain=domain, username=username,
              password=password, dc_ip=dc_ip, dns_server=dns_server,
              collection_method=collection_method)
     if r.get("error"):
@@ -2810,8 +2872,6 @@ def kerberos_time_sync(server: str = "") -> str:
     """
     Sync system clock with a Kerberos KDC or NTP server.
     Phase: Kerberos Auth
-    Parameters:
-      server: Target server address (IP or hostname) (str) [default: '']
     Related: kerberos_config, kerberos_kinit, kerberos_klist, kerberos_setup
     """
     from modules.kerberos_tools import time_sync
@@ -2827,11 +2887,6 @@ def kerberos_config(domain: str, kdc: str, admin_server: str = "",
     """
     Generate krb5.conf for a domain/realm.
     Phase: Kerberos Auth
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      kdc: Kdc (str)
-      admin_server: Admin Server (str) [default: '']
-      output_file: Output file path (str) [default: '']
     Related: kerberos_time_sync, kerberos_kinit, kerberos_klist, kerberos_setup
     """
     from modules.kerberos_tools import krb5_config
@@ -2849,12 +2904,6 @@ def kerberos_kinit(principal: str, password: str = "",
     """
     Obtain a Kerberos TGT via kinit.
     Phase: Kerberos Auth
-    Parameters:
-      principal: Principal (str)
-      password: Password for authentication (str) [default: '']
-      keytab: Keytab (str) [default: '']
-      realm: Realm (str) [default: '']
-      lifetime: Lifetime (str) [default: '24h']
     Related: kerberos_time_sync, kerberos_config, kerberos_klist, kerberos_setup
     """
     from modules.kerberos_tools import kinit_user
@@ -2886,12 +2935,6 @@ def kerberos_setup(domain: str, kdc: str, username: str = "",
     """
     Full Kerberos setup: time sync → krb5.conf → kinit (if creds).
     Phase: Kerberos Auth
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      kdc: Kdc (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      skip_time_sync: Skip Time Sync (bool) [default: False]
     Related: kerberos_time_sync, kerberos_config, kerberos_kinit, kerberos_klist
     """
     from modules.kerberos_tools import setup_for_domain
@@ -2916,10 +2959,6 @@ def tool_lazagne_run(software: str = "all",
     """
     Run LaZagne credential recovery (all, browsers, wifi, git, etc).
     Phase: Tool Execution
-    Parameters:
-      software: Software category for LaZagne (str) [default: 'all']
-      password: Password for authentication (str) [default: '']
-      target_path: Target Path (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     lz_dir = Path(_TOOLS_DIR) / "LaZagne"
@@ -2943,20 +2982,15 @@ def tool_lazagne_run(software: str = "all",
 
 
 @mcp.tool()
-def tool_responder_analyze(interface: str = "eth0", analyze_mode: bool = False,
-                           verbose: bool = False, timeout: int = 60) -> str:
+async def tool_responder_analyze(interface: str = "eth0", analyze_mode: bool = False,
+                                 verbose: bool = False, timeout: int = 60) -> str:
     """
     Start Responder in analyze or poison mode to capture NTLMv2 hashes.
     Phase: Tool Execution
-    Parameters:
-      interface: Interface (str) [default: 'eth0']
-      analyze_mode: Only analyze, don't poison (bool) [default: False]
-      verbose: Enable verbose output (bool) [default: False]
-      timeout: Operation timeout in seconds (int) [default: 60]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_poison, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     from modules.tool_wrappers import responder_analyze
-    r = _run(responder_analyze, interface=interface, analyze_mode=analyze_mode,
+    r = await _run_async(responder_analyze, interface=interface, analyze_mode=analyze_mode,
              verbose=verbose, timeout=timeout)
     if r.get("error"):
         return f"Error: {r['error']}"
@@ -2967,16 +3001,14 @@ def tool_responder_analyze(interface: str = "eth0", analyze_mode: bool = False,
 
 
 @mcp.tool()
-def tool_responder_poison(interface: str = "eth0") -> str:
+async def tool_responder_poison(interface: str = "eth0") -> str:
     """
     Run Responder in poison mode to capture NTLMv2 hashes.
     Phase: Tool Execution
-    Parameters:
-      interface: Interface (str) [default: 'eth0']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_evil_winrm_connect, tool_hydra_bruteforce
     """
     from modules.tool_wrappers import responder_poison
-    r = _run(responder_poison, interface=interface)
+    r = await _run_async(responder_poison, interface=interface)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
     return f"Responder poisoning on {interface}: {r}"[:1000]
@@ -2988,12 +3020,6 @@ def tool_evil_winrm_connect(ip: str, username: str = "", password: str = "",
     """
     Connect to a WinRM service via Evil-WinRM for interactive or command execution.
     Phase: Tool Execution
-    Parameters:
-      ip: Ip (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      hash_value: Hash Value (str) [default: '']
-      command: Shell command to execute (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_hydra_bruteforce
     """
     from modules.tool_wrappers import evil_winrm_connect
@@ -3005,23 +3031,16 @@ def tool_evil_winrm_connect(ip: str, username: str = "", password: str = "",
 
 
 @mcp.tool()
-def tool_hydra_bruteforce(protocol: str, target: str, userlist: str,
-                          passlist: str, port: int = 0,
-                          service: str = "") -> str:
+async def tool_hydra_bruteforce(protocol: str, target: str, userlist: str,
+                                passlist: str, port: int = 0,
+                                service: str = "") -> str:
     """
     Run Hydra brute-force attack against a service.
     Phase: Tool Execution
-    Parameters:
-      protocol: Network protocol (str)
-      target: Target hostname, IP, or URL (str)
-      userlist: Userlist (str)
-      passlist: Passlist (str)
-      port: Port number (int) [default: 0]
-      service: Service (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import hydra_bruteforce
-    r = _run(hydra_bruteforce, protocol=protocol, target=target,
+    r = await _run_async(hydra_bruteforce, protocol=protocol, target=target,
              userlist=userlist, passlist=passlist, port=port, service=service)
     if r.get("error"):
         return f"Error: {r['error']}"
@@ -3029,20 +3048,15 @@ def tool_hydra_bruteforce(protocol: str, target: str, userlist: str,
 
 
 @mcp.tool()
-def tool_john_crack(hash_file: str, wordlist: str = "",
-                    format: str = "", show: bool = False) -> str:
+async def tool_john_crack(hash_file: str, wordlist: str = "",
+                          format: str = "", show: bool = False) -> str:
     """
     Crack hashes with John the Ripper.
     Phase: Tool Execution
-    Parameters:
-      hash_file: Path to hash file (str)
-      wordlist: Path to wordlist file (str) [default: '']
-      format: Hash format for John (str) [default: '']
-      show: Show cracked passwords (bool) [default: False]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import john_crack
-    r = _run(john_crack, hash_file=hash_file, wordlist=wordlist,
+    r = await _run_async(john_crack, hash_file=hash_file, wordlist=wordlist,
              format=format, show=show)
     if r.get("error"):
         return f"Error: {r['error']}"
@@ -3052,61 +3066,46 @@ def tool_john_crack(hash_file: str, wordlist: str = "",
 
 
 @mcp.tool()
-def tool_metasploit_module(module: str, payload: str, target: str,
-                           lhost: str = "", lport: int = 4444,
-                           timeout: int = 120) -> str:
+async def tool_metasploit_module(module: str, payload: str, target: str,
+                                 lhost: str = "", lport: int = 4444,
+                                 timeout: int = 120) -> str:
     """
     Run a Metasploit module with a payload against a target.
     Phase: Tool Execution
-    Parameters:
-      module: Metasploit module path (str)
-      payload: Metasploit payload name (str)
-      target: Target hostname, IP, or URL (str)
-      lhost: Lhost (str) [default: '']
-      lport: Listen port (int) [default: 4444]
-      timeout: Operation timeout in seconds (int) [default: 120]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import metasploit_module
-    r = _run(metasploit_module, module=module, payload=payload, target=target,
-             lhost=lhost, lport=lport, timeout=timeout)
+    r = await _run_async(metasploit_module, module=module, payload=payload, target=target,
+                         lhost=lhost, lport=lport, timeout=timeout)
     if r.get("error"):
         return f"Error: {r['error']}"
     return _fmt(r)
 
 
 @mcp.tool()
-def tool_metasploit_resource(resource_script: str) -> str:
+async def tool_metasploit_resource(resource_script: str) -> str:
     """
     Run a Metasploit resource script (.rc) via msfconsole -q -r.
     Phase: Tool Execution
-    Parameters:
-      resource_script: Metasploit resource script (.rc) path (str)
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import metasploit_resource
-    r = _run(metasploit_resource, resource_script=resource_script)
+    r = await _run_async(metasploit_resource, resource_script=resource_script)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
     return _fmt(r)
 
 
 @mcp.tool()
-def tool_sqlmap_detect(url: str, data: str = "", cookie: str = "",
-                       level: int = 1, risk: int = 1) -> str:
+async def tool_sqlmap_detect(url: str, data: str = "", cookie: str = "",
+                             level: int = 1, risk: int = 1) -> str:
     """
     Detect SQL injection vulnerabilities with SQLMap.
     Phase: Tool Execution
-    Parameters:
-      url: Full URL with scheme (str)
-      data: POST data (str) [default: '']
-      cookie: Cookie string (str) [default: '']
-      level: SQLMap level (1-5) (int) [default: 1]
-      risk: SQLMap risk (1-3) (int) [default: 1]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import sqlmap_detect
-    r = _run(sqlmap_detect, url=url, data=data, cookie=cookie,
+    r = await _run_async(sqlmap_detect, url=url, data=data, cookie=cookie,
              level=level, risk=risk)
     if r.get("error"):
         return f"Error: {r['error']}"
@@ -3115,16 +3114,14 @@ def tool_sqlmap_detect(url: str, data: str = "", cookie: str = "",
 
 
 @mcp.tool()
-def tool_sqlmap_exploit(url: str) -> str:
+async def tool_sqlmap_exploit(url: str) -> str:
     """
     Exploit SQL injection with SQLMap (OS shell, dump DB, etc.).
     Phase: Tool Execution
-    Parameters:
-      url: Full URL with scheme (str)
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import sqlmap_exploit
-    r = _run(sqlmap_exploit, url=url)
+    r = await _run_async(sqlmap_exploit, url=url)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
     return _fmt(r)
@@ -3134,61 +3131,50 @@ def tool_sqlmap_exploit(url: str) -> str:
 # Nmap pipeline
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def nmap_initial_tcp(target: str, top_ports: int = 1000) -> str:
+async def nmap_initial_tcp(target: str, top_ports: int = 1000) -> str:
     """
     Run initial TCP SYN scan (top N ports).
     Phase: Nmap Scanning
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      top_ports: Top Ports (int) [default: 1000]
     Related: nmap_initial_udp, nmap_full_tcp, nmap_pipeline, nmap_parse
     """
     from modules.nmap_wrapper import scan_initial_tcp
-    r = _run(scan_initial_tcp, target=target, top_ports=top_ports)
+    r = await _run_async(scan_initial_tcp, target=target, top_ports=top_ports)
     return _fmt(r)
 
 
 @mcp.tool()
-def nmap_initial_udp(target: str, top_ports: int = 1000) -> str:
+async def nmap_initial_udp(target: str, top_ports: int = 1000) -> str:
     """
     Run initial UDP scan (top N ports).
     Phase: Nmap Scanning
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      top_ports: Top Ports (int) [default: 1000]
     Related: nmap_initial_tcp, nmap_full_tcp, nmap_pipeline, nmap_parse
     """
     from modules.nmap_wrapper import scan_initial_udp
-    r = _run(scan_initial_udp, target=target, top_ports=top_ports)
+    r = await _run_async(scan_initial_udp, target=target, top_ports=top_ports)
     return _fmt(r)
 
 
 @mcp.tool()
-def nmap_full_tcp(target: str) -> str:
+async def nmap_full_tcp(target: str) -> str:
     """
     Run full TCP port scan (1-65535).
     Phase: Nmap Scanning
-    Parameters:
-      target: Target hostname, IP, or URL (str)
     Related: nmap_initial_tcp, nmap_initial_udp, nmap_pipeline, nmap_parse
     """
     from modules.nmap_wrapper import scan_full_tcp
-    r = _run(scan_full_tcp, target=target)
+    r = await _run_async(scan_full_tcp, target=target)
     return _fmt(r)
 
 
 @mcp.tool()
-def nmap_pipeline(target: str, skip_full: bool = False) -> str:
+async def nmap_pipeline(target: str, skip_full: bool = False) -> str:
     """
     Run full nmap reconnaissance pipeline (nmaptest.sh workflow).
     Phase: Nmap Scanning
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      skip_full: Skip Full (bool) [default: False]
     Related: nmap_initial_tcp, nmap_initial_udp, nmap_full_tcp, nmap_parse
     """
     from modules.nmap_wrapper import scan_pipeline
-    r = _run(scan_pipeline, target=target, skip_full=skip_full)
+    r = await _run_async(scan_pipeline, target=target, skip_full=skip_full)
     if r.get("error"):
         return f"Error: {r['error']}"
     phases = r.get("summary", {})
@@ -3200,16 +3186,14 @@ def nmap_pipeline(target: str, skip_full: bool = False) -> str:
 
 
 @mcp.tool()
-def nmap_parse(target: str) -> str:
+async def nmap_parse(target: str) -> str:
     """
     Parse all nmap output files into structured JSON.
     Phase: Nmap Scanning
-    Parameters:
-      target: Target hostname, IP, or URL (str)
     Related: nmap_initial_tcp, nmap_initial_udp, nmap_full_tcp, nmap_pipeline
     """
     from modules.nmap_wrapper import parse_results
-    r = _run(parse_results, target=target)
+    r = await _run_async(parse_results, target=target)
     if r.get("error"):
         return f"Error: {r['error']}"
     return json.dumps(r, indent=2)[:3000]
@@ -3222,26 +3206,19 @@ _VALID_NMAP_SUBCOMMANDS = [
 ]
 
 @mcp.tool()
-def case_nmap_scan(case_id: str, subcommand: str, target: str,
-                   ports: str = "", timeout: int = 7200) -> str:
+async def case_nmap_scan(case_id: str, subcommand: str, target: str,
+                         ports: str = "", timeout: int = 7200) -> str:
     """
     Run an nmap scan and attach results to a case (scans/ + evidence).
     Phase: Nmap Scanning
-    Parameters:
-      case_id: Case ID to scope results (str)
-      subcommand: Subcommand (init-tcp, init-udp, full-tcp, full-ack, service-version, versions-tcp, versions-udp, vuln, pipeline, parse, custom) (str)
-      target: Target hostname, IP, or URL (str)
-      ports: Ports or port range (str) [default: '']
-      timeout: Scan timeout in seconds (str) [default: 7200]
     Related: nmap_initial_tcp, nmap_full_tcp, nmap_pipeline, nmap_parse, case_evidence_list
     """
     if subcommand not in _VALID_NMAP_SUBCOMMANDS:
         return (f"Error: Unknown subcommand '{subcommand}'. "
                 f"Valid: {', '.join(_VALID_NMAP_SUBCOMMANDS)}. "
                 "(Note: use 'init-tcp' not 'initial-tcp', 'init-udp' not 'initial-udp')")
-    from modules.case_manager import CaseManager
     cm = CaseManager()
-    info = _run(cm.info, case_id)
+    info = await _run_async(cm.info, case_id)
     if info is None:
         return f"Error: Case '{case_id}' not found"
     import subprocess as _sp
@@ -3254,10 +3231,11 @@ def case_nmap_scan(case_id: str, subcommand: str, target: str,
     if ports:
         cmd.extend(["--ports", ports])
     try:
-        r = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = await asyncio.to_thread(_sp.run, cmd, capture_output=True, text=True,
+                                    timeout=timeout)
         output = r.stdout[-3000:] if len(r.stdout) > 3000 else r.stdout
         err = r.stderr[-500:] if r.stderr else ""
-        refreshed = _run(cm.info, case_id)
+        refreshed = await _run_async(cm.info, case_id)
         ev_count = len(refreshed.get("evidence", [])) if refreshed else 0
         status = "ok" if r.returncode == 0 else "error"
         lines = [f"Nmap scan ({status}): exit={r.returncode}"]
@@ -3279,8 +3257,6 @@ def browser_analyze_leveldb(path: str) -> str:
     """
     Analyze a LevelDB directory and classify key-value pairs.
     Phase: General
-    Parameters:
-      path: Path (str)
     Related: browser_extract_sensitive, browser_analyze_chrome_profile
     """
     from modules.browser_db import analyze_leveldb
@@ -3303,8 +3279,6 @@ def browser_extract_sensitive(path: str) -> str:
     """
     Extract sensitive data (credentials, tokens, JWTs) from a LevelDB store.
     Phase: General
-    Parameters:
-      path: Path (str)
     Related: browser_analyze_leveldb, browser_analyze_chrome_profile
     """
     from modules.browser_db import extract_sensitive
@@ -3321,8 +3295,6 @@ def browser_analyze_chrome_profile(profile_path: str) -> str:
     """
     Analyze a full Chrome/Chromium profile for all LevelDB stores.
     Phase: General
-    Parameters:
-      profile_path: Profile Path (str)
     Related: browser_analyze_leveldb, browser_extract_sensitive
     """
     from modules.browser_db import analyze_chrome_profile
@@ -3339,66 +3311,45 @@ def browser_analyze_chrome_profile(profile_path: str) -> str:
 # Impacket — AD exploitation
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def impacket_secretsdump(target: str, username: str = "", password: str = "",
-                         domain: str = "", hash: str = "",
-                         just_dc: bool = False) -> str:
+async def impacket_secretsdump(target: str, username: str = "", password: str = "",
+                               domain: str = "", hash: str = "",
+                               just_dc: bool = False) -> str:
     """
     Dump SAM/LSA/AD secrets via Impacket secretsdump.
     Phase: Impacket Exploitation
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      hash: Hash (str) [default: '']
-      just_dc: Just Dc (bool) [default: False]
     Related: impacket_wmiexec, impacket_ticketer, impacket_psexec, impacket_smbexec
     """
     from modules.tool_wrappers import impacket_secretsdump
-    r = _run(impacket_secretsdump, target=target, username=username,
+    r = await _run_async(impacket_secretsdump, target=target, username=username,
              password=password, domain=domain, hash=hash, just_dc=just_dc)
     return _fmt(r)
 
 
 @mcp.tool()
-def impacket_wmiexec(target: str, username: str = "", password: str = "",
-                     domain: str = "", hash: str = "", command: str = "whoami") -> str:
+async def impacket_wmiexec(target: str, username: str = "", password: str = "",
+                           domain: str = "", hash: str = "", command: str = "whoami") -> str:
     """
     Execute commands via WMI using Impacket wmiexec.
     Phase: Impacket Exploitation
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      hash: Hash (str) [default: '']
-      command: Shell command to execute (str) [default: 'whoami']
     Related: impacket_secretsdump, impacket_ticketer, impacket_psexec, impacket_smbexec
     """
     from modules.tool_wrappers import impacket_wmiexec
-    r = _run(impacket_wmiexec, target=target, username=username,
+    r = await _run_async(impacket_wmiexec, target=target, username=username,
              password=password, domain=domain, hash=hash, command=command)
     return _fmt(r)
 
 
 @mcp.tool()
-def impacket_ticketer(domain: str, username: str, ntlm_hash: str,
-                      domain_sid: str, krbtgt_hash: str = "",
-                      duration_hours: int = 10) -> str:
+async def impacket_ticketer(domain: str, username: str, ntlm_hash: str,
+                            domain_sid: str, krbtgt_hash: str = "",
+                            duration_hours: int = 10) -> str:
     """
     Create a golden/silver Kerberos ticket via Impacket ticketer.
     Phase: Impacket Exploitation
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      username: Username for authentication (str)
-      ntlm_hash: Ntlm Hash (str)
-      domain_sid: Domain Sid (str)
-      krbtgt_hash: Krbtgt Hash (str) [default: '']
-      duration_hours: Duration Hours (int) [default: 10]
     Related: impacket_secretsdump, impacket_wmiexec, impacket_psexec, impacket_smbexec
     """
     from modules.tool_wrappers import impacket_ticketer
-    r = _run(impacket_ticketer, domain=domain, username=username,
+    r = await _run_async(impacket_ticketer, domain=domain, username=username,
              ntlm_hash=ntlm_hash, domain_sid=domain_sid,
              krbtgt_hash=krbtgt_hash, duration_hours=duration_hours)
     if r.get("error"):
@@ -3407,45 +3358,31 @@ def impacket_ticketer(domain: str, username: str, ntlm_hash: str,
 
 
 @mcp.tool()
-def impacket_psexec(target: str, username: str = "", password: str = "",
-                    domain: str = "", hash: str = "",
-                    command: str = "cmd.exe /c whoami") -> str:
+async def impacket_psexec(target: str, username: str = "", password: str = "",
+                          domain: str = "", hash: str = "",
+                          command: str = "cmd.exe /c whoami") -> str:
     """
     Execute commands via SMB using Impacket psexec.
     Phase: Impacket Exploitation
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      hash: Hash (str) [default: '']
-      command: Shell command to execute (str) [default: 'cmd.exe /c whoami']
     Related: impacket_secretsdump, impacket_wmiexec, impacket_ticketer, impacket_smbexec
     """
     from modules.tool_wrappers import impacket_psexec
-    r = _run(impacket_psexec, target=target, username=username,
+    r = await _run_async(impacket_psexec, target=target, username=username,
              password=password, domain=domain, hash=hash, command=command)
     return _fmt(r)
 
 
 @mcp.tool()
-def impacket_smbexec(target: str, username: str = "", password: str = "",
-                     domain: str = "", hash: str = "",
-                     command: str = "whoami") -> str:
+async def impacket_smbexec(target: str, username: str = "", password: str = "",
+                           domain: str = "", hash: str = "",
+                           command: str = "whoami") -> str:
     """
     Execute commands via SMB using Impacket smbexec (no service creation).
     Phase: Impacket Exploitation
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      hash: Hash (str) [default: '']
-      command: Shell command to execute (str) [default: 'whoami']
     Related: impacket_secretsdump, impacket_wmiexec, impacket_ticketer, impacket_psexec
     """
     from modules.tool_wrappers import impacket_smbexec
-    r = _run(impacket_smbexec, target=target, username=username,
+    r = await _run_async(impacket_smbexec, target=target, username=username,
              password=password, domain=domain, hash=hash, command=command)
     return _fmt(r)
 
@@ -3454,19 +3391,14 @@ def impacket_smbexec(target: str, username: str = "", password: str = "",
 # Web fuzzing
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def ffuf_directory(url: str, wordlist: str, extensions: str = "",
-                   filter_size: str = "") -> str:
+async def ffuf_directory(url: str, wordlist: str, extensions: str = "",
+                         filter_size: str = "") -> str:
     """
     Run ffuf for directory/file fuzzing.
     Phase: Web Fuzzing
-    Parameters:
-      url: Full URL with scheme (str)
-      wordlist: Path to wordlist file (str)
-      extensions: Extensions (str) [default: '']
-      filter_size: Filter Size (str) [default: '']
     """
     from modules.tool_wrappers import ffuf_fuzz
-    r = _run(ffuf_fuzz, url=url, wordlist=wordlist, mode="dir",
+    r = await _run_async(ffuf_fuzz, url=url, wordlist=wordlist, mode="dir",
              extensions=extensions, filter_size=filter_size)
     if r.get("error"):
         return f"Error: {r['error']}"
@@ -3475,17 +3407,13 @@ def ffuf_directory(url: str, wordlist: str, extensions: str = "",
 
 
 @mcp.tool()
-def gobuster_directory(url: str, wordlist: str, extensions: str = "") -> str:
+async def gobuster_directory(url: str, wordlist: str, extensions: str = "") -> str:
     """
     Run gobuster for directory brute-forcing.
     Phase: Web Brute-force
-    Parameters:
-      url: Full URL with scheme (str)
-      wordlist: Path to wordlist file (str)
-      extensions: Extensions (str) [default: '']
     """
     from modules.tool_wrappers import gobuster_dir
-    r = _run(gobuster_dir, url=url, wordlist=wordlist, extensions=extensions)
+    r = await _run_async(gobuster_dir, url=url, wordlist=wordlist, extensions=extensions)
     if r.get("error"):
         return f"Error: {r['error']}"
     out = r.get("output", r.get("stdout", ""))[:2000]
@@ -3496,17 +3424,15 @@ def gobuster_directory(url: str, wordlist: str, extensions: str = "") -> str:
 # Hash cracking
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def hashcat_crack(hash_file: str, wordlist: str = "", hash_mode: int = 0) -> str:
+async def hashcat_crack(hash_file: str, wordlist: str = "", mask: str = "",
+                        hash_mode: int = 0) -> str:
     """
     Crack hashes with hashcat (GPU-accelerated).
     Phase: Hash Cracking
-    Parameters:
-      hash_file: Path to hash file (str)
-      wordlist: Path to wordlist file (str) [default: '']
-      hash_mode: Hashcat mode number (int) [default: 0]
     """
     from modules.tool_wrappers import hashcat_crack as _hc
-    r = _run(_hc, hash_file=hash_file, wordlist=wordlist, hash_mode=hash_mode)
+    r = await _run_async(_hc, hash_file=hash_file, wordlist=wordlist, mask=mask,
+                         hash_mode=hash_mode)
     if r.get("error"):
         return f"Error: {r['error']}"
     cnt = r.get("cracked_count", 0)
@@ -3521,8 +3447,6 @@ def burp_import(xml_file: str) -> str:
     """
     Parse Burp Suite XML export into structured findings.
     Phase: Burp Suite Import
-    Parameters:
-      xml_file: Path to Burp Suite XML export (str)
     """
     from modules.tool_wrappers import burp_import_xml
     r = _run(burp_import_xml, xml_file=xml_file)
@@ -3540,9 +3464,6 @@ def tool_caido_import(json_file: str, case_id: str = "") -> str:
     """
     Parse Caido JSON export into structured findings.
     Phase: Tool Execution
-    Parameters:
-      json_file: Path to Caido JSON export file (str)
-      case_id: Case ID to scope results (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import caido_import_json
@@ -3553,42 +3474,114 @@ def tool_caido_import(json_file: str, case_id: str = "") -> str:
     return f"Caido import: {len(findings)} findings\n" + _fmt(r)
 
 
+@mcp.tool()
+def caido_health() -> str:
+    """Probe the Caido instance and report whether its API (or only the web UI)
+    is reachable. Use before caido_requests/caido_workflows.
+    Phase: DAST
+    Related: caido_requests, caido_workflows, tool_caido_import
+    """
+    from modules.caido_client import CaidoClient
+    cfg = _caido_cfg()
+    c = CaidoClient(base_url=cfg.get("url", "http://127.0.0.1:8080"),
+                    api_key=cfg.get("api_key", ""),
+                    api_token=cfg.get("api_token", ""))
+    d = c.detect()
+    lines = [f"Caido at {d['base_url']}: web UI {'up' if d['web_ui'] in (200, 401, 403) else 'down'}",
+             f"API reachable: {d['api_reachable']}"]
+    for name, p in d.get("probes", {}).items():
+        lines.append(f"  /api/v1/{name}: HTTP {p.get('status')} "
+                     f"json={p.get('json')} {p.get('content_type', '')}")
+    if not d["api_reachable"]:
+        lines.append("API not reachable -> use tool_caido_import with a Caido JSON export instead.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def caido_requests(limit: int = 50) -> str:
+    """List recent proxied requests from the Caido API (only works if the API is up).
+    Phase: DAST
+    Related: caido_health, caido_workflows, tool_caido_import
+    """
+    from modules.caido_client import CaidoClient
+    cfg = _caido_cfg()
+    c = CaidoClient(base_url=cfg.get("url", "http://127.0.0.1:8080"),
+                    api_key=cfg.get("api_key", ""),
+                    api_token=cfg.get("api_token", ""))
+    if not c.detect().get("api_reachable"):
+        return "Caido API is not reachable; use tool_caido_import with an export instead."
+    r = c.requests_recent(limit=limit)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    items = r.get("requests", r.get("data", [r]))[:limit]
+    lines = [f"Caido requests ({len(items)}):"]
+    for it in items:
+        lines.append(f"  {it.get('id', it.get('uuid', '?'))} "
+                     f"{it.get('method', it.get('req', {}).get('method', '?'))} "
+                     f"{it.get('url', it.get('uri', ''))}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def caido_workflows() -> str:
+    """List Caido workflows/scans via the API (only works if the API is up).
+    Phase: DAST
+    Related: caido_health, caido_requests, tool_caido_import
+    """
+    from modules.caido_client import CaidoClient
+    cfg = _caido_cfg()
+    c = CaidoClient(base_url=cfg.get("url", "http://127.0.0.1:8080"),
+                    api_key=cfg.get("api_key", ""),
+                    api_token=cfg.get("api_token", ""))
+    if not c.detect().get("api_reachable"):
+        return "Caido API is not reachable; use tool_caido_import with an export instead."
+    r = c.workflows_list()
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    items = r.get("workflows", r.get("data", [r]))
+    return f"Caido workflows ({len(items)}):\n" + "\n".join(f"  {w}" for w in items[:30])
+
+
+def _caido_cfg() -> dict:
+from modules.config import load_config
+    cfg = load_config()
+    return {
+        "url": cfg.get("caido_url", "http://127.0.0.1:8080"),
+        "api_key": cfg.get("caido_api_key", ""),
+        "api_token": cfg.get("caido_api_token", ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Secret scanning
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def tool_trufflehog_org(org: str, output_dir: str = "") -> str:
+async def tool_trufflehog_org(org: str, output_dir: str = "") -> str:
     """
     Scan a GitHub org for secrets via TruffleHog Docker image.
     Phase: Tool Execution
-    Parameters:
-      org: GitHub organization name (str)
-      output_dir: Directory for output files (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import trufflehog_org
     from pathlib import Path
     od = Path(output_dir) if output_dir else None
-    r = _run(trufflehog_org, org=org, output_dir=od)
+    r = await _run_async(trufflehog_org, org=org, output_dir=od)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
     return f"TruffleHog org scan: {r.get('verified', 0)} verified, {r.get('unverified', 0)} unverified\nFile: {r.get('raw_file', '')}"
 
 
 @mcp.tool()
-def tool_trufflehog_local(path: str, output_dir: str = "") -> str:
+async def tool_trufflehog_local(path: str, output_dir: str = "") -> str:
     """
     Run TruffleHog on a local directory to find secrets.
     Phase: Tool Execution
-    Parameters:
-      path: Path (str)
-      output_dir: Directory for output files (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import trufflehog_local
     from pathlib import Path
     od = Path(output_dir) if output_dir else None
-    r = _run(trufflehog_local, path=path, output_dir=od)
+    r = await _run_async(trufflehog_local, path=path, output_dir=od)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
     return f"TruffleHog local scan: {r.get('verified', 0)} verified, {r.get('unverified', 0)} unverified\nFile: {r.get('raw_file', '')}"
@@ -3598,30 +3591,25 @@ def tool_trufflehog_local(path: str, output_dir: str = "") -> str:
 # Privesc check (linpeas / winpeas)
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def linpeas_local() -> str:
+async def linpeas_local() -> str:
     """Run linpeas.sh locally for privilege escalation checks."""
     from modules.tool_wrappers import linpeas_run
-    r = _run(linpeas_run)
+    r = await _run_async(linpeas_run)
     if r.get("error"):
         return f"Error: {r['error']}"
     return f"linpeas complete\nOutput: {r.get('output_file', '')}"
 
 
 @mcp.tool()
-def tool_winpeas_run(target_host: str = "", target_user: str = "",
-                     target_pass: str = "", local_path: str = "") -> str:
+async def tool_winpeas_run(target_host: str = "", target_user: str = "",
+                           target_pass: str = "", local_path: str = "") -> str:
     """
     Execute winPEAS.exe on a remote target for Windows privesc checks.
     Phase: Tool Execution
-    Parameters:
-      target_host: Remote host for credential testing (str) [default: '']
-      target_user: Target User (str) [default: '']
-      target_pass: Target Pass (str) [default: '']
-      local_path: Local path to winPEAS binary (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import winpeas_run
-    r = _run(winpeas_run, target_host=target_host, target_user=target_user,
+    r = await _run_async(winpeas_run, target_host=target_host, target_user=target_user,
              target_pass=target_pass, local_path=local_path)
     if isinstance(r, dict) and r.get("error"):
         return f"Error: {r['error']}"
@@ -3638,12 +3626,6 @@ def chisel_tunnel(server: str, remote_port: int = 8080,
     """
     Start a chisel tunnel client.
     Phase: Tunneling
-    Parameters:
-      server: Target server address (IP or hostname) (str)
-      remote_port: Remote port for tunnel (int) [default: 8080]
-      local_port: Local port for tunnel (int) [default: 1080]
-      socks: Enable SOCKS proxy (bool) [default: True]
-      reverse: Reverse tunnel mode (bool) [default: False]
     """
     from modules.tool_wrappers import chisel_client
     r = _run(chisel_client, server=server, remote_port=remote_port,
@@ -3659,9 +3641,6 @@ def tool_chisel_server(port: int = 8080, socks: bool = True) -> str:
     """
     Start a chisel server for incoming tunnel connections.
     Phase: Tool Execution
-    Parameters:
-      port: Port number (int) [default: 8080]
-      socks: Enable SOCKS proxy (bool) [default: True]
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import chisel_server
@@ -3681,10 +3660,6 @@ def tool_evilginx_start(domain: str, config_dir: str = "",
     """
     Start EvilGinx2 with a given phishing domain.
     Phase: Tool Execution
-    Parameters:
-      domain: Target domain (e.g., "example.local") (str)
-      config_dir: Configuration directory (str) [default: '']
-      phishing_dir: Phishing template directory (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import evilginx_start
@@ -3701,10 +3676,6 @@ def tool_gophish_import(campaign_file: str, gophish_url: str = "",
     """
     Import a GoPhish campaign JSON file (or send via API).
     Phase: Tool Execution
-    Parameters:
-      campaign_file: Path to GoPhish campaign JSON (str)
-      gophish_url: GoPhish API URL (str) [default: '']
-      api_key: Api Key (str) [default: '']
     Related: tools_discover, tools_search, tools_run_in_dir, tool_ligolo_proxy, tool_ligolo_agent, tool_windapsearch_enum, tool_pspy_monitor, tool_bloodhound_py_ingest, tool_lazagne_run, tool_responder_analyze, tool_responder_poison, tool_evil_winrm_connect
     """
     from modules.tool_wrappers import gophish_import_campaign
@@ -3724,11 +3695,6 @@ def enum4linux(target: str, username: str = "", password: str = "",
     """
     Enumerate Windows/Samba hosts via enum4linux-ng.
     Phase: SMB Enumeration
-    Parameters:
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str) [default: '']
-      password: Password for authentication (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
     """
     from modules.tool_wrappers import enum4linux_ng
     r = _run(enum4linux_ng, target=target, username=username,
@@ -3741,18 +3707,138 @@ def enum4linux(target: str, username: str = "", password: str = "",
 
 
 # ---------------------------------------------------------------------------
+# ProjectDiscovery recon stack (subfinder / httpx / naabu / dnsx / katana)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def pd_subfinder(domain: str, recursive: bool = False,
+                       all_sources: bool = False, resolvers: str = "",
+                       threads: int = 0) -> str:
+    """
+    Enumerate subdomains with ProjectDiscovery subfinder.
+    Phase: Subdomain Enumeration
+    Related: pd_httpx, pd_naabu, dns_resolve, auto_recon
+    """
+    from modules.tool_wrappers import subfinder_enum
+    r = await _run_async(subfinder_enum, domain, recursive=recursive,
+                         all_sources=all_sources, resolvers=resolvers,
+                         threads=threads)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    subs = r.get("subdomains", [])
+    lines = [f"subfinder: {r.get('total', 0)} subdomains for {domain}"]
+    lines.extend(f"  {s}" for s in subs[:100])
+    if len(subs) > 100:
+        lines.append(f"  ... and {len(subs) - 100} more (full list in output file)")
+    lines.append(f"Output: {r.get('output_file', '')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def pd_httpx(target: str = "", list_file: str = "",
+                   status_codes: str = "", include_title: bool = True,
+                   tech_detect: bool = True, follow_redirects: bool = False,
+                   threads: int = 0) -> str:
+    """
+    Probe hosts/URLs with ProjectDiscovery httpx (live hosts, status, title, tech).
+    Phase: Web Probing
+    Related: pd_subfinder, pd_naabu, web_nuclei_scan, auto_recon
+    """
+    from modules.tool_wrappers import httpx_probe
+    r = await _run_async(httpx_probe, target, list_file, status_codes=status_codes,
+                         include_title=include_title, tech_detect=tech_detect,
+                         follow_redirects=follow_redirects, threads=threads)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    hosts = r.get("hosts", [])
+    lines = [f"httpx: {r.get('total', 0)} live hosts"]
+    for h in hosts[:100]:
+        tech = ",".join((h.get("tech") or [])[:3])
+        lines.append(f"  {h.get('status_code','')} {h.get('url','')}  "
+                     f"{h.get('title','')[:60]}  {h.get('webserver','')} {tech}")
+    if len(hosts) > 100:
+        lines.append(f"  ... and {len(hosts) - 100} more (full list in output file)")
+    lines.append(f"Output: {r.get('output_file', '')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def pd_naabu(target: str, ports: str = "", top_ports: int = 0,
+                   rate: int = 0, service_detect: bool = False) -> str:
+    """
+    Fast port scan with ProjectDiscovery naabu.
+    Phase: Port Scanning
+    Related: nmap_initial_tcp, pd_httpx, pd_subfinder
+    """
+    from modules.tool_wrappers import naabu_scan
+    r = await _run_async(naabu_scan, target, ports=ports, top_ports=top_ports,
+                         rate=rate, service_detect=service_detect)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    ports_open = r.get("ports", [])
+    lines = [f"naabu {target}: {r.get('total_open', 0)} open port(s)"]
+    lines.append("  " + ", ".join(str(p) for p in ports_open[:100]))
+    lines.append(f"Output: {r.get('output_file', '')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def pd_dnsx(domain: str = "", list_file: str = "",
+                  record_types: str = "a,aaaa,cname,mx,ns,txt,soa",
+                  resp_only: bool = False) -> str:
+    """
+    Run DNS lookups with ProjectDiscovery dnsx.
+    Phase: DNS / Network
+    Related: dns_resolve, pd_subfinder, dns_history
+    """
+    from modules.tool_wrappers import dnsx_probe
+    r = await _run_async(dnsx_probe, domain, list_file, record_types=record_types,
+                         resp_only=resp_only)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    records = r.get("records", [])
+    lines = [f"dnsx: {r.get('total', 0)} record(s)"]
+    for rec in records[:100]:
+        val = rec.get("value", "")
+        lines.append(f"  {rec.get('host','')} {rec.get('type','')}: {val}")
+    if len(records) > 100:
+        lines.append(f"  ... and {len(records) - 100} more (full list in output file)")
+    lines.append(f"Output: {r.get('output_file', '')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def pd_katana(url: str = "", list_file: str = "", depth: int = 2,
+                    js_crawl: bool = False, known_files: bool = False) -> str:
+    """
+    Crawl a web app with ProjectDiscovery katana.
+    Phase: Web Crawling
+    Related: pd_httpx, ffuf_directory, web_nuclei_scan
+    """
+    from modules.tool_wrappers import katana_crawl
+    r = await _run_async(katana_crawl, url, list_file, depth=depth,
+                         js_crawl=js_crawl, known_files=known_files)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    urls = r.get("urls", [])
+    lines = [f"katana: {r.get('total', 0)} endpoints discovered"]
+    lines.extend(f"  {u}" for u in urls[:100])
+    if len(urls) > 100:
+        lines.append(f"  ... and {r.get('total', len(urls)) - len(urls)} more (full list in output file)")
+    lines.append(f"Output: {r.get('output_file', '')}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Auto-recon pipeline
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def auto_recon(target: str) -> str:
+async def auto_recon(target: str) -> str:
     """
     Chain nmap → ffuf → nuclei in a single reconnaissance pipeline.
     Phase: Automated Recon
-    Parameters:
-      target: Target hostname, IP, or URL (str)
     """
     from modules.tool_wrappers import auto_recon
-    r = _run(auto_recon, target=target)
+    r = await _run_async(auto_recon, target=target)
     if r.get("error"):
         return f"Error: {r['error']}"
     phases = r.get("phases", {})
@@ -3776,16 +3862,6 @@ def loot_add_credential(source: str, target: str, username: str,
     Use this for credentials found via dumping, cracking, phishing, or tool output.
     For managed/known credentials of an inventory asset use credentials_create.
     Phase: Loot Database
-    Parameters:
-      source: Source of finding (str)
-      target: Target hostname, IP, or URL (str)
-      username: Username for authentication (str)
-      password: Password for authentication (str) [default: '']
-      hash: Hash (str) [default: '']
-      hash_type: Hash Type (str) [default: '']
-      domain: Target domain (e.g., "example.local") (str) [default: '']
-      protocol: Network protocol (str) [default: '']
-      port: Port number (int) [default: 0]
     Related: loot_search, loot_list_credentials, loot_delete_credential, credentials_create, credentials_list
     """
     from modules.tool_wrappers import LootDB
@@ -3809,8 +3885,6 @@ def loot_search(query: str) -> str:
     Search the loot database for captured credentials, tokens, sessions.
     Does not search the asset inventory — use credentials_list for that.
     Phase: Loot Database
-    Parameters:
-      query: Query (str)
     Related: loot_add_credential, loot_list_credentials, loot_list_tokens, loot_list_sessions, credentials_list
     """
     from modules.tool_wrappers import LootDB
@@ -3843,12 +3917,9 @@ def loot_list_credentials(limit: int = 50) -> str:
     List recent credentials from the loot database (captured/compromised creds).
     For managed/known credentials of inventory assets use credentials_list.
     Phase: Loot Database
-    Parameters:
-      limit: Maximum records to return (int) [default: 50]
     Related: loot_add_credential, loot_delete_credential, loot_search, credentials_list
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _list():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -3871,12 +3942,9 @@ def loot_delete_credential(cred_id: int) -> str:
     """
     Delete a credential from the loot database by ID.
     Phase: Loot Database
-    Parameters:
-      cred_id: Credential ID to delete (int)
     Related: loot_list_credentials, loot_add_credential, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _del():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -3898,12 +3966,9 @@ def loot_list_tokens(limit: int = 50) -> str:
     """
     List tokens from the loot database.
     Phase: Loot Database
-    Parameters:
-      limit: Maximum records to return (int) [default: 50]
     Related: loot_add_token, loot_delete_token, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _list():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -3932,17 +3997,9 @@ def loot_add_token(source: str, token_type: str, token_value: str,
     """
     Store a token in the loot database.
     Phase: Loot Database
-    Parameters:
-      source: Source of finding (str)
-      token_type: Token type (JWT, API, session) (str)
-      token_value: The token string (str)
-      target: Target hostname, IP, or URL (str) [default: '']
-      expires: Expiration date (YYYY-MM-DD) (str) [default: '']
-      notes: Notes (str) [default: '']
     Related: loot_list_tokens, loot_delete_token, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _store():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -3962,12 +4019,9 @@ def loot_delete_token(token_id: int) -> str:
     """
     Delete a token from the loot database by ID.
     Phase: Loot Database
-    Parameters:
-      token_id: Token ID to delete (int)
     Related: loot_list_tokens, loot_add_token, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _del():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -3989,12 +4043,9 @@ def loot_list_sessions(limit: int = 50) -> str:
     """
     List sessions from the loot database.
     Phase: Loot Database
-    Parameters:
-      limit: Maximum records to return (int) [default: 50]
     Related: loot_add_session, loot_delete_session, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _list():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -4021,16 +4072,9 @@ def loot_add_session(source: str, session_id: str, target: str = "",
     """
     Store a session in the loot database.
     Phase: Loot Database
-    Parameters:
-      source: Source of finding (str)
-      session_id: Session identifier (str)
-      target: Target hostname, IP, or URL (str) [default: '']
-      protocol: Network protocol (str) [default: '']
-      data: Session data / cookies (str) [default: '']
     Related: loot_list_sessions, loot_delete_session, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _store():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -4050,12 +4094,9 @@ def loot_delete_session(sid: int) -> str:
     """
     Delete a session from the loot database by ID.
     Phase: Loot Database
-    Parameters:
-      sid: Session ID to delete (int)
     Related: loot_list_sessions, loot_add_session, loot_search
     """
     from modules.tool_wrappers import LootDB
-    from modules.constants import CC_DIR
     def _del():
         db = LootDB(CC_DIR / "loot.db")
         try:
@@ -4080,8 +4121,6 @@ def pypykatz_parse(dump_file: str) -> str:
     """
     Parse a LSASS minidump with pypykatz to extract credentials.
     Phase: Credential Extraction
-    Parameters:
-      dump_file: Path to LSASS minidump file (str)
     """
     from modules.tool_wrappers import pypykatz_parse as _ppk
     r = _run(_ppk, dump_file=dump_file)
@@ -4104,204 +4143,219 @@ def _bin_result(r: dict) -> str:
         return r["stdout"][:4000]
     return json.dumps(r, indent=2, default=str)[:4000]
 
-def _run_bin_noargs(fn):
-    """_run helper for wrapper functions that take no args."""
-    fut = _POOL.submit(fn)
+async def _run_bin_noargs(fn):
+    """Run a blocking binary-wrapper fn in a worker thread with a timeout."""
     try:
-        return _bin_result(fut.result(timeout=_TIMEOUT))
-    except concurrent.futures.TimeoutError:
+        return _bin_result(await asyncio.wait_for(asyncio.to_thread(fn), timeout=_TIMEOUT))
+    except asyncio.TimeoutError:
         return f"Error: Timed out after {_TIMEOUT}s"
 
-def _run_bin_binary(fn, binary_path: str):
-    """_run helper for wrapper functions that take (binary)."""
-    fut = _POOL.submit(fn, binary_path)
+
+async def _run_bin_binary(fn, binary_path: str):
+    """Run a blocking binary-wrapper fn in a worker thread with a timeout."""
     try:
-        return _bin_result(fut.result(timeout=_TIMEOUT))
-    except concurrent.futures.TimeoutError:
+        return _bin_result(await asyncio.wait_for(asyncio.to_thread(fn, binary_path), timeout=_TIMEOUT))
+    except asyncio.TimeoutError:
         return f"Error: Timed out after {_TIMEOUT}s"
 
-def _run_bin_kwargs(fn, *args, **kwargs):
-    """_run helper that passes through args/kwargs."""
-    fut = _POOL.submit(fn, *args, **kwargs)
+
+async def _run_bin_kwargs(fn, *args, **kwargs):
+    """Run a blocking binary-wrapper fn in a worker thread with a timeout."""
     try:
-        return _bin_result(fut.result(timeout=_TIMEOUT))
-    except concurrent.futures.TimeoutError:
+        return _bin_result(await asyncio.wait_for(asyncio.to_thread(fn, *args, **kwargs), timeout=_TIMEOUT))
+    except asyncio.TimeoutError:
         return f"Error: Timed out after {_TIMEOUT}s"
 
 @mcp.tool()
-def binary_check() -> str:
+async def binary_check() -> str:
     """Check what binary exploitation / reverse engineering tools are available on this system. Reports 40+ tools across 9 categories."""
     from modules.bin_wrapper import check as _bc
-    return _run_bin_noargs(_bc)
+    return await _run_bin_noargs(_bc)
 
 @mcp.tool()
-def binary_analyze(binary_path: str) -> str:
+async def binary_analyze(binary_path: str) -> str:
     """
     Run a full binary exploitation analysis on a target binary (ELF/PE/Mach-O). Returns file info, security mitigations, vulnerability scan, exploitability scoring, and tool-specific deep analysis (angr, pwntools, r2).
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import analyze as _ba
-    return _run_bin_binary(_ba, binary_path)
+    return await _run_bin_binary(_ba, binary_path)
 
 @mcp.tool()
-def binary_summary(binary_path: str) -> str:
+async def binary_summary(binary_path: str) -> str:
     """
     Get a concise markdown summary of a binary's security posture and exploitability. Optimized for AI consumption — includes mitigation status, vulnerability list, and exploitation strategy.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import summary as _bs
-    return _run_bin_binary(_bs, binary_path)
+    return await _run_bin_binary(_bs, binary_path)
 
 @mcp.tool()
-def binary_vulns(binary_path: str) -> str:
+async def binary_vulns(binary_path: str) -> str:
     """
     Scan a binary for common vulnerability patterns: dangerous functions (gets/strcpy/system), format strings, command injection, insecure APIs, packer detection, anti-debug, and suspicious strings.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import vulns as _bv
-    return _run_bin_binary(_bv, binary_path)
+    return await _run_bin_binary(_bv, binary_path)
 
 @mcp.tool()
-def binary_checksec(binary_path: str) -> str:
+async def binary_checksec(binary_path: str) -> str:
     """
     Check binary security mitigations: NX (no-execute), Stack Canary, RELRO (GOT protection), PIE (position-independent), and PE-specific (ASLR, CFG, SafeSEH).
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import checksec as _bc
-    return _run_bin_binary(_bc, binary_path)
+    return await _run_bin_binary(_bc, binary_path)
 
 @mcp.tool()
-def binary_gadgets(binary_path: str) -> str:
+async def binary_gadgets(binary_path: str) -> str:
     """
     Search for ROP gadgets in a binary using ropper or ROPgadget. Returns categorized gadgets: pop rdi/ret, pop rsi/ret, syscall, ret, etc.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import gadgets as _bg
-    return _run_bin_binary(_bg, binary_path)
+    return await _run_bin_binary(_bg, binary_path)
 
 @mcp.tool()
-def binary_exploit_strategy(binary_path: str) -> str:
+async def binary_exploit_strategy(binary_path: str) -> str:
     """
     Generate an exploitation strategy for a binary. Scores exploitability (0-100), recommends techniques (shellcode injection, ret2libc, ROP chain), and lists available gadgets.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import exploit as _be
-    return _run_bin_binary(_be, binary_path)
+    return await _run_bin_binary(_be, binary_path)
 
 @mcp.tool()
-def binary_functions(binary_path: str) -> str:
+async def binary_functions(binary_path: str) -> str:
     """
     List all exported and visible functions in a binary using nm/objdump/pwntools.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_strings, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import functions as _bf
-    return _run_bin_binary(_bf, binary_path)
+    return await _run_bin_binary(_bf, binary_path)
 
 @mcp.tool()
-def binary_strings(binary_path: str) -> str:
+async def binary_strings(binary_path: str) -> str:
     """
     Extract printable strings from a binary. Useful for finding hardcoded paths, credentials, format strings, and suspicious keywords.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_fmtstr, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import strings as _bs
-    return _run_bin_binary(_bs, binary_path)
+    return await _run_bin_binary(_bs, binary_path)
 
 @mcp.tool()
-def binary_fmtstr(binary_path: str) -> str:
+async def binary_fmtstr(binary_path: str) -> str:
     """
     Analyze format string vulnerabilities. Reports detected printf-family imports, read/write primitives (%p/%n/%hn/%hhn), offset finding guide, and exploitation techniques per mitigation level.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_heap, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import fmtstr as _bf
-    return _run_bin_binary(_bf, binary_path)
+    return await _run_bin_binary(_bf, binary_path)
 
 @mcp.tool()
-def binary_heap(binary_path: str) -> str:
+async def binary_heap(binary_path: str) -> str:
     """
     Analyze heap usage and suggest exploitation techniques. Detects allocator (glibc ptmalloc/Windows Heap), identifies heap functions, and provides technique guides (tcache poisoning, fastbin, unsafe unlink, House of Force).
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_angr, binary_fuzz
     """
     from modules.bin_wrapper import heap as _bh
-    return _run_bin_binary(_bh, binary_path)
+    return await _run_bin_binary(_bh, binary_path)
 
 @mcp.tool()
-def binary_angr(binary_path: str, target_func: str = "system") -> str:
+async def binary_angr(binary_path: str, target_func: str = "system") -> str:
     """
     Run angr symbolic execution on a binary to find execution paths. Optionally find path to a target function (default: system). Returns function list, CFG stats, and path info.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
-      target_func: Target function for path finding (str) [default: 'system']
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_fuzz
     """
     from modules.bin_wrapper import angr as _ba
-    return _run_bin_kwargs(_ba, binary_path, target_func=target_func)
+    return await _run_bin_kwargs(_ba, binary_path, target_func=target_func)
 
 @mcp.tool()
-def binary_fuzz(binary_path: str) -> str:
+async def binary_fuzz(binary_path: str) -> str:
     """
     Generate a fuzzing harness for a binary. Creates AFL++ harness.c and Python fuzz.py in a fuzz_harness/ directory with instructions.
     Phase: Binary Exploitation
-    Parameters:
-      binary_path: Path to the binary file (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr
     """
     from modules.bin_wrapper import fuzz as _bf
-    return _run_bin_binary(_bf, binary_path)
+    return await _run_bin_binary(_bf, binary_path)
 
 @mcp.tool()
-def binary_cyclic(length: int) -> str:
+async def binary_cyclic(length: int) -> str:
     """
     Generate a de Bruijn cyclic pattern of the given length for overflow offset discovery.
     Phase: Binary Exploitation
-    Parameters:
-      length: Length of cyclic pattern (int)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr
     """
     from modules.bin_wrapper import cyclic as _bc
-    return _run_bin_kwargs(_bc, length=length)
+    return await _run_bin_kwargs(_bc, length=length)
 
 @mcp.tool()
-def binary_pattern_offset(value: str) -> str:
+async def binary_pattern_offset(value: str) -> str:
     """
     Find the offset of a value (hex like 0x61616171 or ASCII) in the cyclic pattern. Used after a crash to determine buffer overflow offset.
     Phase: Binary Exploitation
-    Parameters:
-      value: Value to set (str)
     Related: binary_check, binary_analyze, binary_summary, binary_vulns, binary_checksec, binary_gadgets, binary_exploit_strategy, binary_functions, binary_strings, binary_fmtstr, binary_heap, binary_angr
     """
     from modules.bin_wrapper import pattern_offset as _bp
-    return _run_bin_kwargs(_bp, value=value)
+    return await _run_bin_kwargs(_bp, value=value)
+
+
+@mcp.tool()
+async def bin_surface(target: str, max_depth: int = 3, with_strings: bool = True) -> str:
+    """
+    Scan a directory (or single file) of compiled binaries and map their CLI
+    surface: subcommands, option switches, usage hints, URLs, CVE/version hints,
+    embedded paths. Great for finding attack surface in bundled tools/agents.
+    Phase: Binary Exploitation
+    Related: binary_strings, binary_functions, binary_vulns, binary_analyze
+    """
+    from modules.bin_surface import scan_directory, scan_binary, format_report
+    from pathlib import Path
+    p = Path(target)
+    if p.is_file():
+        r = {"target": str(p), "found": 1, "scanned": 1,
+             "results": [scan_binary(p, with_strings=with_strings)], "errors": []}
+    else:
+        r = await asyncio.to_thread(scan_directory, p, max_depth, with_strings)
+    return format_report(r)
+
+
+@mcp.tool()
+async def compiled_scan(target: str, max_depth: int = 4, with_yara: bool = False,
+                        min_severity: str = "info") -> str:
+    """
+    Scan compiled artifacts (ELF/PE/Mach-O/.NET/.class/.jar/.pyc) for common
+    weaknesses visible without source: missing mitigations (NX/PIE/canary/
+    RELRO/ASLR/DEP/CFG), command-execution sinks (system/popen/exec*/WinExec,
+    CreateProcess), insecure DLL/library loading (LoadLibrary* + relative path,
+    SetDllDirectory, ELF RPATH/RUNPATH), process-injection APIs, weak crypto
+    (MD5/RC4), dangerous memory functions, embedded secrets (AWS/Google/JWT/keys)
+    and TLS verify-bypass strings. Optional with_yara runs the bundled rules/yara
+    set over each binary. Set min_severity to 'warning' or 'error' to filter.
+    Phase: Binary Exploitation
+    Related: bin_surface, binary_strings, binary_analyze, binary_checksec
+    """
+    from modules.compiled_scan import scan_target, format_report
+    from pathlib import Path
+    p = Path(target)
+    if p.is_file():
+        r = await asyncio.to_thread(scan_target, str(p), 1, with_yara, min_severity)
+    else:
+        r = await asyncio.to_thread(scan_target, str(p), max_depth, with_yara, min_severity)
+    return format_report(r)
 
 
 # ---------------------------------------------------------------------------
@@ -4317,13 +4371,8 @@ def case_notes_add(case_id: str, body: str, tags: str = "") -> str:
     """
     Add a note to a case with optional comma-separated tags.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      body: Note body text (str)
-      tags: Comma-separated tags (str) [default: '']
     Related: case_notes_list, case_info, case_list
     """
-    from modules.case_manager import CaseManager
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     r = _run(CaseManager().add_note, case_id, body, tag_list)
     if r is None:
@@ -4336,11 +4385,8 @@ def case_notes_list(case_id: str) -> str:
     """
     List all notes for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_notes_add, case_info, case_list
     """
-    from modules.case_manager import CaseManager
     notes = _run(CaseManager().get_notes, case_id)
     if not notes:
         return "No notes."
@@ -4362,11 +4408,8 @@ def case_evidence_list(case_id: str) -> str:
     """
     List evidence records for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_evidence_add, case_evidence_verify, case_info
     """
-    from modules.case_manager import CaseManager
     ev = _run(CaseManager().get_evidence, case_id)
     if not ev:
         return "No evidence."
@@ -4382,14 +4425,8 @@ def case_evidence_upload(case_id: str, filepath: str, category: str = "evidence"
     """
     Upload a file as evidence for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      filepath: Path to file on disk (str)
-      category: Evidence category (str) [default: 'evidence']
-      description: Evidence description (str) [default: '']
     Related: case_evidence_add, case_evidence_list, case_evidence_verify, case_info
     """
-    from modules.case_manager import CaseManager
     from pathlib import Path
     p = Path(filepath)
     if not p.exists():
@@ -4410,16 +4447,8 @@ def findings_list(severity: str = "", search: str = "",
     """
     List findings across all cases, optionally filtered by severity, search text, case, or tag.
     Phase: Case Management
-    Parameters:
-      severity: Filter by severity (critical/high/medium/low/info) (str) [default: '']
-      search: Free text search in title/cve/description (str) [default: '']
-      case_id: Limit to a specific case ID (str) [default: '']
-      tag: Filter by tag (e.g. 'cwe:79' or 'mitre-attack:T1078') (str) [default: '']
     Related: findings_stats, case_finding_add, case_finding_detail, case_finding_update, case_findings_bulk_update, case_findings_bulk_delete
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
-    from pathlib import Path
     cm = CaseManager()
     sev = severity.lower().strip()
     search_lower = search.lower().strip()
@@ -4432,7 +4461,6 @@ def findings_list(severity: str = "", search: str = "",
     results = []
     for c in cases:
         cid = c.get("case_id", "")
-        ctitle = c.get("client", cid)
         case_path = _run(cm._case_path, cid)
         if not case_path or not case_path.exists():
             continue
@@ -4454,6 +4482,9 @@ def findings_list(severity: str = "", search: str = "",
                 ftags = f.get("tags", [])
                 if tag not in ftags:
                     continue
+            # Stash the case id on each finding so the listing shows which
+            # case it belongs to (was always blank because it was never set).
+            f["_case_id"] = cid
             results.append(f)
 
     if not results:
@@ -4470,12 +4501,8 @@ def findings_stats() -> str:
     """
     Aggregated findings statistics across all cases.
     Phase: Case Management
-    Parameters:
-      (none)
     Related: findings_list, case_findings_list, case_info
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     cm = CaseManager()
     cases = _run(cm.list_cases)
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -4512,13 +4539,8 @@ def case_finding_detail(case_id: str, finding_id: str) -> str:
     """
     Get full detail of a single finding.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID containing the finding (str)
-      finding_id: Finding ID to retrieve (str)
     Related: case_finding_add, case_finding_update, findings_list, case_info
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -4553,13 +4575,8 @@ def case_finding_delete(case_id: str, finding_id: str) -> str:
     """
     Delete a finding from a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case containing the finding (str)
-      finding_id: ID of finding to delete (str)
     Related: case_finding_add, case_finding_update, case_finding_detail, findings_list
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -4582,21 +4599,8 @@ def case_findings_bulk_update(case_id: str, finding_ids: str,
     Bulk update multiple findings in a case. Provide comma-separated finding_ids.
     Only non-empty fields are updated.
     Phase: Case Management
-    Parameters:
-      case_id: Case containing the findings (str)
-      finding_ids: Comma-separated finding IDs (str)
-      status: New status (unvalidated/validated/remediated/closed_other) (str) [default: '']
-      severity: New severity (critical/high/medium/low/info) (str) [default: '']
-      title: New title (str) [default: '']
-      description: New description (str) [default: '']
-      remediation: New remediation (str) [default: '']
-      impact: New impact (str) [default: '']
-      poc: New PoC (str) [default: '']
-      tags: Comma-separated tags to set on all findings (str) [default: '']
     Related: case_finding_update, case_findings_bulk_delete, findings_list
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     ids = [f.strip() for f in finding_ids.split(",") if f.strip()]
     if not ids:
         return "Error: No finding_ids provided"
@@ -4634,13 +4638,8 @@ def case_findings_bulk_delete(case_id: str, finding_ids: str) -> str:
     """
     Bulk delete findings from a case. Provide comma-separated finding_ids.
     Phase: Case Management
-    Parameters:
-      case_id: Case containing the findings (str)
-      finding_ids: Comma-separated finding IDs to delete (str)
     Related: case_finding_delete, case_findings_bulk_update, findings_list
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     ids = [f.strip() for f in finding_ids.split(",") if f.strip()]
     if not ids:
         return "Error: No finding_ids provided"
@@ -4677,31 +4676,13 @@ def case_finding_create(case_id: str, title: str,
                         status: str = "",
                         command_output: str = "",
                         cvss_score: float = None, cvss_vector: str = "",
-                        tags: str = "") -> str:
+                        tags: str = "", cpe: str = "") -> str:
     """
     Create a new finding in a case. Returns the created finding summary.
-    Supports CVSS score/vector and tag labels.
+    Supports CVSS score/vector, tag labels, and a CPE 2.3 component identifier.
     Phase: Case Management
-    Parameters:
-      case_id: Case to add the finding to (str)
-      title: Finding title (str)
-      severity: Severity (critical/high/medium/low/info) (str) [default: 'medium']
-      description: Description of vulnerability (str) [default: '']
-      remediation: Remediation steps (str) [default: '']
-      source: Source of finding (str) [default: 'manual']
-      cve: CVE identifier (str) [default: '']
-      cwe: CWE identifier (str) [default: '']
-      impact: Business/technical impact (str) [default: '']
-      poc: Proof of concept (str) [default: '']
-      status: Initial status (unvalidated/validated/remediated/closed_other) (str) [default: '']
-      command_output: Actual command output / evidence text (str) [default: '']
-      cvss_score: CVSS score (0-10) (float) [default: null]
-      cvss_vector: CVSS vector string (str) [default: '']
-      tags: Comma-separated tags (e.g. 'cwe:79,mitre-attack:T1078.001') (str) [default: '']
     Related: case_finding_detail, case_finding_update, case_finding_delete, findings_list
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -4713,7 +4694,7 @@ def case_finding_create(case_id: str, title: str,
                    impact=impact, poc=poc,
                    command_output=command_output,
                    cvss_score=cvss_score, cvss_vector=cvss_vector,
-                   tags=tag_list)
+                   tags=tag_list, cpe=cpe)
     if status and status != "unvalidated":
         _run(db.update, finding["id"], status=status)
     return f"Finding created: {finding.get('id','')} ({severity}) — {title[:60]}"
@@ -4992,11 +4973,8 @@ def prompts_list() -> str:
     """
     List all available prompt templates.
     Phase: Case Management
-    Parameters:
-      (none)
     Related: prompts_get
     """
-    from pathlib import Path
     import yaml
     prompts_dir = _HERE / "prompts"
     if not prompts_dir.is_dir():
@@ -5018,11 +4996,8 @@ def prompts_get(name: str) -> str:
     """
     Get the full content of a prompt template by name.
     Phase: Case Management
-    Parameters:
-      name: Prompt name (without .yaml extension) (str)
     Related: prompts_list
     """
-    from pathlib import Path
     import yaml
     path = _HERE / "prompts" / f"{name}.yaml"
     if not path.is_file():
@@ -5052,11 +5027,8 @@ def flashcards_list() -> str:
     """
     List all available flashcard decks with card counts.
     Phase: Case Management
-    Parameters:
-      (none)
     Related: flashcards_deck
     """
-    from pathlib import Path
     import yaml
     decks_dir = _HERE / "flashcards"
     if not decks_dir.is_dir():
@@ -5078,14 +5050,15 @@ def flashcards_deck(name: str) -> str:
     """
     Get the full content of a flashcard deck by name (including all cards).
     Phase: Case Management
-    Parameters:
-      name: Deck name (without .yaml extension) (str)
     Related: flashcards_list
     """
-    from pathlib import Path
+    import re as _re
     import yaml
-    path = _HERE / "flashcards" / f"{name}.yaml"
-    if not path.is_file():
+    if not _re.fullmatch(r"[A-Za-z0-9_-]+", name or ""):
+        return f"Invalid deck name: {name!r}"
+    decks_dir = (_HERE / "flashcards").resolve()
+    path = decks_dir / f"{name}.yaml"
+    if path.parent != decks_dir or not path.is_file():
         return f"Deck '{name}' not found"
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -5110,12 +5083,8 @@ def case_task_toggle(case_id: str, task_id: str) -> str:
     """
     Mark a task as done/completed.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID containing the task (str)
-      task_id: Task ID to mark done (str)
     Related: case_task_add, case_task_list, case_task_delete
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     tasks = _run(cm.task_list, case_id, True)
     task = next((t for t in tasks if t.get("id") == task_id), None)
@@ -5134,12 +5103,8 @@ def case_task_delete(case_id: str, task_id: str) -> str:
     """
     Delete a task from a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case containing the task (str)
-      task_id: Task ID to delete (str)
     Related: case_task_add, case_task_list, case_task_toggle
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     ok = _run(cm.task_delete, case_id, task_id)
     if ok:
@@ -5155,12 +5120,8 @@ def case_strength_remove(case_id: str, index: int) -> str:
     """
     Remove a strength from a case by index.
     Phase: Case Management
-    Parameters:
-      case_id: Case to modify (str)
-      index: Index of strength to remove (0-based) (int)
     Related: case_strength_add, case_strength_list, case_weakness_add, case_weakness_list
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -5177,12 +5138,8 @@ def case_weakness_remove(case_id: str, index: int) -> str:
     """
     Remove a weakness from a case by index.
     Phase: Case Management
-    Parameters:
-      case_id: Case to modify (str)
-      index: Index of weakness to remove (0-based) (int)
     Related: case_weakness_add, case_weakness_list, case_strength_add, case_strength_list
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -5202,13 +5159,8 @@ def case_files_list(case_id: str, path: str = "") -> str:
     """
     List files in a case's subdirectory (e.g. scans/, evidence/, loot/).
     Phase: Case Management
-    Parameters:
-      case_id: Case to browse (str)
-      path: Subdirectory path within the case (str) [default: '']
     Related: case_files_preview, case_info
     """
-    from modules.case_manager import CaseManager
-    from pathlib import Path
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -5242,14 +5194,8 @@ def case_files_preview(case_id: str, file_path: str, max_chars: int = 2000) -> s
     """
     Preview a file's contents from a case directory.
     Phase: Case Management
-    Parameters:
-      case_id: Case containing the file (str)
-      file_path: Relative path within the case (e.g. "scans/scan.nmap") (str)
-      max_chars: Maximum characters to return (int) [default: 2000]
     Related: case_files_list, case_info
     """
-    from modules.case_manager import CaseManager
-    from pathlib import Path
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if not info:
@@ -5274,13 +5220,8 @@ def case_files_upload(case_id: str, source_path: str, subdir: str = "") -> str:
     """
     Upload a local file to a case's directory (not evidence — use case_evidence_upload for evidence).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      source_path: Local path to the file to upload (str)
-      subdir: Subdirectory within the case (e.g. 'scans', 'loot') (str) [default: '']
     Related: case_files_list, case_files_preview, case_files_delete, case_files_tree, case_evidence_upload
     """
-    from modules.case_manager import CaseManager
     from pathlib import Path
     cm = CaseManager()
     info = _run(cm.info, case_id)
@@ -5305,12 +5246,8 @@ def case_files_delete(case_id: str, file_path: str) -> str:
     """
     Delete a file from a case directory (not evidence — use the evidence API for that).
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
-      file_path: Relative path within the case to delete (str)
     Related: case_files_list, case_files_preview, case_files_upload, case_files_tree
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if info is None:
@@ -5333,11 +5270,8 @@ def case_files_tree(case_id: str) -> str:
     """
     Return the full directory tree for a case.
     Phase: Case Management
-    Parameters:
-      case_id: Case ID to scope results (str)
     Related: case_files_list, case_files_preview, case_files_upload, case_files_delete
     """
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = _run(cm.info, case_id)
     if info is None:
@@ -5367,12 +5301,8 @@ def dashboard_stats() -> str:
     """
     Get aggregated dashboard statistics across all cases and findings.
     Phase: Case Management
-    Parameters:
-      (none)
     Related: findings_stats, case_list, projects_board_data
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     cm = CaseManager()
     cases = _run(cm.list_cases)
     by_status = {}
@@ -5418,12 +5348,8 @@ def projects_board_data() -> str:
     """
     Get the Kanban project board data with cases grouped by status column.
     Phase: Case Management
-    Parameters:
-      (none)
     Related: projects_board_update, dashboard_stats, case_list
     """
-    from modules.case_manager import CaseManager
-    from modules.findings_db import FindingsDB
     cm = CaseManager()
     cases = _run(cm.list_cases)
     cols = {"open": [], "pending": [], "on-hold": [], "closed": []}
@@ -5451,12 +5377,8 @@ def projects_board_update(case_id: str, status: str) -> str:
     """
     Update a case's status on the project board (open/pending/on-hold/closed).
     Phase: Case Management
-    Parameters:
-      case_id: Case to update (str)
-      status: New status (open/pending/on-hold/closed) (str)
     Related: projects_board_data, case_update_meta
     """
-    from modules.case_manager import CaseManager
     valid = {"open", "pending", "on-hold", "closed"}
     if status not in valid:
         return f"Invalid status: {status}. Valid: {', '.join(sorted(valid))}"
@@ -5475,11 +5397,9 @@ def jobs_list() -> str:
     """
     List recent jobs in the job queue.
     Phase: Case Management
-    Parameters:
-      (none)
     Related: job_status, job_create, job_cancel
     """
-    from modules.job_manager import get_job_manager
+    from modules.job_queue import get_job_manager
     jm = get_job_manager()
     jobs = _run(jm.list_jobs, 50)
     if not jobs:
@@ -5495,11 +5415,9 @@ def job_status(job_id: str) -> str:
     """
     Get the status and details of a specific job.
     Phase: Case Management
-    Parameters:
-      job_id: Job ID (str)
     Related: jobs_list, job_create, job_cancel
     """
-    from modules.job_manager import get_job_manager
+    from modules.job_queue import get_job_manager
     jm = get_job_manager()
     job = _run(jm.get, job_id)
     if not job:
@@ -5514,19 +5432,15 @@ def job_status(job_id: str) -> str:
 
 @mcp.tool()
 def job_create(job_type: str = "custom", title: str = "Untitled Job",
-               total_steps: int = 100) -> str:
+               total_steps: int = 100, case_id: str = "") -> str:
     """
-    Create a new job in the job queue.
+    Create a new job in the job queue (optionally tied to a case).
     Phase: Case Management
-    Parameters:
-      job_type: Type of job (str) [default: 'custom']
-      title: Human-readable title (str) [default: 'Untitled Job']
-      total_steps: Total steps for progress tracking (int) [default: 100]
     Related: jobs_list, job_status, job_cancel
     """
-    from modules.job_manager import get_job_manager
+    from modules.job_queue import get_job_manager
     jm = get_job_manager()
-    job_id = _run(jm.create, job_type, title, total_steps)
+    job_id = _run(jm.create, job_type, title, total_steps, case_id=case_id)
     return f"Job created: {job_id}"
 
 
@@ -5535,11 +5449,9 @@ def job_cancel(job_id: str) -> str:
     """
     Cancel a running job.
     Phase: Case Management
-    Parameters:
-      job_id: Job ID to cancel (str)
     Related: jobs_list, job_status, job_create
     """
-    from modules.job_manager import get_job_manager
+    from modules.job_queue import get_job_manager
     jm = get_job_manager()
     _run(jm.cancel, job_id)
     return f"Job '{job_id}' cancelled."
@@ -5554,11 +5466,6 @@ def assets_list(customer_id: str = "", kind: str = "",
     """
     List assets in the asset inventory, optionally filtered.
     Phase: Utility / Infrastructure
-    Parameters:
-      customer_id: Filter by customer (str) [default: '']
-      kind: Filter by asset kind (host/domain/cidr/url/email) (str) [default: '']
-      tag: Filter by tag (str) [default: '']
-      search: Free text search (str) [default: '']
     Related: assets_create, assets_delete, assets_stats, assets_import_nmap
     """
     from modules.asset_tracker import AssetTracker
@@ -5579,15 +5486,6 @@ def assets_create(kind: str, address: str, customer_id: str = "",
     """
     Create a new asset in the inventory.
     Phase: Utility / Infrastructure
-    Parameters:
-      kind: Asset kind (host/domain/cidr/url/email) (str)
-      address: IP address or domain (str)
-      customer_id: Associate with a customer (str) [default: '']
-      label: Human-readable label (str) [default: '']
-      fqdn: Fully qualified domain name (str) [default: '']
-      os_info: Operating system info (str) [default: '']
-      tags: Comma-separated tags (str) [default: '']
-      notes: Notes about the asset (str) [default: '']
     Related: assets_list, assets_delete, assets_stats, assets_import_nmap
     """
     from modules.asset_tracker import AssetTracker
@@ -5607,8 +5505,6 @@ def assets_delete(asset_id: str) -> str:
     """
     Delete an asset from the inventory.
     Phase: Utility / Infrastructure
-    Parameters:
-      asset_id: Asset ID to delete (str)
     Related: assets_list, assets_create, assets_stats
     """
     from modules.asset_tracker import AssetTracker
@@ -5624,15 +5520,13 @@ def assets_stats() -> str:
     """
     Get asset inventory statistics.
     Phase: Utility / Infrastructure
-    Parameters:
-      (none)
     Related: assets_list, assets_create, assets_delete
     """
     from modules.asset_tracker import AssetTracker
     stats = _run(AssetTracker().get_stats)
     if not stats:
         return "No assets."
-    lines = [f"Asset Stats:"]
+    lines = ["Asset Stats:"]
     for k, v in stats.items():
         if isinstance(v, dict):
             lines.append(f"  {k}: " + ", ".join(f"{sk}={sv}" for sk, sv in v.items()))
@@ -5646,10 +5540,6 @@ def assets_import_nmap(xml: str, customer_id: str = "", case_id: str = "") -> st
     """
     Import assets from Nmap XML output.
     Phase: Utility / Infrastructure
-    Parameters:
-      xml: Nmap XML content (str)
-      customer_id: Associate assets with a customer (str) [default: '']
-      case_id: Associate assets with a case (str) [default: '']
     Related: assets_list, assets_create, assets_stats
     """
     from modules.asset_tracker import AssetTracker
@@ -5669,8 +5559,6 @@ def customers_list() -> str:
     """
     List all customers in the asset inventory.
     Phase: Utility / Infrastructure
-    Parameters:
-      (none)
     Related: customers_create, customers_delete, assets_list
     """
     from modules.asset_tracker import AssetTracker
@@ -5688,9 +5576,6 @@ def customers_create(name: str, notes: str = "") -> str:
     """
     Create a new customer record.
     Phase: Utility / Infrastructure
-    Parameters:
-      name: Customer name (str)
-      notes: Notes about customer (str) [default: '']
     Related: customers_list, customers_delete, assets_list
     """
     from modules.asset_tracker import AssetTracker
@@ -5706,8 +5591,6 @@ def customers_delete(customer_id: str) -> str:
     """
     Delete a customer record.
     Phase: Utility / Infrastructure
-    Parameters:
-      customer_id: Customer ID to delete (str)
     Related: customers_list, customers_create, assets_list
     """
     from modules.asset_tracker import AssetTracker
@@ -5727,8 +5610,6 @@ def credentials_list(asset_id: str = "") -> str:
     List managed credentials in the asset inventory, optionally filtered by asset.
     For captured/compromised credentials (hashes, dumped passwords) use loot_list_credentials.
     Phase: Utility / Infrastructure
-    Parameters:
-      asset_id: Filter by asset (str) [default: '']
     Related: credentials_create, credentials_get, credentials_delete, assets_list, loot_list_credentials
     """
     from modules.asset_tracker import AssetTracker
@@ -5750,14 +5631,6 @@ def credentials_create(asset_id: str, kind: str, username: str,
     Use this for known/preshared credentials tied to an asset.
     For captured/compromised credentials (hashes, dumped passwords) use loot_add_credential.
     Phase: Utility / Infrastructure
-    Parameters:
-      asset_id: Asset to associate credential with (str)
-      kind: Credential type (password/key/certificate/token) (str)
-      username: Username (str)
-      secret: Password/key/secret value (str)
-      service: Service name (str) [default: '']
-      url: URL (str) [default: '']
-      notes: Notes (str) [default: '']
     Related: credentials_list, credentials_get, credentials_delete, assets_list, loot_add_credential
     """
     from modules.asset_tracker import AssetTracker
@@ -5775,9 +5648,6 @@ def credentials_get(cred_id: str, decrypt: bool = False) -> str:
     """
     Get managed credential details from the asset inventory (optionally decrypt).
     Phase: Utility / Infrastructure
-    Parameters:
-      cred_id: Credential ID (str)
-      decrypt: Set to True to decrypt and show the secret (bool) [default: false]
     Related: credentials_list, credentials_create, credentials_delete, loot_search
     """
     from modules.asset_tracker import AssetTracker
@@ -5803,8 +5673,6 @@ def credentials_delete(cred_id: str) -> str:
     """
     Delete a managed credential from the asset inventory.
     Phase: Utility / Infrastructure
-    Parameters:
-      cred_id: Credential ID to delete (str)
     Related: credentials_list, credentials_create, credentials_get, loot_delete_credential
     """
     from modules.asset_tracker import AssetTracker
@@ -5823,11 +5691,8 @@ def case_topology(case_id: str) -> str:
     """
     Parse nmap scan outputs in a case's scans/ directory and return network topology.
     Phase: Case Management
-    Parameters:
-      case_id: Case to analyze (str)
     Related: case_info, case_files_list, nmap_initial_tcp, nmap_full_tcp
     """
-    from modules.case_manager import CaseManager
     import re
     cm = CaseManager()
     info = _run(cm.info, case_id)
@@ -5874,8 +5739,6 @@ def wifi_monitor_sessions() -> str:
     """
     List all WiFi monitor sessions (past and present).
     Phase: Wireless Pentesting
-    Parameters:
-      (none)
     Related: wifi_monitor_status, wifi_monitor_data, wifi_scan, wifi_handshake_capture
     """
     from modules.wifi_monitor import get_monitor_manager
@@ -5894,8 +5757,6 @@ def wifi_monitor_status(session_id: str = "") -> str:
     """
     Get the status of a WiFi monitor session (or the active session if no ID given).
     Phase: Wireless Pentesting
-    Parameters:
-      session_id: Session ID (str) [default: '']
     Related: wifi_monitor_sessions, wifi_monitor_data, wifi_monitor_interfaces
     """
     from modules.wifi_monitor import get_monitor_manager
@@ -5909,7 +5770,7 @@ def wifi_monitor_status(session_id: str = "") -> str:
         if not sess:
             return "No active session"
     info = _run(sess.status_info)
-    lines = [f"WiFi Monitor Status:"]
+    lines = ["WiFi Monitor Status:"]
     for k, v in info.items():
         if isinstance(v, dict):
             lines.append(f"  {k}: {json.dumps(v)[:100]}")
@@ -5923,8 +5784,6 @@ def wifi_monitor_data(session_id: str = "") -> str:
     """
     Get captured data from a WiFi monitor session.
     Phase: Wireless Pentesting
-    Parameters:
-      session_id: Session ID (str) [default: '']
     Related: wifi_monitor_sessions, wifi_monitor_status, wifi_scan
     """
     from modules.wifi_monitor import get_monitor_manager
@@ -5946,8 +5805,6 @@ def wifi_monitor_interfaces() -> str:
     """
     List available wireless interfaces.
     Phase: Wireless Pentesting
-    Parameters:
-      (none)
     Related: wifi_scan, wifi_monitor_sessions, wifi_monitor_status
     """
     import subprocess
@@ -5971,12 +5828,6 @@ def wifi_monitor_start(iface: str = "wlan0", band: str = "abg",
     """
     Start a WiFi monitor session for packet capture.
     Phase: Wireless Pentesting
-    Parameters:
-      iface: Network interface for monitor mode (str) [default: 'wlan0']
-      band: Frequency band (abg) (str) [default: 'abg']
-      target_bssid: Target BSSID/MAC address (str) [default: '']
-      target_essid: Target network name (ESSID) (str) [default: '']
-      session_id: Session ID (auto-generated if empty) (str) [default: '']
     Related: wifi_monitor_stop, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_data, wifi_monitor_parse_pcap, wifi_scan
     """
     from modules.wifi_monitor import get_monitor_manager
@@ -5994,9 +5845,6 @@ def wifi_monitor_stop(session_id: str = "", force: bool = False) -> str:
     """
     Stop a WiFi monitor session.
     Phase: Wireless Pentesting
-    Parameters:
-      session_id: Session ID (stops active session if empty) (str) [default: '']
-      force: Force kill the session (bool) [default: False]
     Related: wifi_monitor_start, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_data, wifi_monitor_parse_pcap
     """
     from modules.wifi_monitor import get_monitor_manager
@@ -6013,7 +5861,6 @@ def wifi_monitor_stop(session_id: str = "", force: bool = False) -> str:
         r = _run(active.force_kill if force else active.stop)
     if isinstance(r, dict) and r.get("error"):
         return f"Error stopping: {r['error']}"
-    sid = session_id or (getattr(active, 'id', None) if 'active' in dir() else '')
     return f"WiFi monitor session stopped{' (force)' if force else ''}"
 
 
@@ -6022,8 +5869,6 @@ def wifi_monitor_parse_pcap(session_id: str = "") -> str:
     """
     Parse captured PCAP data from a WiFi monitor session now.
     Phase: Wireless Pentesting
-    Parameters:
-      session_id: Session ID (uses active session if empty) (str) [default: '']
     Related: wifi_monitor_start, wifi_monitor_stop, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_data
     """
     from modules.wifi_monitor import get_monitor_manager
@@ -6045,8 +5890,6 @@ def wifi_monitor_cleanup_orphans() -> str:
     """
     Find and clean up leftover monitor-mode interfaces not in use by any active session.
     Phase: Wireless Pentesting
-    Parameters:
-      (none)
     Related: wifi_monitor_start, wifi_monitor_stop, wifi_monitor_sessions, wifi_monitor_status, wifi_monitor_interfaces
     """
     import subprocess as _sp
@@ -6079,9 +5922,6 @@ def dns_resolve(domain: str, types: str = "") -> str:
     """
     Resolve DNS records for a domain.
     Phase: DNS / Network
-    Parameters:
-      domain: Domain name to resolve (str)
-      types: Comma-separated record types (A,AAAA,MX,NS,TXT,CNAME) (str) [default: '']
     Related: dns_monitors, dns_track_domain, dns_history
     """
     from modules.dns_wrapper import resolve as dns_resolve_fn
@@ -6099,8 +5939,6 @@ def dns_monitors() -> str:
     """
     List all active DNS monitors.
     Phase: DNS / Network
-    Parameters:
-      (none)
     Related: dns_resolve, dns_track_domain, dns_history
     """
     from modules.dns_wrapper import list_monitors
@@ -6119,11 +5957,6 @@ def dns_monitor_start(domain: str, record_types: str = "",
     """
     Start tracking DNS resolutions for a domain over time.
     Phase: DNS / Network
-    Parameters:
-      domain: Domain name to monitor (str)
-      record_types: Comma-separated record types (str) [default: '']
-      interval: Polling interval in seconds (int) [default: 300]
-      duration: Total duration in seconds (0 = indefinite) (int) [default: 0]
     Related: dns_monitors, dns_track_domain, dns_history, dns_monitor_stop
     """
     from modules.dns_wrapper import start_monitor, start_background_monitor
@@ -6138,8 +5971,6 @@ def dns_monitor_stop(domain: str) -> str:
     """
     Stop tracking DNS resolutions for a domain.
     Phase: DNS / Network
-    Parameters:
-      domain: Domain name to stop monitoring (str)
     Related: dns_monitors, dns_monitor_start, dns_history, dns_track_domain
     """
     from modules.dns_wrapper import stop_monitor, remove_monitor
@@ -6153,9 +5984,6 @@ def dns_history(domain: str, limit: int = 100) -> str:
     """
     Get historical DNS resolution data for a domain.
     Phase: DNS / Network
-    Parameters:
-      domain: Domain name (str)
-      limit: Maximum records to return (int) [default: 100]
     Related: dns_resolve, dns_monitors, dns_track_domain
     """
     from modules.dns_wrapper import get_history
@@ -6174,13 +6002,177 @@ def dns_history(domain: str, limit: int = 100) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Bug Bounty (HackerOne / Bugcrowd)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def bb_creds_set(platform: str, identifier: str = "", token: str = "",
+                 client_id: str = "", client_secret: str = "",
+                 public_only: bool = True) -> str:
+    """
+    Store encrypted API credentials for a bug bounty platform
+    (hackerone/bugcrowd/yeswehack/intigriti; immunefi needs none).
+    Phase: Bug Bounty
+    Related: bb_creds_list, bb_creds_clear, bb_programs_list
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    result = _run(BugBountyManager().set_credentials, platform, identifier, token,
+                  client_id, client_secret, public_only)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+def bb_creds_list() -> str:
+    """
+    List bug bounty platform credential status (no secrets).
+    Phase: Bug Bounty
+    Related: bb_creds_set, bb_creds_clear
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    result = _run(BugBountyManager().configured_platforms)
+    return json.dumps(result, default=str, indent=2)
+
+
+@mcp.tool()
+def bb_creds_clear(platform: str) -> str:
+    """
+    Remove stored credentials for a bug bounty platform.
+    Phase: Bug Bounty
+    Related: bb_creds_set, bb_creds_list
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    _run(BugBountyManager().clear_credentials, platform)
+    return f"Credentials cleared for '{platform}'."
+
+
+@mcp.tool()
+def bb_programs_list(platform: str = "", search: str = "") -> str:
+    """
+    List bug bounty programs from the local cache.
+    Phase: Bug Bounty
+    Related: bb_program_get, bb_sync, bb_sync_program
+    """
+    from modules.bugbounty_clients import BugBountyManager, format_programs
+    mgr = BugBountyManager()
+    programs = _run(mgr.list_programs, platform, search)
+    return format_programs(programs)
+
+
+@mcp.tool()
+async def bb_program_get(platform: str, slug: str, refresh: bool = False) -> str:
+    """
+    Get a cached bug bounty program with its scope (refresh to re-fetch).
+    Phase: Bug Bounty
+    Related: bb_programs_list, bb_sync_program, bb_import_case
+    """
+    from modules.bugbounty_clients import BugBountyManager, format_program
+    mgr = BugBountyManager()
+    prog = await _run_async(mgr.get_program, platform, slug, refresh)
+    if not prog:
+        return f"Program '{platform}:{slug}' not in cache. Run `bb sync_program` first."
+    return format_program(prog)
+
+
+@mcp.tool()
+async def bb_discover(platform: str = "hackerone", limit: int = 100) -> str:
+    """
+    Discover public bug bounty programs from a platform API
+    (hackerone/yeswehack/immunefi need no token; intigriti needs its token).
+    Phase: Bug Bounty
+    Related: bb_sync, bb_programs_list
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    mgr = BugBountyManager()
+    found = await _run_async(mgr.discover, platform)
+    lines = [f"Discovered {len(found)} programs (cached minimal entries):"]
+    for p in found[:limit]:
+        lines.append(f"  [{p.get('platform','?'):<9}] {p.get('slug','?'):<28} "
+                     f"{p.get('name','')}")
+    if len(found) > limit:
+        lines.append(f"  ... {len(found) - limit} more (use bb_sync to cache them)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def bb_sync_program(platform: str, slug: str) -> str:
+    """
+    Fetch a specific bug bounty program + scope from the platform and cache it.
+    Phase: Bug Bounty
+    Related: bb_program_get, bb_sync, bb_import_case
+    """
+    from modules.bugbounty_clients import BugBountyManager, format_program
+    mgr = BugBountyManager()
+    prog = await _run_async(mgr.sync_program, platform, slug, True)
+    return format_program(prog)
+
+
+@mcp.tool()
+async def bb_sync(platform: str = "", limit: int = 0, refresh: bool = True,
+                  max_age_hours: float = 24.0) -> str:
+    """
+    Refresh cached bug bounty programs (optionally discover new ones).
+
+    Programs synced within max_age_hours are skipped (set max_age_hours=0 to
+    force a full refresh of every cached program). Runs off the event loop so
+    other MCP requests stay responsive.
+    Phase: Bug Bounty
+    Related: bb_discover, bb_programs_list
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    mgr = BugBountyManager()
+    result = await _run_async(mgr.sync_all, platform, limit, refresh, max_age_hours)
+    lines = [f"Synced {len(result.get('synced', []))} programs, "
+             f"skipped {result.get('skipped_fresh', 0)} fresh, "
+             f"discovered {result.get('new_discovered', 0)} new."]
+    for f in result.get("failed", []):
+        lines.append(f"  FAILED {f.get('program')}: {f.get('error')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def bb_import_case(platform: str, slug: str, case_id: str = "",
+                   client: str = "", customer_id: str = "",
+                   include_assets: bool = True) -> str:
+    """
+    Import a bug bounty program as a case with scope + optional asset inventory entries.
+    Phase: Bug Bounty
+    Related: bb_sync_program, bb_program_get, case_info
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    mgr = BugBountyManager()
+    result = _run(mgr.import_case, platform, slug, case_id, client, customer_id,
+                  include_assets)
+    return json.dumps(result, default=str, indent=2)
+
+
+@mcp.tool()
+def bb_reports_get(platform: str = "hackerone", limit: int = 20,
+                   program_slugs: str = "") -> str:
+    """
+    List reports submitted by the current user (HackerOne or YesWeHack).
+    Phase: Bug Bounty
+    Related: bb_creds_set, bb_program_get
+    """
+    from modules.bugbounty_clients import BugBountyManager
+    mgr = BugBountyManager()
+    slugs = [s.strip() for s in program_slugs.split(",") if s.strip()] or None
+    reports = _run(mgr.get_reports, platform, limit, slugs)
+    if not reports:
+        return "No reports found."
+    lines = [f"{platform} reports ({len(reports)}):"]
+    for r in reports:
+        lines.append(f"  #{r.get('id','?'):<8} [{r.get('state','?')}] "
+                     f"{r.get('severity','') or 'n/a':<8} {r.get('title','')} "
+                     f"-> {r.get('program','')}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # MCP Resources — read-only data sources discoverable by AI clients
 # ---------------------------------------------------------------------------
 
 @mcp.resource("cc://cases/list", title="Case List", description="All cases with status, type, creation date")
 def resource_cases_list() -> str:
     """List all pentest/forensic cases."""
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     cases = cm.list_cases()
     if not cases:
@@ -6198,7 +6190,6 @@ def resource_cases_list() -> str:
              description="Full case info including findings summary, scope count, tasks, and file sizes")
 def resource_case_detail(case_id: str) -> str:
     """Get detailed case information including evidence, findings, tasks, and scope."""
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = cm.info(case_id)
     if not info:
@@ -6211,9 +6202,7 @@ def resource_case_detail(case_id: str) -> str:
              description="All structured findings for a case")
 def resource_case_findings(case_id: str) -> str:
     """Get all findings for a case."""
-    from modules.constants import CASES_DIR
-    from modules.findings_db import FindingsDB
-    case_dir = CASES_DIR / case_id
+    case_dir = _case_dir(case_id)
     if not case_dir.is_dir():
         return f"Case '{case_id}' not found."
     db = FindingsDB(case_dir)
@@ -6229,7 +6218,6 @@ def resource_case_findings(case_id: str) -> str:
              description="All case notes with timestamps and tags")
 def resource_case_notes(case_id: str) -> str:
     """Get all notes for a case."""
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     notes = cm.get_notes(case_id)
     if not notes:
@@ -6242,7 +6230,6 @@ def resource_case_notes(case_id: str) -> str:
              description="In-scope and out-of-scope targets")
 def resource_case_scope(case_id: str) -> str:
     """Get scope (in-scope and out-of-scope targets) for a case."""
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = cm.info(case_id)
     if not info:
@@ -6258,7 +6245,6 @@ def resource_case_scope(case_id: str) -> str:
              description="Task checklist with completion status and priority")
 def resource_case_tasks(case_id: str) -> str:
     """Get all tasks for a case."""
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     info = cm.info(case_id)
     if not info:
@@ -6274,7 +6260,6 @@ def resource_case_tasks(case_id: str) -> str:
              description="Runbook/playbook execution results including step outputs and exit codes")
 def resource_case_runbook_log(case_id: str) -> str:
     """Get the runbook execution log for a case."""
-    from modules.case_manager import CaseManager
     cm = CaseManager()
     log_path = cm._case_path(case_id) / "runbook-log.json"
     if not log_path.exists():
@@ -6287,7 +6272,6 @@ def resource_case_runbook_log(case_id: str) -> str:
              description="All available flashcard decks with card counts")
 def resource_flashcards_list() -> str:
     """List all available flashcard decks with card counts."""
-    from modules.constants import CC_DIR
     import yaml
     decks_dir = CC_DIR / "flashcards"
     if not decks_dir.is_dir():
@@ -6311,10 +6295,13 @@ def resource_flashcards_list() -> str:
              description="Full flashcard deck with all questions and answers")
 def resource_flashcards_deck(name: str) -> str:
     """Get a specific flashcard deck by name."""
-    from modules.constants import CC_DIR
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]+", name or ""):
+        return f"Invalid deck name: {name!r}"
     import yaml
-    path = CC_DIR / "flashcards" / f"{name}.yaml"
-    if not path.is_file():
+    decks_dir = (CC_DIR / "flashcards").resolve()
+    path = decks_dir / f"{name}.yaml"
+    if path.parent != decks_dir or not path.is_file():
         return f"Deck '{name}' not found."
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -6351,7 +6338,6 @@ def resource_playbooks_list() -> str:
 def resource_prompts_list() -> str:
     """List all available prompt templates."""
     import yaml
-    from modules.constants import CC_DIR
     prompts_dir = CC_DIR / "prompts"
     if not prompts_dir.is_dir():
         return "No prompts found."
@@ -6373,8 +6359,6 @@ def resource_prompts_list() -> str:
              description="Aggregated findings statistics across all cases")
 def resource_findings_stats() -> str:
     """Get aggregated findings statistics across all cases."""
-    from modules.constants import CASES_DIR
-    from modules.findings_db import FindingsDB
     total = 0
     by_severity = {}
     by_case = {}
@@ -6404,7 +6388,6 @@ def resource_findings_stats() -> str:
              description="All captured credentials stored in the loot database")
 def resource_loot_credentials() -> str:
     """List all credentials in the loot database."""
-    from modules.constants import CC_DIR
     from modules.tool_wrappers import LootDB
     import json as _json
     db = LootDB(CC_DIR / "loot.db")
@@ -6418,7 +6401,6 @@ def resource_loot_credentials() -> str:
              description="All captured tokens in the loot database")
 def resource_loot_tokens() -> str:
     """List all tokens in the loot database."""
-    from modules.constants import CC_DIR
     from modules.tool_wrappers import LootDB
     import json as _json
     db = LootDB(CC_DIR / "loot.db")
@@ -6438,7 +6420,6 @@ def resource_loot_tokens() -> str:
              description="All captured sessions in the loot database")
 def resource_loot_sessions() -> str:
     """List all sessions in the loot database."""
-    from modules.constants import CC_DIR
     from modules.tool_wrappers import LootDB
     import json as _json
     db = LootDB(CC_DIR / "loot.db")
@@ -6452,6 +6433,252 @@ def resource_loot_sessions() -> str:
     if not results:
         return "No sessions in loot database."
     return _json.dumps(results, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# AppSec: SBOM / SCA / secrets
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def sbom_generate(target: str, format: str = "cyclonedx-json",
+                        tool: str = "syft", output: str = "") -> str:
+    """Generate an SBOM for a directory, image archive, or container image.
+
+    format: cyclonedx-json (default), spdx-json, or syft-json.
+    tool: syft (default) or trivy.
+    Phase: AppSec
+    Related: sca_grype_scan, sca_trivy_scan, secret_scan, appsec_scan
+    """
+    from modules.appsec import sbom_generate as _impl
+    r = await _run_async(_impl, target, format=format, tool=tool, output=output)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    lines = [f"SBOM generated ({r.get('tool')} / {r.get('format')}): {r.get('output_file')}"]
+    s = r.get("summary")
+    if s:
+        lines.append(f"  components: {s.get('components', '?')}")
+        by = s.get("by_type", {})
+        if by:
+            lines.append("  by type: " + ", ".join(f"{k}={v}" for k, v in sorted(by.items())))
+    if r.get("stderr"):
+        lines.append(f"  stderr: {r['stderr'][:300]}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def sca_grype_scan(target: str, output: str = "") -> str:
+    """Run a Grype SCA vulnerability scan against a directory or container image.
+
+    Returns severity counts and the top vulnerable packages with fix info.
+    Phase: AppSec
+    Related: sca_trivy_scan, sbom_generate, secret_scan, appsec_scan
+    """
+    from modules.appsec import sca_grype_scan as _impl
+    r = await _run_async(_impl, target, output=output)
+    return _fmt_sca(r)
+
+
+@mcp.tool()
+async def sca_trivy_scan(target: str, output: str = "") -> str:
+    """Run a Trivy SCA vulnerability scan against a filesystem directory.
+
+    Returns severity counts and top vulnerable packages with fixed versions.
+    Phase: AppSec
+    Related: sca_grype_scan, sbom_generate, secret_scan, appsec_scan
+    """
+    from modules.appsec import sca_trivy_scan as _impl
+    r = await _run_async(_impl, target, output=output)
+    return _fmt_sca(r)
+
+
+@mcp.tool()
+async def secret_scan(path: str, report_file: str = "") -> str:
+    """Scan a directory for secrets/hardcoded credentials with Gitleaks.
+
+    Phase: AppSec
+    Related: tool_trufflehog_local, sca_grype_scan, sbom_generate
+    """
+    from modules.appsec import secret_scan as _impl
+    r = await _run_async(_impl, path, report_file=report_file)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    s = r.get("summary", {})
+    lines = [f"Gitleaks scan: {s.get('leaks', 0)} leak(s) in {r.get('target')}",
+             f"  report: {r.get('report_file')}"]
+    by = s.get("by_rule", {})
+    if by:
+        lines.append("  by rule: " + ", ".join(f"{k}={v}" for k, v in by.items()))
+    for it in (s.get("sample") or [])[:15]:
+        lines.append(f"  {it.get('file')}:{it.get('line')} [{it.get('rule')}] {it.get('match')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def sast_scan(target: str) -> str:
+    """Run a lightweight pattern-based SAST scan over a directory.
+
+    Prefers the real semgrep CLI when installed; otherwise uses a built-in
+    python regex rule set (eval/exec, shell=True, pickle, SQL injection,
+    hardcoded secrets, XSS sinks, weak crypto).
+    Phase: AppSec
+    Related: appsec_scan, sca_grype_scan, rules_scan_target
+    """
+    from modules.appsec import sast_scan as _impl
+    r = await _run_async(_impl, target)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    sev = r.get("by_severity") or {}
+    lines = [f"SAST ({r.get('engine')}) on {r.get('target')}: {r.get('findings', 0)} finding(s)",
+             f"  critical={sev.get('critical', 0)} high={sev.get('high', 0)} "
+             f"medium={sev.get('medium', 0)} low={sev.get('low', 0)}"]
+    by = r.get("by_rule") or {}
+    if by:
+        lines.append("  by rule: " + ", ".join(f"{k}={v}" for k, v in sorted(by.items(), key=lambda kv: -kv[1])[:12]))
+    for f in (r.get("sample") or [])[:20]:
+        lines.append(f"  [{f.get('severity')}] {f.get('file')}:{f.get('line')} {f.get('id')} - {f.get('message')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def osv_scan(target: str, use_live: bool = True) -> str:
+    """Check Python package versions against the OSV vulnerability database.
+
+    Discovers pinned deps from requirements*.txt, queries the OSV querybatch
+    API (when online), and merges the bundled offline snapshot
+    (modules/osv_snapshot.json) so results exist even without network.
+    Phase: AppSec
+    Related: sca_grype_scan, appsec_scan, sbom_generate
+    """
+    from modules.appsec import osv_scan as _impl
+    r = await _run_async(_impl, target, use_live=use_live)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    sev = r.get("by_severity") or {}
+    lines = [f"OSV check ({r.get('source')}) on {r.get('target')}: "
+             f"{r.get('checked', 0)} pkg(s), {r.get('vulns', 0)} vuln(s)",
+             f"  critical={sev.get('critical', 0)} high={sev.get('high', 0)} "
+             f"medium={sev.get('medium', 0)} low={sev.get('low', 0)}"]
+    for v in (r.get("top_vulns") or [])[:25]:
+        fix = f"  fix: {v.get('fixed')}" if v.get("fixed") else ""
+        lines.append(f"  [{v.get('severity','?')}] {v.get('id')} {v.get('pkg')}{fix}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def cdn_scan(target: str) -> str:
+    """Inventory CDN frontend libraries referenced in templates/HTML.
+
+    Extracts lib@version from jsdelivr/unpkg/cdnjs/quilljs URLs, lists the
+    inventory, and flags known-vulnerable versions (advisory map + OSV npm
+    snapshot, e.g. quill CVE-2025-15056).
+    Phase: AppSec
+    Related: appsec_scan, sbom_generate, secret_scan
+    """
+    from modules.appsec import cdn_scan as _impl
+    r = await _run_async(_impl, target)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    lines = [f"CDN lib scan on {r.get('target')}: {r.get('libs', 0)} lib(s), "
+             f"{r.get('flagged', 0)} flagged"]
+    for lib in (r.get("inventory") or [])[:30]:
+        files = ", ".join(lib.get("files", [])[:2])
+        lines.append(f"  {lib.get('name')}@{lib.get('version')}  ({files})")
+    for a in (r.get("advisories") or [])[:20]:
+        lines.append(f"  [!] {a.get('pkg')}@{a.get('version')} [{a.get('severity')}] "
+                     f"{a.get('id')} - {a.get('summary')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def sbom_existing(target: str) -> str:
+    """Find and summarize pre-built CycloneDX SBOMs under the target.
+
+    Surfaces components + vulnerabilities from existing sbom_*.json files so
+    manual/scoped SBOMs are not lost when the dashboard regenerates via syft.
+    Phase: AppSec
+    Related: sbom_generate, sca_grype_scan, appsec_scan
+    """
+    from modules.appsec import sbom_existing as _impl
+    r = await _run_async(_impl, target)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    lines = [f"Existing SBOMs under {r.get('target')}: {r.get('sboms_found', 0)} found"]
+    for s in (r.get("sboms") or []):
+        sev = s.get("by_severity") or {}
+        lines.append(f"  {s.get('file')} ({s.get('format')} {s.get('spec')})")
+        lines.append(f"    components={s.get('components')} vulns={s.get('vulnerabilities')} "
+                     f"crit={sev.get('critical', 0)} high={sev.get('high', 0)} "
+                     f"med={sev.get('medium', 0)} low={sev.get('low', 0)}")
+        ids = s.get("vuln_ids") or []
+        if ids:
+            lines.append("    ids: " + ", ".join(ids[:15]))
+    return "\n".join(lines) or "No pre-built SBOMs found."
+
+
+@mcp.tool()
+async def appsec_scan(target: str, sbom: bool = True, sca: bool = True,
+                      secrets: bool = True, sca_tool: str = "grype",
+                      sast: bool = True, osv: bool = True,
+                      cdn: bool = True, sbom_existing: bool = True) -> str:
+    """Run a full AppSec audit on a directory/image: SBOM + SCA + secrets +
+    SAST + OSV deps + CDN libs + existing-SBOM ingestion.
+
+    sca_tool: grype (default) or trivy.
+    Phase: AppSec
+    Related: sbom_generate, sca_grype_scan, sca_trivy_scan, secret_scan,
+             sast_scan, osv_scan, cdn_scan, sbom_existing
+    """
+    from modules.appsec import appsec_scan as _impl
+    r = await _run_async(_impl, target, do_sbom=sbom, do_sca=sca,
+                         do_secrets=secrets, sca_tool=sca_tool,
+                         do_sast=sast, do_osv=osv, do_cdn=cdn,
+                         do_sbom_existing=sbom_existing)
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    lines = [f"AppSec audit of {r.get('target')}:"]
+    for stage, res in (r.get("stages") or {}).items():
+        if isinstance(res, dict) and res.get("error"):
+            lines.append(f"  [{stage}] Error: {res['error']}")
+        elif stage == "sbom":
+            s = res.get("summary") or {}
+            lines.append(f"  [sbom] {res.get('tool')} -> {res.get('output_file')} ({s.get('components', '?')} components)")
+        elif stage == "sca":
+            s = res.get("summary") or {}
+            sev = s.get("by_severity") or {}
+            lines.append(f"  [sca] {res.get('tool')}: {s.get('total', 0)} vulns "
+                         f"(crit={sev.get('critical', 0)} high={sev.get('high', 0)} "
+                         f"med={sev.get('medium', 0)} low={sev.get('low', 0)})")
+        elif stage == "secrets":
+            s = res.get("summary") or {}
+            lines.append(f"  [secrets] gitleaks: {s.get('leaks', 0)} leak(s) -> {res.get('report_file')}")
+        elif stage == "sast":
+            sev = res.get("by_severity") or {}
+            lines.append(f"  [sast] {res.get('engine')}: {res.get('findings', 0)} findings "
+                         f"(high={sev.get('high', 0)} med={sev.get('medium', 0)})")
+        elif stage == "osv":
+            sev = res.get("by_severity") or {}
+            lines.append(f"  [osv] {res.get('checked', 0)} pkg(s), {res.get('vulns', 0)} vulns "
+                         f"(high={sev.get('high', 0)} med={sev.get('medium', 0)})")
+        elif stage == "cdn":
+            lines.append(f"  [cdn] {res.get('libs', 0)} lib(s), {res.get('flagged', 0)} flagged")
+        elif stage == "sbom_existing":
+            lines.append(f"  [sbom_existing] {res.get('sboms_found', 0)} pre-built SBOM(s)")
+    return "\n".join(lines)
+
+
+def _fmt_sca(r: dict) -> str:
+    if isinstance(r, dict) and r.get("error"):
+        return f"Error: {r['error']}"
+    s = r.get("summary", {})
+    sev = s.get("by_severity") or {}
+    lines = [f"{r.get('tool', 'SCA')} scan of {r.get('target')}: {s.get('total', 0)} vuln(s)",
+             f"  critical={sev.get('critical', 0)} high={sev.get('high', 0)} "
+             f"medium={sev.get('medium', 0)} low={sev.get('low', 0)}"]
+    for v in (s.get("top_vulns") or [])[:25]:
+        fix = (v.get("fix") or v.get("fixed") or "")
+        fix_s = f"  fix: {fix}" if fix else ""
+        lines.append(f"  [{v.get('severity','?')}] {v.get('id')} {v.get('pkg')}"
+                     f"@{v.get('version') or v.get('installed')}{fix_s}")
+    return "\n".join(lines)
 
 
 def _fmt(r: dict, fmt: str = "default") -> str:
@@ -6492,7 +6719,91 @@ def _fmt(r: dict, fmt: str = "default") -> str:
     return "\n".join(parts)
 
 
+def _apply_tool_allowlist(mcp_instance, allowlist: str, denylist: str = "") -> None:
+    """Remove MCP tools according to allowlist/denylist prefixes.
+
+    allowlist: comma-separated tool-name prefixes (case-insensitive). An exact
+    name matches, and a prefix matches every tool starting with it (e.g. "bb"
+    keeps all bug-bounty tools). Empty or "*" keeps all tools.
+    denylist: comma-separated prefixes that are force-removed even when the
+    allowlist (or a broader group prefix) would keep them. "*" denies all.
+    doctor_run is always kept regardless of the lists.
+    """
+    allowed = [p.strip().lower() for p in (allowlist or "").split(",") if p.strip()]
+    denied = [p.strip().lower() for p in (denylist or "").split(",") if p.strip()]
+    if not allowed and not denied:
+        return
+    if "*" in allowed:
+        allowed = []
+    manager = mcp_instance._tool_manager
+    for tool in manager.list_tools():
+        name = tool.name.lower()
+        if name == "doctor_run":
+            # Capability/health check is always exposed (documented behavior).
+            continue
+        if denied and (any(name == d or name.startswith(d) for d in denied)
+                       or "*" in denied):
+            manager.remove_tool(tool.name)
+        elif allowed and not any(name == a or name.startswith(a) for a in allowed):
+            manager.remove_tool(tool.name)
+
+
+def _log(msg: str) -> None:
+    """Write to stderr (safe for stdio MCP transports)."""
+    sys.stderr.write(f"[cc-toolkit] {msg}\n")
+
+
+# ---------------------------------------------------------------------------
+# EDR (Endpoint Detection & Response)
+# ---------------------------------------------------------------------------
+try:
+    from edr.mcp import register_edr_tools as _register_edr_tools
+    _register_edr_tools(mcp)
+    _log("EDR tools registered")
+except Exception as _edr_err:
+    _log(f"EDR tools not loaded: {_edr_err}")
+
+
 def main():
+    manager = mcp._tool_manager
+    try:
+        from modules.feature_groups import save_tool_index
+        save_tool_index([t.name for t in manager.list_tools()])
+    except Exception as exc:  # index write must never block startup
+        _log(f"could not write tool index: {exc}")
+
+    total = len(manager.list_tools())
+    env_allowlist = os.environ.get("CC_MCP_TOOLS", "").strip()
+    allowlist = ""
+    denylist = ""
+    config_ok = False
+    try:
+from modules.config import load_config
+        from modules.feature_groups import build_allowlist, build_denylist
+        feats = load_config().get("features") or {}
+        config_allowlist = build_allowlist(feats)
+        config_denylist = build_denylist(feats)
+        config_ok = True
+    except Exception as exc:
+        _log(f"could not load feature config: {exc}")
+
+    if env_allowlist:
+        # Env CC_MCP_TOOLS overrides the config allowlist, but the config
+        # denylist still applies as a safety net (previously it was dropped).
+        allowlist = env_allowlist
+        denylist = config_denylist if config_ok else "*"
+    elif config_ok:
+        allowlist = config_allowlist
+        denylist = config_denylist
+    else:
+        # Fail closed: a config read error must NOT widen the exposed surface.
+        # Previously this exposed all tools; now nothing is exposed.
+        allowlist = ""
+        denylist = "*"
+    _apply_tool_allowlist(mcp, allowlist, denylist)
+    exposed = len(manager.list_tools())
+    src = "env CC_MCP_TOOLS" if env_allowlist else "config.json features"
+    _log(f"MCP ready: {exposed}/{total} tools exposed (source: {src}; allowlist: {allowlist or 'all'}; denylist: {denylist or 'none'})")
     mcp.run()
 
 

@@ -1,0 +1,563 @@
+{% extends "base.html" %}
+{% block title %}CC / AppSec{% endblock %}
+{% block head %}
+<style>
+    .badge { @apply text-xs px-2 py-0.5 rounded-full font-medium; }
+    .status-dot { @apply inline-block w-2.5 h-2.5 rounded-full mr-2; }
+    .tool-check { @apply flex items-center gap-2 p-2 rounded border border-gray-800 bg-gray-950 cursor-pointer text-sm; }
+    .tool-check.disabled { @apply opacity-40 cursor-not-allowed; }
+    .engine-chip { @apply px-2 py-0.5 rounded border text-[11px] font-medium; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="shield-half" class="w-5 h-5 text-green-400"></i> AppSec Scanning</h1>
+    <div class="flex gap-2">
+        <a href="/tools" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="wrench" class="w-3.5 h-3.5"></i> Tools</a>
+        <a href="/burp" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Burp</a>
+    </div>
+</div>
+
+<div id="toast" class="hidden fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium max-w-md"></div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Web DAST -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold flex items-center gap-2"><i data-lucide="globe" class="w-4 h-4 text-blue-400"></i> Web DAST</h2>
+            <button onclick="toggleAppsecConfig()" class="bg-gray-800 hover:bg-gray-700 text-xs px-2 py-1 rounded flex items-center gap-1"><i data-lucide="sliders-horizontal" class="w-3 h-3"></i> Configure</button>
+        </div>
+
+        <div id="web-engines" class="flex flex-wrap gap-1.5 mb-4">checking...</div>
+
+        <label class="block text-xs text-gray-400 mb-1">Target URL</label>
+        <input id="dast-url" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3" placeholder="https://example.com">
+
+        <label class="block text-xs text-gray-400 mb-2">Engines</label>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+            <label class="tool-check"><input type="checkbox" class="dast-tool" value="zap-active" checked><span>ZAP Active</span></label>
+            <label class="tool-check"><input type="checkbox" class="dast-tool" value="zap-spider"><span>ZAP Spider</span></label>
+            <label class="tool-check"><input type="checkbox" class="dast-tool" value="zap-ajax"><span>ZAP AJAX</span></label>
+            <label class="tool-check"><input type="checkbox" class="dast-tool" value="burp"><span>Burp Suite</span></label>
+            <label class="tool-check" title="Runs an enabled ACTIVE Caido workflow (CORS checker preferred) against the URL"><input type="checkbox" class="dast-tool" value="caido"><span>Caido (workflow)</span></label>
+            <label class="tool-check" title="Nuclei vulnerability scanner (installed on server)"><input type="checkbox" class="dast-tool" value="nuclei"><span>Nuclei</span></label>
+            <label class="tool-check" title="wafw00f WAF fingerprinting (installed on server)"><input type="checkbox" class="dast-tool" value="wafw00f"><span>wafw00f</span></label>
+            <label class="tool-check" title="Wapiti web vuln scanner (installed on server)"><input type="checkbox" class="dast-tool" value="wapiti"><span>Wapiti</span></label>
+            <label class="tool-check" title="Nikto web server scanner (installed on server)"><input type="checkbox" class="dast-tool" value="nikto"><span>Nikto</span></label>
+            <label class="tool-check" title="WhatWeb fingerprinting (installed on server)"><input type="checkbox" class="dast-tool" value="whatweb"><span>WhatWeb</span></label>
+            <label class="tool-check" title="Dirbusting with gobuster + raft wordlist (installed on server)"><input type="checkbox" class="dast-tool" value="dirbust" checked><span>Dirbust</span></label>
+        </div>
+        <button id="dast-start-btn" onclick="doDast()" class="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-xs px-4 py-2 rounded flex items-center gap-2">
+            <span id="dast-btn-text">Start Scans</span>
+            <span id="dast-btn-spinner" class="hidden"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg></span>
+        </button>
+        <div id="dast-scans" class="mt-4"></div>
+
+        <div id="appsec-config" class="hidden mt-4 border-t border-gray-800 pt-4 space-y-4">
+            <div class="bg-gray-950 rounded p-3 border border-gray-800">
+                <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-xs font-semibold flex items-center gap-2"><i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i> OWASP ZAP</h4>
+                    <span id="zap-conf-status" class="text-[11px] text-gray-500">checking...</span>
+                </div>
+                <input id="zap-url" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="REST API (http://127.0.0.1:8080)">
+                <input id="zap-apikey" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="API key">
+                <input id="zap-bin" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="Binary (zaproxy)">
+                <div class="flex gap-2">
+                    <button onclick="saveZapConfig()" class="bg-yellow-700 hover:bg-yellow-600 text-xs px-3 py-1.5 rounded">Save</button>
+                    <button id="zap-start-btn" onclick="startZap()" class="bg-yellow-700 hover:bg-yellow-600 text-xs px-3 py-1.5 rounded font-medium hidden" title="Launches ZAP in a detached tmux session: tmux attach -t zap">Start daemon</button>
+                </div>
+            </div>
+            <div class="bg-gray-950 rounded p-3 border border-gray-800">
+                <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-xs font-semibold flex items-center gap-2"><i data-lucide="bug" class="w-4 h-4 text-red-400"></i> Burp Suite</h4>
+                    <span id="burp-conf-status" class="text-[11px] text-gray-500">checking...</span>
+                </div>
+                <input id="burp-api-url" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="REST API URL (http://192.168.56.1:1337)">
+                <input id="burp-apikey" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="API key">
+                <input id="burp-proxy-url" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="Proxy URL (http://192.168.56.1:8081)">
+                <button onclick="saveBurpConfig()" class="bg-red-700 hover:bg-red-600 text-xs px-3 py-1.5 rounded">Save</button>
+            </div>
+            <div class="bg-gray-950 rounded p-3 border border-gray-800">
+                <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-xs font-semibold flex items-center gap-2"><i data-lucide="flame" class="w-4 h-4 text-orange-400"></i> Caido</h4>
+                    <span id="caido-conf-status" class="text-[11px] text-gray-500">checking...</span>
+                </div>
+                <input id="caido-base" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="Base URL (http://192.168.56.1:8080)">
+                <input id="caido-apikey" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="API key (optional)">
+                <input id="caido-pat" type="password" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2" placeholder="PAT for device flow (optional)">
+                <button onclick="saveCaidoConfig()" class="bg-orange-700 hover:bg-orange-600 text-xs px-3 py-1.5 rounded">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- File / repo -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold flex items-center gap-2"><i data-lucide="folder-search" class="w-4 h-4 text-purple-400"></i> File / Repo</h2>
+            <span id="file-engines-count" class="text-[11px] text-gray-500"></span>
+        </div>
+
+        <div id="file-engines" class="flex flex-wrap gap-1.5 mb-4">checking...</div>
+
+        <label class="block text-xs text-gray-400 mb-1">Target</label>
+        <div class="flex rounded overflow-hidden border border-gray-700 mb-2 text-xs">
+            <button id="mode-path" class="flex-1 py-1.5 bg-gray-800 text-gray-200" onclick="setTargetMode('path')">Server path</button>
+            <button id="mode-repo" class="flex-1 py-1.5 text-gray-400 hover:bg-gray-800" onclick="setTargetMode('repo')">Repo URL</button>
+        </div>
+        <div id="file-target-label" class="text-[11px] text-gray-500 mb-1">Path on server</div>
+        <input id="file-path" list="path-hints" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-2" placeholder="/share/git-repo/... or /tmp/target">
+        <datalist id="path-hints">
+            <option value="/share/git-repo/Scripts/ai-combined-tools"></option>
+            <option value="/tmp"></option>
+            <option value="/etc"></option>
+            <option value="/usr/bin"></option>
+        </datalist>
+        <p id="path-hint" class="text-[11px] text-gray-600 mb-3">Paste a server path to scan in place.</p>
+
+        <label class="block text-xs text-gray-400 mb-1">Case ID (optional)</label>
+        <input id="file-case" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3" placeholder="e.g. WEB-001 — links the scan to a case" autocomplete="off">
+
+        <label class="block text-xs text-gray-400 mb-2">Scans</label>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+            <label class="tool-check"><input type="checkbox" class="file-tool" value="bin_surface" checked><span>Binary CLI surface</span></label>
+            <label class="tool-check" title="Compiled-artifact security scan: mitigations, injection sinks, insecure DLL loading, secrets (ELF/PE/Mach-O/.NET)" ><input type="checkbox" class="file-tool" value="compiled" checked><span>Compiled security</span></label>
+            <label class="tool-check"><input type="checkbox" class="file-tool" value="sbom" checked><span>SBOM (syft)</span></label>
+            <label class="tool-check"><input type="checkbox" class="file-tool" value="grype"><span>Vulns (grype)</span></label>
+            <label class="tool-check"><input type="checkbox" class="file-tool" value="trivy"><span>Vulns (trivy)</span></label>
+            <label class="tool-check"><input type="checkbox" class="file-tool" value="secrets"><span>Secrets (gitleaks)</span></label>
+            <label class="tool-check" title="TruffleHog secret scan (installed on server)"><input type="checkbox" class="file-tool" value="trufflehog"><span>Secrets (trufflehog)</span></label>
+            <label class="tool-check" title="Pattern-based source scan (semgrep if installed, else built-in rules)"><input type="checkbox" class="file-tool" value="sast"><span>SAST</span></label>
+            <label class="tool-check" title="PyPI deps vs OSV vuln DB (live API + offline snapshot)"><input type="checkbox" class="file-tool" value="osv"><span>OSV deps</span></label>
+            <label class="tool-check" title="CDN frontend libs in templates/HTML + known CVEs"><input type="checkbox" class="file-tool" value="cdn"><span>CDN libs</span></label>
+            <label class="tool-check" title="Ingest pre-built sbom_*.json files already in the tree"><input type="checkbox" class="file-tool" value="sbom_existing"><span>Existing SBOMs</span></label>
+            <label class="tool-check"><input type="checkbox" class="file-tool" value="appsec"><span>Full audit</span></label>
+        </div>
+        <button id="file-scan-btn" onclick="doFileScan()" class="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-xs px-4 py-2 rounded flex items-center gap-2">
+            <span id="file-btn-text">Run Scans</span>
+            <span id="file-btn-spinner" class="hidden"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg></span>
+        </button>
+        <div class="mt-4">
+            <div id="file-progress-wrap" class="hidden">
+                <div class="flex justify-between text-xs text-gray-400 mb-1"><span id="file-progress-msg">Running...</span><span id="file-progress-pct">0%</span></div>
+                <div class="w-full bg-gray-800 rounded h-2"><div id="file-progress-bar" class="bg-purple-600 h-2 rounded" style="width:0%"></div></div>
+            </div>
+            <pre id="file-result" class="bg-gray-950 rounded p-3 text-xs font-mono mt-3 max-h-96 overflow-auto hidden"></pre>
+        </div>
+    </div>
+</div>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+    <h2 class="text-sm font-semibold mb-3 flex items-center gap-2"><i data-lucide="alert-triangle" class="w-4 h-4 text-red-400"></i> DAST Issues</h2>
+    <pre id="issues-panel" class="bg-gray-950 rounded p-3 text-xs font-mono max-h-96 overflow-auto text-gray-300">Start a scan, then click "Issues" on a row.</pre>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, err) {
+    const el = $('toast');
+    el.textContent = msg;
+    el.className = 'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium max-w-md ' +
+        (err ? 'bg-red-900 border-red-700 text-red-200' : 'bg-green-900 border-green-700 text-green-200');
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 6000);
+}
+
+function renderJson(el, obj) {
+    el.classList.remove('hidden');
+    el.textContent = JSON.stringify(obj, null, 2);
+}
+
+// ---- target mode --------------------------------------------------------
+function setTargetMode(mode) {
+    const pathMode = mode === 'path';
+    $('mode-path').className = 'flex-1 py-1.5 ' + (pathMode ? 'bg-gray-800 text-gray-200' : 'text-gray-400 hover:bg-gray-800');
+    $('mode-repo').className = 'flex-1 py-1.5 ' + (!pathMode ? 'bg-gray-800 text-gray-200' : 'text-gray-400 hover:bg-gray-800');
+    $('file-target-label').textContent = pathMode ? 'Path on server' : 'Git repo URL';
+    $('file-path').placeholder = pathMode ? '/share/git-repo/... or /tmp/target' : 'https://github.com/org/repo.git';
+    $('path-hint').textContent = pathMode
+        ? 'Paste a server path to scan in place.'
+        : 'Repository is cloned to /tmp/cc_scan_repos on the server, then scanned.';
+    $('file-path').setAttribute('list', pathMode ? 'path-hints' : '');
+    if (!pathMode) $('file-path').removeAttribute('list');
+}
+
+// ---- health ------------------------------------------------------------
+function engChip(label, ok) {
+    return `<span class="engine-chip ${ok ? 'border-green-800 bg-green-950 text-green-300' : 'border-red-800 bg-red-950 text-red-400'}" title="${label}">${label}</span>`;
+}
+
+async function loadHealth() {
+    try {
+        const h = await (await fetch('/api/appsec/health')).json();
+        const w = h.dast || {};
+        const zapUp = w.zap && w.zap.status === 'ok';
+        const burpUp = w.burp && w.burp.status === 'ok';
+        const caidoUp = w.caido && w.caido.api_reachable;
+        const caidoAuth = caidoUp && w.caido.auth_ok;
+
+        $('web-engines').innerHTML =
+            engChip('ZAP', zapUp) + engChip('Burp', burpUp) +
+            engChip('Caido', caidoAuth) +
+            engChip('Nuclei', !!w.nuclei) + engChip('Wafw00f', !!w.wafw00f) +
+            engChip('Wapiti', !!w.wapiti) + engChip('Nikto', !!w.nikto) +
+            engChip('WhatWeb', !!w.whatweb) + engChip('Dirbust', !!w.dirbust);
+
+        const chipMap = {
+            'zap-active': zapUp, 'zap-spider': zapUp, 'zap-ajax': zapUp,
+            'burp': burpUp, 'caido': caidoAuth,
+            'nuclei': !!w.nuclei, 'wafw00f': !!w.wafw00f, 'wapiti': !!w.wapiti,
+            'nikto': !!w.nikto, 'whatweb': !!w.whatweb, 'dirbust': !!w.dirbust
+        };
+        document.querySelectorAll('.dast-tool').forEach(c => {
+            const ok = !!chipMap[c.value];
+            c.disabled = !ok;
+            const lab = c.closest('label');
+            lab.classList.toggle('disabled', !ok);
+            lab.title = ok ? '' : 'Engine not available on this server';
+        });
+
+        const ft = h.file_tools || {};
+        $('file-engines').innerHTML =
+            Object.entries(ft).map(([k, v]) => engChip(k, !!v)).join('');
+        const nUp = Object.entries(ft).filter(([, v]) => v).length;
+        $('file-engines-count').textContent = `${nUp}/${Object.keys(ft).length} engines installed`;
+        const fileMap = {
+            'bin_surface': true, 'compiled': true, 'sbom': !!ft.syft,
+            'grype': !!ft.grype,
+            'trivy': !!ft.trivy, 'secrets': !!ft.gitleaks,
+            'trufflehog': !!ft.trufflehog, 'sast': true,
+            'osv': true, 'cdn': true, 'sbom_existing': true, 'appsec': true
+        };
+        document.querySelectorAll('.file-tool').forEach(c => {
+            const ok = !!fileMap[c.value];
+            c.disabled = !ok;
+            const lab = c.closest('label');
+            lab.classList.toggle('disabled', !ok);
+            lab.title = ok ? '' : 'Engine not installed on this server';
+        });
+
+        // config panel status lines
+        const zs = $('zap-conf-status');
+        zs.textContent = zapUp ? 'daemon up' : (w.zap ? w.zap.status + (w.zap.error ? ' — ' + w.zap.error : '') : 'down');
+        zs.className = 'text-[11px] ' + (zapUp ? 'text-green-400' : 'text-red-400');
+        $('zap-start-btn').classList.toggle('hidden', zapUp);
+        const bs = $('burp-conf-status');
+        bs.textContent = burpUp ? 'api up' : (w.burp ? w.burp.status + (w.burp.error ? ' — ' + w.burp.error : '') : 'down');
+        bs.className = 'text-[11px] ' + (burpUp ? 'text-green-400' : 'text-red-400');
+        const cs = $('caido-conf-status');
+        cs.textContent = !caidoUp ? 'api down' : (caidoAuth ? 'auth ok' : 'auth none');
+        cs.className = 'text-[11px] ' + (caidoAuth ? 'text-green-400' : (caidoUp ? 'text-yellow-500' : 'text-red-400'));
+
+        window.dispatchEvent(new Event('load-lucide'));
+    } catch (e) {
+        toast('Health check failed: ' + e.message, true);
+    }
+}
+
+// ---- configure (ZAP / Burp / Caido) -------------------------------------
+function toggleAppsecConfig() {
+    const box = $('appsec-config');
+    box.classList.toggle('hidden');
+    if (box.classList.contains('hidden')) return;
+    loadZapConfig(); loadBurpConfig(); loadCaidoConfig();
+}
+async function loadZapConfig() {
+    try {
+        const c = await (await fetch('/api/appsec/zap/config')).json();
+        $('zap-url').value = c.url || '';
+        $('zap-apikey').value = '';
+        $('zap-apikey').placeholder = c.api_key ? 'API key set (' + c.api_key + ')' : 'API key';
+        $('zap-bin').value = c.bin || 'zaproxy';
+    } catch (e) { toast('Failed to load ZAP config: ' + e.message, true); }
+}
+async function saveZapConfig() {
+    const body = {};
+    if ($('zap-url').value.trim()) body.url = $('zap-url').value.trim();
+    if ($('zap-apikey').value.trim()) body.api_key = $('zap-apikey').value.trim();
+    if ($('zap-bin').value.trim()) body.bin = $('zap-bin').value.trim();
+    if (!Object.keys(body).length) { toast('Nothing to save', true); return; }
+    try {
+        const r = await (await fetch('/api/appsec/zap/config', { method: 'POST', body: JSON.stringify(body) })).json();
+        if (r.error) { toast('Error: ' + r.error, true); return; }
+        $('zap-apikey').value = '';
+        toast('ZAP config saved', false);
+        loadZapConfig();
+    } catch (e) { toast('Network error: ' + e.message, true); }
+}
+async function loadBurpConfig() {
+    try {
+        const c = await (await fetch('/api/appsec/burp/config')).json();
+        $('burp-api-url').value = c.api_url || '';
+        $('burp-apikey').value = '';
+        $('burp-apikey').placeholder = c.api_key ? 'API key set (' + c.api_key + ')' : 'API key';
+        $('burp-proxy-url').value = c.proxy_url || '';
+    } catch (e) { toast('Failed to load Burp config: ' + e.message, true); }
+}
+async function saveBurpConfig() {
+    const body = {};
+    if ($('burp-api-url').value.trim()) body.api_url = $('burp-api-url').value.trim();
+    if ($('burp-apikey').value.trim()) body.api_key = $('burp-apikey').value.trim();
+    if ($('burp-proxy-url').value.trim()) body.proxy_url = $('burp-proxy-url').value.trim();
+    if (!Object.keys(body).length) { toast('Nothing to save', true); return; }
+    try {
+        const r = await (await fetch('/api/appsec/burp/config', { method: 'POST', body: JSON.stringify(body) })).json();
+        if (r.error) { toast('Error: ' + r.error, true); return; }
+        $('burp-apikey').value = '';
+        toast('Burp config saved', false);
+        loadBurpConfig();
+    } catch (e) { toast('Network error: ' + e.message, true); }
+}
+async function loadCaidoConfig() {
+    try {
+        const c = await (await fetch('/api/appsec/caido/config')).json();
+        $('caido-base').value = c.base_url || '';
+        $('caido-apikey').value = '';
+        $('caido-apikey').placeholder = c.api_key_configured ? 'API key set (' + c.api_key + ')' : 'API key (optional)';
+        $('caido-pat').placeholder = c.pat_configured ? 'PAT set' : 'PAT for device flow (optional)';
+    } catch (e) { toast('Failed to load Caido config: ' + e.message, true); }
+}
+async function saveCaidoConfig() {
+    const body = { base_url: $('caido-base').value.trim() };
+    const ak = $('caido-apikey').value.trim();
+    const pt = $('caido-pat').value.trim();
+    if (ak) body.api_key = ak;
+    if (pt) body.api_token = pt;
+    if (!Object.keys(body).length) { toast('Nothing to save', true); return; }
+    try {
+        const r = await (await fetch('/api/appsec/caido/config', { method: 'POST', body: JSON.stringify(body) })).json();
+        if (r.error) { toast('Error: ' + r.error, true); return; }
+        $('caido-pat').value = '';
+        toast('Caido config saved', false);
+        loadCaidoConfig(); loadHealth();
+    } catch (e) { toast('Network error: ' + e.message, true); }
+}
+
+async function startZap() {
+    const btn = $('zap-start-btn');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    try {
+        const r = await (await fetch('/api/appsec/dast/zap-start', {method:'POST', body:JSON.stringify({})})).json();
+        if (r.error) { toast('Error: ' + r.error, true); btn.disabled = false; btn.textContent = 'Start daemon'; return; }
+        toast('Starting ZAP daemon (can take ~90s)...', false);
+        pollZapJob(r.job_id);
+    } catch (e) {
+        toast('Network error: ' + e.message, true);
+        btn.disabled = false; btn.textContent = 'Start daemon';
+    }
+}
+function pollZapJob(jobId) {
+    const timer = setInterval(async () => {
+        try {
+            const j = await (await fetch('/api/jobs/' + jobId)).json();
+            if (j.status === 'completed' || j.status === 'failed') {
+                clearInterval(timer);
+                $('zap-start-btn').disabled = false;
+                $('zap-start-btn').textContent = 'Start daemon';
+                if (j.status === 'failed') toast('ZAP failed to start: ' + (j.error || ''), true);
+                else toast('ZAP daemon started', false);
+                loadHealth();
+            }
+        } catch (e) { clearInterval(timer); }
+    }, 3000);
+}
+
+// ---- DAST --------------------------------------------------------------
+let runningScans = [];
+const SCAN_NAMES = {
+    'zap-active': 'ZAP Active', 'zap-spider': 'ZAP Spider', 'zap-ajax': 'ZAP AJAX',
+    'burp': 'Burp', 'caido': 'Caido',
+    'nuclei': 'Nuclei', 'wafw00f': 'wafw00f', 'wapiti': 'Wapiti',
+    'nikto': 'Nikto', 'whatweb': 'WhatWeb'
+};
+
+async function doDast() {
+    const url = $('dast-url').value.trim();
+    const tools = Array.from(document.querySelectorAll('.dast-tool:checked')).map(c => c.value);
+    if (!url) { toast('Enter a target URL', true); return; }
+    if (!tools.length) { toast('Select at least one tool', true); return; }
+    const btn = $('dast-start-btn');
+    btn.disabled = true; $('dast-btn-text').textContent = 'Starting...';
+    $('dast-btn-spinner').classList.remove('hidden');
+    try {
+        const r = await (await fetch('/api/appsec/dast/start', {method:'POST', body:JSON.stringify({url, tools})})).json();
+        if (r.error) { toast('Error: ' + r.error, true); return; }
+        let added = 0;
+        for (const [t, res] of Object.entries(r.results || {})) {
+            if (!res.started) { toast(`[${SCAN_NAMES[t] || t}] ${res.error || 'not started'}`, true); continue; }
+            runningScans.push({ tool: t, scan_id: res.scan_id || '', mode: res.mode || 'active', name: SCAN_NAMES[t] || t });
+            added++;
+        }
+        if (added) toast(`Started ${added} scan(s) — polling status`, false);
+        renderScans();
+    } catch (e) {
+        toast('Network error: ' + e.message, true);
+    } finally {
+        btn.disabled = false; $('dast-btn-text').textContent = 'Start Scans';
+        $('dast-btn-spinner').classList.add('hidden');
+    }
+}
+
+function renderScans() {
+    const el = $('dast-scans');
+    if (!runningScans.length) { el.innerHTML = ''; return; }
+    el.innerHTML = '<h3 class="text-xs font-semibold text-gray-400 mb-2">Running scans</h3>' +
+        '<div class="space-y-2">' + runningScans.map((s, i) =>
+            `<div class="flex items-center gap-3 bg-gray-950 rounded border border-gray-800 px-3 py-2 text-xs" id="scan-row-${i}">` +
+            `<span class="w-20 text-gray-200">${s.name}</span>` +
+            `<span class="font-mono text-gray-500 w-10">${s.scan_id || '-'}</span>` +
+            `<span id="scan-pct-${i}" class="font-mono w-14 text-gray-300">waiting</span>` +
+            `<div class="flex-1 bg-gray-800 rounded h-1.5"><div id="scan-bar-${i}" class="bg-blue-600 h-1.5 rounded" style="width:0%"></div></div>` +
+            `<button onclick="viewIssues('${s.tool}','${s.scan_id}','${s.name}')" class="bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded">Issues</button>` +
+            `<button onclick="removeScan(${i})" class="text-gray-500 hover:text-red-400">✕</button></div>`).join('') + '</div>';
+    window.dispatchEvent(new Event('load-lucide'));
+}
+
+function removeScan(i) { runningScans.splice(i, 1); renderScans(); }
+
+function pctFrom(obj) {
+    if (!obj || obj.error) return { pct: 0, label: obj && obj.error ? 'error' : '?' };
+    const s = obj.status;
+    if (typeof s === 'string' && s !== '') {
+        const n = parseInt(s, 10);
+        if (!isNaN(n)) return { pct: n, label: s + '%' };
+        if (obj.findings != null) return { pct: null, label: s + ' · ' + obj.findings + ' findings' };
+        return { pct: null, label: s };
+    }
+    for (const k of ['scan_percentage', 'percentage_complete', 'progress']) {
+        if (obj[k] != null) return { pct: obj[k], label: obj[k] + '%' };
+    }
+    return { pct: null, label: 'running' };
+}
+
+async function pollScans() {
+    if (!runningScans.length) return;
+    for (let i = 0; i < runningScans.length; i++) {
+        const s = runningScans[i];
+        if (s.done) continue;
+        const q = new URLSearchParams({ tool: s.tool, scan_id: s.scan_id, mode: s.mode }).toString();
+        try {
+            const obj = await (await fetch('/api/appsec/dast/status?' + q)).json();
+            const { pct, label } = pctFrom(obj);
+            const row = $('scan-row-' + i);
+            if (!row) continue;
+            $('scan-pct-' + i).textContent = label;
+            if (pct != null) $('scan-bar-' + i).style.width = pct + '%';
+            if (obj.status === 'done' || obj.status === 'timed_out') s.done = true;
+        } catch (e) { /* keep polling */ }
+    }
+}
+
+async function viewIssues(tool, scanId, name) {
+    const q = new URLSearchParams({ tool, scan_id: scanId }).toString();
+    $('issues-panel').textContent = 'Loading issues...';
+    try {
+        const r = await (await fetch('/api/appsec/dast/issues?' + q)).json();
+        const items = r.alerts || r.issues || [];
+        const summary = {};
+        (items || []).forEach(it => { const k = it.risk || it.severity || it.title || 'info'; summary[k] = (summary[k] || 0) + 1; });
+        const head = `# ${name} — ${items.length} issue(s)\n${Object.entries(summary).map(([k, v]) => `  ${k}: ${v}`).join('\n') || '  (none)'}\n\n`;
+        let body = JSON.stringify(items, null, 2);
+        if (!items.length && r.report) body = JSON.stringify(r.report, null, 2) + (r.output ? '\n\n--- output ---\n' + r.output : '');
+        $('issues-panel').textContent = head + body;
+    } catch (e) {
+        $('issues-panel').textContent = 'Error: ' + e.message;
+    }
+}
+
+// ---- File / repo ---------------------------------------------------------
+let fileTimer = null;
+const FILE_JOB_KEY = 'cc_file_scan_job';
+async function doFileScan() {
+    const path = $('file-path').value.trim();
+    const caseId = $('file-case').value.trim();
+    const tools = Array.from(document.querySelectorAll('.file-tool:checked')).map(c => c.value);
+    if (!path) { toast('Enter a server path or repo URL', true); return; }
+    if (!tools.length) { toast('Select at least one scan', true); return; }
+    const btn = $('file-scan-btn');
+    btn.disabled = true; $('file-btn-text').textContent = 'Starting...';
+    $('file-btn-spinner').classList.remove('hidden');
+    try {
+        const body = {path, tools};
+        if (caseId) body.case_id = caseId;
+        const r = await (await fetch('/api/appsec/file/scan', {method:'POST', body:JSON.stringify(body)})).json();
+        if (r.error) { toast('Error: ' + r.error, true); return; }
+        localStorage.setItem(FILE_JOB_KEY, r.job_id);
+        $('file-progress-wrap').classList.remove('hidden');
+        $('file-result').classList.add('hidden');
+        pollFileJob(r.job_id);
+    } catch (e) {
+        toast('Network error: ' + e.message, true);
+    } finally {
+        btn.disabled = false; $('file-btn-text').textContent = 'Run Scans';
+        $('file-btn-spinner').classList.add('hidden');
+    }
+}
+function renderFileResult(j) {
+    $('file-progress-wrap').classList.add('hidden');
+    const el = $('file-result');
+    el.classList.remove('hidden');
+    let obj = j.result || { error: j.error || 'no result' };
+    el.textContent = JSON.stringify(obj, null, 2);
+    const cid = j.case_id || (obj.case_id || '');
+    let link = el.previousElementSibling && el.previousElementSibling.classList.contains('file-case-link')
+        ? el.previousElementSibling : null;
+    if (cid) {
+        if (!link) {
+            link = document.createElement('div');
+            link.className = 'file-case-link mt-2';
+            el.parentNode.insertBefore(link, el);
+        }
+        link.innerHTML = '<a href="/case/' + encodeURIComponent(cid) + '" class="text-xs text-indigo-400 hover:text-indigo-300">View Case: ' + cid + '</a>';
+    } else if (link) {
+        link.remove();
+    }
+}
+function pollFileJob(jobId) {
+    if (fileTimer) clearInterval(fileTimer);
+    fileTimer = setInterval(async () => {
+        try {
+            const j = await (await fetch('/api/jobs/' + jobId)).json();
+            if (j.error) { clearInterval(fileTimer); localStorage.removeItem(FILE_JOB_KEY); return; }
+            $('file-progress-msg').textContent = j.message || 'running...';
+            $('file-progress-pct').textContent = (j.progress || 0) + '%';
+            $('file-progress-bar').style.width = (j.progress || 0) + '%';
+            if (j.status === 'completed' || j.status === 'failed') {
+                clearInterval(fileTimer);
+                localStorage.removeItem(FILE_JOB_KEY);
+                $('file-progress-msg').textContent = j.status;
+                renderFileResult(j);
+                toast(j.status === 'completed' ? 'File scan complete' : 'File scan failed', j.status === 'failed');
+            }
+        } catch (e) { clearInterval(fileTimer); }
+    }, 2000);
+}
+async function restoreFileScan() {
+    const jobId = localStorage.getItem(FILE_JOB_KEY);
+    if (!jobId) return;
+    try {
+        const j = await (await fetch('/api/jobs/' + jobId)).json();
+        if (j.error) { localStorage.removeItem(FILE_JOB_KEY); return; }
+        if (j.status === 'queued' || j.status === 'running') {
+            $('file-progress-wrap').classList.remove('hidden');
+            $('file-result').classList.add('hidden');
+            $('file-progress-msg').textContent = j.message || 'resuming...';
+            $('file-progress-pct').textContent = (j.progress || 0) + '%';
+            $('file-progress-bar').style.width = (j.progress || 0) + '%';
+            pollFileJob(jobId);
+        } else if (j.status === 'completed' || j.status === 'failed') {
+            localStorage.removeItem(FILE_JOB_KEY);
+            renderFileResult(j);
+            toast(j.status === 'completed' ? 'Restored previous file scan result' : 'Previous file scan failed', j.status === 'failed');
+        }
+    } catch (e) { /* ignore */ }
+}
+
+loadHealth();
+restoreFileScan();
+setInterval(loadHealth, 20000);
+setInterval(pollScans, 3000);
+</script>
+{% endblock %}

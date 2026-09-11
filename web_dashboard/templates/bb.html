@@ -1,0 +1,475 @@
+{% extends "base.html" %}
+{% block title %}CC / Bug Bounty{% endblock %}
+{% block head %}
+<style>
+    .bb-card { background: #1e1e2e; border: 1px solid #313244; border-radius: 0.5rem; padding: 1rem; }
+    .bb-card h3 { margin: 0 0 0.5rem 0; color: #cdd6f4; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .bb-tbl { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .bb-tbl th { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #313244; color: #a6adc8; white-space: nowrap; }
+    .bb-tbl td { padding: 0.3rem 0.6rem; border-bottom: 1px solid #181825; }
+    .bb-tbl tr:hover td { background: #313244; }
+    .plat-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 0.25rem; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+    .plat-hackerone { background: #89b4fa; color: #1e1e2e; }
+    .plat-bugcrowd { background: #f9e2af; color: #1e1e2e; }
+    .plat-yeswehack { background: #94e2d5; color: #1e1e2e; }
+    .plat-intigriti { background: #f5c2e7; color: #1e1e2e; }
+    .plat-immunefi { background: #a6e3a1; color: #1e1e2e; }
+    .state-ok { color: #a6e3a1; }
+    .state-bad { color: #f38ba8; }
+    .scope-eligible { color: #a6e3a1; }
+    .scope-non-eligible { color: #fab387; }
+    .scope-item { font-family: monospace; }
+    .detail-tab { font-size: 0.8rem; }
+    .sev-sev { background: #f38ba8; color: #1e1e2e; }
+    .sev-high { background: #fab387; color: #1e1e2e; }
+    .sev-medium { background: #f9e2af; color: #1e1e2e; }
+    .sev-low { background: #a6e3a1; color: #1e1e2e; }
+    .sev-none { background: #45475a; color: #cdd6f4; }
+    .sev-badge { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 0.25rem; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+</style>
+{% endblock %}
+{% block content %}
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <span class="text-gray-400">Bug Bounty</span>
+</nav>
+<div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-1">
+        <h1 class="text-xl font-bold text-indigo-400">Bug Bounty</h1>
+        <button onclick="syncAll()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm font-medium transition-colors">⟳ Sync All Cached</button>
+    </div>
+    <p class="text-gray-500 text-sm mb-4">HackerOne + Bugcrowd + YesWeHack + Intigriti + Immunefi program &amp; scope tracking — cached locally, no platform assets loaded</p>
+
+    <!-- Platform status cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6" id="status-cards">
+        <div class="bb-card"><h3>HackerOne</h3><div class="text-sm text-gray-400">Loading...</div></div>
+        <div class="bb-card"><h3>Bugcrowd</h3><div class="text-sm text-gray-400">Loading...</div></div>
+        <div class="bb-card"><h3>YesWeHack</h3><div class="text-sm text-gray-400">Loading...</div></div>
+        <div class="bb-card"><h3>Intigriti</h3><div class="text-sm text-gray-400">Loading...</div></div>
+        <div class="bb-card"><h3>Immunefi</h3><div class="text-sm text-gray-400">Loading...</div></div>
+    </div>
+
+    <!-- Credentials -->
+    <div class="bb-card mb-6">
+        <h3>API Credentials</h3>
+        <div class="text-xs text-gray-500 mb-3">Stored encrypted on this server. YesWeHack + Immunefi fetch publicly with no credentials. Bugcrowd's API is customer-only (OAuth2) — researchers can't generate tokens. YesWeHack + Intigriti tokens extend access.</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div class="flex flex-col gap-2">
+                <div class="text-xs text-indigo-300 font-semibold uppercase">HackerOne</div>
+                <input id="h1-identifier" type="text" placeholder="API identifier (token name)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono" autocomplete="off">
+                <input id="h1-token" type="password" placeholder="API token (value)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono" autocomplete="off">
+                <div class="flex gap-2">
+                    <button onclick="saveCreds('hackerone')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm font-medium transition-colors">Save</button>
+                    <button onclick="clearCreds('hackerone')" class="bg-red-900 hover:bg-red-800 px-3 py-1 rounded text-sm font-medium transition-colors">Clear</button>
+                </div>
+                <div class="text-[0.65rem] text-gray-500 leading-tight">Identifier = the token <em>name</em> shown when you create the API token (not your username). Create at <a href="https://hackerone.com/settings/api_token/edit" target="_blank" class="text-indigo-400 hover:text-indigo-300">hackerone.com/settings/api_token/edit</a>.</div>
+                <div class="text-xs" id="cred-hackerone"><span class="text-gray-500">not saved</span></div>
+            </div>
+            <div class="flex flex-col gap-2">
+                <div class="text-xs text-yellow-300 font-semibold uppercase">Bugcrowd</div>
+                <input id="bc-client-id" type="text" placeholder="Client ID (optional)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono" autocomplete="off">
+                <input id="bc-client-secret" type="password" placeholder="Client secret (optional)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono" autocomplete="off">
+                <div class="flex gap-2">
+                    <button onclick="saveCreds('bugcrowd')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm font-medium transition-colors">Save</button>
+                    <button onclick="clearCreds('bugcrowd')" class="bg-red-900 hover:bg-red-800 px-3 py-1 rounded text-sm font-medium transition-colors">Clear</button>
+                </div>
+                <div class="text-[0.65rem] text-gray-500 leading-tight">Customer-only API — OAuth2 client_id/client_secret are for <em>customer</em> accounts; researchers can't generate tokens.</div>
+                <div class="text-xs" id="cred-bugcrowd"><span class="text-gray-500">not saved</span></div>
+            </div>
+            <div class="flex flex-col gap-2">
+                <div class="text-xs text-teal-300 font-semibold uppercase">YesWeHack</div>
+                <input id="ywh-token" type="password" placeholder="Personal access token (optional)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono" autocomplete="off">
+                <div class="flex gap-2">
+                    <button onclick="saveCreds('yeswehack')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm font-medium transition-colors">Save</button>
+                    <button onclick="clearCreds('yeswehack')" class="bg-red-900 hover:bg-red-800 px-3 py-1 rounded text-sm font-medium transition-colors">Clear</button>
+                </div>
+                <div class="text-[0.65rem] text-gray-500 leading-tight">PATs only exist for Business Unit Owner/Manager and Program Manager roles (My YesWeHack → Personal Access Token) — researchers can't create them.</div>
+                <div class="text-xs" id="cred-yeswehack"><span class="text-gray-500">not saved</span></div>
+            </div>
+            <div class="flex flex-col gap-2">
+                <div class="text-xs text-pink-300 font-semibold uppercase">Intigriti</div>
+                <input id="int-token" type="password" placeholder="Researcher API token (required)" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono" autocomplete="off">
+                <div class="flex gap-2">
+                    <button onclick="saveCreds('intigriti')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-sm font-medium transition-colors">Save</button>
+                    <button onclick="clearCreds('intigriti')" class="bg-red-900 hover:bg-red-800 px-3 py-1 rounded text-sm font-medium transition-colors">Clear</button>
+                </div>
+                <div class="text-xs" id="cred-intigriti"><span class="text-gray-500">not saved</span></div>
+            </div>
+            <div class="flex flex-col gap-2">
+                <div class="text-xs text-green-300 font-semibold uppercase">Immunefi</div>
+                <div class="text-xs text-gray-400">Public Web3 bounty API — no credentials needed.</div>
+                <div class="text-xs" id="cred-immunefi"><span class="text-gray-500">no credentials needed</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync / discover actions -->
+    <div class="bb-card mb-6">
+        <h3>Fetch from Platform</h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <div class="flex flex-col gap-1">
+                <span class="text-xs text-gray-500">Program</span>
+                <div class="flex gap-2">
+                    <select id="sync-platform" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+                        <option value="bugcrowd">bugcrowd</option>
+                        <option value="hackerone">hackerone</option>
+                        <option value="yeswehack">yeswehack</option>
+                        <option value="intigriti">intigriti</option>
+                        <option value="immunefi">immunefi</option>
+                    </select>
+                    <input id="sync-slug" type="text" placeholder="program slug" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono flex-1"
+                           onkeydown="if(event.key==='Enter') syncProgram()">
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="syncProgram()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-sm font-medium transition-colors">Sync Program</button>
+                <button onclick="discover()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm font-medium transition-colors" title="List public programs via the selected platform's API">Discover</button>
+            </div>
+            <div class="text-xs text-gray-500">Synced programs are cached locally and pushed into the asset inventory / cases on demand.</div>
+        </div>
+    </div>
+
+    <!-- Programs -->
+    <div class="bb-card mb-6">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h3 class="mb-0">Cached Programs</h3>
+            <div class="flex gap-2">
+                <select id="filter-platform" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200">
+                    <option value="">all platforms</option>
+                    <option value="hackerone">hackerone</option>
+                    <option value="bugcrowd">bugcrowd</option>
+                    <option value="yeswehack">yeswehack</option>
+                    <option value="intigriti">intigriti</option>
+                    <option value="immunefi">immunefi</option>
+                </select>
+                <input id="program-search" type="text" placeholder="search..." class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono w-40"
+                       onkeydown="if(event.key==='Enter') loadPrograms()">
+                <button onclick="loadPrograms()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors">Search</button>
+                <button onclick="loadPrograms()" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">⟳</button>
+            </div>
+        </div>
+        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+            <table class="bb-tbl">
+                <thead><tr><th>Platform</th><th>Name</th><th>State</th><th>Bounties</th><th>Scope</th><th>Last refresh</th><th></th></tr></thead>
+                <tbody id="program-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Program detail -->
+    <div id="detail-wrap" class="hidden mb-6"></div>
+
+    <!-- Reports -->
+    <div class="bb-card">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="mb-0">My Reports</h3>
+                <select id="report-platform" onchange="onReportPlatform()" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200">
+                    <option value="hackerone">hackerone</option>
+                    <option value="yeswehack">yeswehack</option>
+                </select>
+                <input id="report-programs" type="text" placeholder="program slugs (yeswehack, comma-separated)" class="hidden bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono w-64" autocomplete="off">
+                <span id="report-hint" class="text-[0.65rem] text-gray-500"></span>
+            </div>
+            <button onclick="loadReports()" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">⟳ refresh</button>
+        </div>
+        <div id="reports-body" class="text-sm text-gray-400">Requires HackerOne credentials.</div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    var d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+}
+
+async function api(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) {
+        let msg = 'API Error: ' + r.status;
+        try { const j = await r.json(); if (j && j.error) msg = j.error; } catch(e) {}
+        window.__lastApiError = msg;
+        toast(msg, false);
+        return null;
+    }
+    window.__lastApiError = '';
+    try { return await r.json(); } catch(e) { return null; }
+}
+
+function platBadge(p) {
+    const map = { hackerone: 'plat-hackerone', bugcrowd: 'plat-bugcrowd', yeswehack: 'plat-yeswehack', intigriti: 'plat-intigriti', immunefi: 'plat-immunefi' };
+    const cls = map[p] || 'plat-hackerone';
+    return `<span class="plat-badge ${cls}">${escapeHtml(p)}</span>`;
+}
+
+function sevBadge(s) {
+    const key = String(s || '').toLowerCase();
+    const cls = 'sev-' + (['critical','high','medium','low','none'].includes(key) ? key : 'none');
+    return `<span class="sev-badge ${cls}">${escapeHtml(s || 'n/a')}</span>`;
+}
+
+// ---- status ----
+async function loadStatus() {
+    const st = await api('/api/bb/status');
+    const cards = document.getElementById('status-cards');
+    if (!st) return;
+    cards.innerHTML = '';
+    for (const p of st.platforms || []) {
+        const ident = p.configured && p.identifier ? ` · ${escapeHtml(p.identifier)}` : '';
+        const cfg = p.configured ? `<span class="state-ok">configured${ident}</span>` : '<span class="state-bad">no credentials</span>';
+        const pub = p.public ? '<span class="text-gray-500">public fetch</span>' : '<span class="text-gray-500">auth only</span>';
+        const cust = p.customer_only ? ' · <span class="state-bad">customer-only API</span>' : '';
+        const count = (p.program_count !== undefined) ? `<div class="text-gray-300 mt-1">${escapeHtml(p.program_count)} programs cached</div>` : '';
+        cards.innerHTML += `<div class="bb-card">
+            <div class="flex items-center justify-between"><h3 class="mb-0">${escapeHtml(p.platform)}</h3>${platBadge(p.platform)}</div>
+            <div class="text-sm mt-2">${cfg} · ${pub}${cust}${count}</div>
+        </div>`;
+        const credEl = document.getElementById('cred-' + p.platform);
+        if (credEl) {
+            if (p.platform === 'immunefi') {
+                credEl.innerHTML = '<span class="text-gray-500">no credentials needed</span>';
+            } else if (p.configured) {
+                const label = p.identifier ? ` — ${escapeHtml(p.identifier)}` : '';
+                credEl.innerHTML = `<span class="state-ok">&#10003; saved</span><span class="text-gray-500">${label}</span>`;
+            } else {
+                credEl.innerHTML = '<span class="text-gray-500">not saved</span>';
+            }
+        }
+    }
+}
+
+// ---- credentials ----
+async function saveCreds(platform) {
+    const body = { platform };
+    if (platform === 'hackerone') {
+        body.identifier = document.getElementById('h1-identifier').value.trim();
+        body.token = document.getElementById('h1-token').value;
+        if (!body.identifier || !body.token) { toast('HackerOne needs identifier + token', false); return; }
+    } else if (platform === 'yeswehack') {
+        body.token = document.getElementById('ywh-token').value;
+    } else if (platform === 'intigriti') {
+        body.token = document.getElementById('int-token').value;
+        if (!body.token) { toast('Intigriti needs a researcher API token', false); return; }
+    } else {
+        body.client_id = document.getElementById('bc-client-id').value.trim();
+        body.client_secret = document.getElementById('bc-client-secret').value;
+    }
+    const r = await api('/api/bb/creds', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    if (r && r.status === 'ok') {
+        toast('Credentials saved for ' + platform, true);
+        document.getElementById('h1-token').value = '';
+        document.getElementById('bc-client-secret').value = '';
+        document.getElementById('ywh-token').value = '';
+        document.getElementById('int-token').value = '';
+        loadStatus();
+    }
+}
+
+async function clearCreds(platform) {
+    if (!confirm('Clear credentials for ' + platform + '?')) return;
+    const r = await api('/api/bb/creds/clear', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ platform }) });
+    if (r && r.status === 'ok') { toast('Credentials cleared', true); loadStatus(); }
+}
+
+// ---- fetch actions ----
+async function syncProgram() {
+    const platform = document.getElementById('sync-platform').value;
+    const slug = document.getElementById('sync-slug').value.trim();
+    if (!slug) { toast('Enter a program slug', false); return; }
+    const btn = document.querySelector('button[onclick="syncProgram()"]');
+    btn.disabled = true; btn.textContent = 'Syncing...';
+    try {
+        const r = await api('/api/bb/sync', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ platform, slug, refresh: true }) });
+        if (r) {
+            toast(`Synced ${slug} — ${escapeHtml(r.name || '')}`, true);
+            document.getElementById('sync-slug').value = '';
+            loadPrograms();
+            showDetail(platform, slug);
+        }
+    } finally {
+        btn.disabled = false; btn.textContent = 'Sync Program';
+    }
+}
+
+async function discover() {
+    const platform = document.getElementById('sync-platform').value;
+    if (!confirm('Discover public programs for ' + platform + ' via API (may take a while)?')) return;
+    const btn = document.querySelector('button[onclick="discover()"]');
+    btn.disabled = true; btn.textContent = 'Discovering...';
+    try {
+        const r = await api('/api/bb/discover', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ platform }) });
+        if (r) { toast(`Discovery complete — ${(r.programs || []).length} programs`, true); loadPrograms(); }
+    } finally {
+        btn.disabled = false; btn.textContent = 'Discover';
+    }
+}
+
+async function syncAll() {
+    const btn = document.querySelector('button[onclick="syncAll()"]');
+    btn.disabled = true; btn.textContent = 'Syncing...';
+    try {
+        const r = await api('/api/bb/sync-all', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}) });
+        if (r) { toast(`Synced ${(r.synced || []).length} programs` + (r.failed && r.failed.length ? `, ${r.failed.length} failed` : ''), true); loadPrograms(); }
+    } finally {
+        btn.disabled = false; btn.textContent = '⟳ Sync All Cached';
+    }
+}
+
+// ---- programs ----
+async function loadPrograms() {
+    const platform = document.getElementById('filter-platform').value;
+    const search = document.getElementById('program-search').value.trim();
+    let qs = '?';
+    if (platform) qs += `platform=${encodeURIComponent(platform)}&`;
+    if (search) qs += `search=${encodeURIComponent(search)}&`;
+    const programs = await api('/api/bb/programs' + qs);
+    const tbody = document.getElementById('program-body');
+    if (!programs) return;
+    if (!programs.length) { tbody.innerHTML = '<tr><td colspan="7" class="text-gray-500">No cached programs. Sync one above.</td></tr>'; return; }
+    tbody.innerHTML = programs.map(p => {
+        const inc = (p.in_scope || []).length;
+        const out = (p.out_of_scope || []).length;
+        const scope = `${inc}<span class="text-gray-500">+${out}</span>`;
+        const bounties = p.offers_bounties ? '<span class="state-ok">yes</span>' : (p.offers_bounties === false ? '<span class="text-gray-500">no</span>' : '<span class="text-gray-500">?</span>');
+        const ts = escapeHtml((p.last_refreshed || '').slice(0, 16));
+        return `<tr>
+            <td>${platBadge(p.platform)}</td>
+            <td class="text-gray-200">${escapeHtml(p.name)}<div class="text-xs text-gray-500 font-mono">${escapeHtml(p.slug || '')}</div></td>
+            <td class="text-gray-400">${escapeHtml(p.state || 'unknown')}</td>
+            <td>${bounties}</td>
+            <td class="font-mono text-gray-300">${scope}</td>
+            <td class="text-gray-500">${ts}</td>
+            <td class="whitespace-nowrap">
+                <button data-p="${escapeHtml(p.platform)}" data-s="${escapeHtml(p.slug)}" class="view-btn text-indigo-400 hover:text-indigo-300">view</button>
+                <button data-p="${escapeHtml(p.platform)}" data-s="${escapeHtml(p.slug)}" class="import-btn text-green-400 hover:text-green-300 ml-2">import case</button>
+            </td>
+        </tr>`;
+    }).join('');
+    tbody.onclick = function(e) {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const p = btn.getAttribute('data-p'), s = btn.getAttribute('data-s');
+        if (btn.classList.contains('view-btn')) showDetail(p, s);
+        else if (btn.classList.contains('import-btn')) importCase(p, s);
+    };
+}
+
+// ---- detail ----
+async function showDetail(platform, slug) {
+    const wrap = document.getElementById('detail-wrap');
+    wrap.innerHTML = '<div class="bb-card text-sm text-gray-400">Loading detail...</div>';
+    wrap.classList.remove('hidden');
+    const prog = await api(`/api/bb/program?platform=${encodeURIComponent(platform)}&slug=${encodeURIComponent(slug)}`);
+    if (!prog) { wrap.classList.add('hidden'); return; }
+    const inScope = prog.in_scope || [];
+    const outScope = prog.out_of_scope || [];
+    const rewards = (prog.rewards || []).map(r => `<span class="text-gray-300 mr-2">${escapeHtml(r.min || '?')}${r.max ? ' – ' + escapeHtml(r.max) : ''} ${escapeHtml(r.currency || '')}</span>`).join('');
+
+    let scopeHtml = '<div class="overflow-x-auto max-h-80 overflow-y-auto"><table class="bb-tbl">';
+    scopeHtml += '<thead><tr><th>Identifier</th><th>Type</th><th>Eligible</th><th>Max sev</th></tr></thead><tbody>';
+    if (inScope.length) {
+        scopeHtml += inScope.map(e => `<tr><td class="scope-item text-gray-200">${escapeHtml(e.identifier)}</td><td class="text-gray-400">${escapeHtml(e.asset_type || '')}</td><td><span class="scope-eligible">in</span></td><td class="text-gray-400">${escapeHtml(e.max_severity || '')}</td></tr>`).join('');
+    }
+    if (outScope.length) {
+        scopeHtml += outScope.map(e => `<tr><td class="scope-item text-gray-500">${escapeHtml(e.identifier)}</td><td class="text-gray-500">${escapeHtml(e.asset_type || '')}</td><td><span class="scope-non-eligible">out</span></td><td class="text-gray-500">${escapeHtml(e.max_severity || '')}</td></tr>`).join('');
+    }
+    if (!inScope.length && !outScope.length) {
+        scopeHtml += '<tr><td colspan="4" class="text-gray-500">No scope data cached — hit refresh to fetch.</td></tr>';
+    }
+    scopeHtml += '</tbody></table></div>';
+
+    wrap.innerHTML = `<div class="bb-card">
+        <div class="flex items-start justify-between flex-wrap gap-2">
+            <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <h3 class="mb-0">${platBadge(prog.platform)} ${escapeHtml(prog.name)}</h3>
+                    <span class="text-gray-500 text-xs font-mono">${escapeHtml(prog.slug || '')}</span>
+                </div>
+                <div class="text-xs text-gray-500 mt-1">
+                    <a href="${escapeHtml(prog.url || '')}" target="_blank" class="text-indigo-400 hover:text-indigo-300">${escapeHtml(prog.url || '')}</a>
+                    &nbsp;·&nbsp; state: ${escapeHtml(prog.state || 'unknown')} · submissions: ${escapeHtml(prog.submission_state || 'unknown')}
+                    ${prog.offers_bounties ? ' · bounties: yes' : ''}
+                </div>
+                ${rewards ? `<div class="text-xs text-gray-400 mt-1">rewards: ${rewards}</div>` : ''}
+            </div>
+            <div class="flex gap-2">
+                <button onclick="refreshDetail('${escapeHtml(prog.platform)}', '${escapeHtml(prog.slug)}')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs font-medium transition-colors">Refresh</button>
+                <button onclick="importCase('${escapeHtml(prog.platform)}', '${escapeHtml(prog.slug)}')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-xs font-medium transition-colors">Import to Case</button>
+                <button onclick="closeDetail()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-xs font-medium transition-colors">Close</button>
+            </div>
+        </div>
+        <div class="mt-3">${scopeHtml}</div>
+    </div>`;
+    wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function refreshDetail(platform, slug) {
+    const wrap = document.getElementById('detail-wrap');
+    wrap.innerHTML = '<div class="bb-card text-sm text-gray-400">Refreshing from platform...</div>';
+    const r = await api('/api/bb/sync', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ platform, slug, refresh: true }) });
+    if (r) { toast('Refreshed ' + slug, true); loadPrograms(); showDetail(platform, slug); }
+}
+
+function closeDetail() {
+    document.getElementById('detail-wrap').classList.add('hidden');
+    document.getElementById('detail-wrap').innerHTML = '';
+}
+
+// ---- import ----
+async function importCase(platform, slug) {
+    const target = await api(`/api/bb/program?platform=${encodeURIComponent(platform)}&slug=${encodeURIComponent(slug)}`);
+    const name = target && target.name ? target.name : slug;
+    const caseId = prompt(`Create a case for "${name}"? Enter a case ID (empty = auto):`, `${platform}-${slug}`.replace(/[^a-zA-Z0-9_-]/g, '-'));
+    if (caseId === null) return;
+    const r = await api('/api/bb/import', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ platform, slug, case_id: caseId, include_assets: true }) });
+    if (r && r.case_id) {
+        toast(`Case ${r.case_id} — ${r.in_scope} in-scope, ${r.assets_created} assets created`, true);
+        if (confirm(`Open case ${r.case_id}?`)) window.location = '/case/' + encodeURIComponent(r.case_id);
+    }
+}
+
+// ---- reports ----
+function onReportPlatform() {
+    const yw = document.getElementById('report-platform').value === 'yeswehack';
+    document.getElementById('report-programs').classList.toggle('hidden', !yw);
+    document.getElementById('report-hint').textContent = yw
+        ? 'YesWeHack has no single "all my reports" endpoint — reports are pulled per program slug you manage (PAT role: BU Owner/Manager or Program Manager).'
+        : 'Requires HackerOne credentials.';
+}
+async function loadReports() {
+    const el = document.getElementById('reports-body');
+    const platform = document.getElementById('report-platform').value;
+    const programs = document.getElementById('report-programs').value.trim();
+    let qs = `?platform=${encodeURIComponent(platform)}&limit=50`;
+    if (programs) qs += `&programs=${encodeURIComponent(programs)}`;
+    const reports = await api('/api/bb/reports' + qs);
+    if (reports === null) {
+        const err = window.__lastApiError || 'unknown error';
+        el.innerHTML = `<span class="state-bad">Could not load reports: ${escapeHtml(err)}</span>`;
+        return;
+    }
+    if (!reports.length) { el.innerHTML = '<span class="text-gray-500">No reports found.</span>'; return; }
+    el.innerHTML = '<div class="overflow-x-auto"><table class="bb-tbl"><thead><tr><th>Title</th><th>Program</th><th>State</th><th>Severity</th><th>Bounty</th><th>Created</th></tr></thead><tbody>' +
+        reports.map(r => `<tr>
+            <td class="text-gray-200">${escapeHtml(r.title)}</td>
+            <td class="font-mono text-gray-400">${escapeHtml(r.program || '')}</td>
+            <td class="text-gray-400">${escapeHtml(r.state || '')}</td>
+            <td>${sevBadge(r.severity)}</td>
+            <td class="text-gray-300">${r.bounty_awarded ? 'awarded' : '<span class="text-gray-500">—</span>'}</td>
+            <td class="text-gray-500">${escapeHtml((r.created_at || '').slice(0, 10))}</td>
+        </tr>`).join('') + '</tbody></table></div>';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    onReportPlatform();
+    loadStatus();
+    loadPrograms();
+    loadReports();
+});
+</script>
+{% endblock %}

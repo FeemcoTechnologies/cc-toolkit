@@ -15,6 +15,7 @@
 <div class="flex gap-1 mb-4 border-b border-gray-800">
     <button onclick="switchToolTab('caido')" id="tab-caido" class="px-4 py-2 text-sm border-b-2 border-cyan-400 text-cyan-300 font-medium">Caido</button>
     <button onclick="switchToolTab('jupyter')" id="tab-jupyter" class="px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">JupyterLab</button>
+    <button onclick="switchToolTab('opencode')" id="tab-opencode" class="px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">OpenCode</button>
     <button onclick="switchToolTab('runner')" id="tab-runner" class="px-4 py-2 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-300">Runner</button>
 </div>
 
@@ -42,6 +43,24 @@
             <span>If blank, Jupyter blocks iframes. <a href="{{ config.jupyter_url }}/lab" target="_blank" class="underline">Open in new tab</a> instead.</span>
         </div>
         <iframe id="jupyter-frame" src="{{ config.jupyter_url }}/lab" class="w-full h-[700px]"></iframe>
+    </div>
+
+    <!-- OpenCode -->
+    <div id="panel-opencode" class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden mb-4 hidden">
+        <div class="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+            <span class="text-sm text-indigo-400 flex items-center gap-1">
+                <i data-lucide="bot" class="w-4 h-4"></i> OpenCode
+            </span>
+            <div class="flex items-center gap-3">
+                <a id="opencode-tools-launch" href="/ai" class="text-xs text-gray-500 hover:text-gray-300">Launch from AI page &rarr;</a>
+                <a href="{{ opencode_url }}" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300">Open in new tab &rarr;</a>
+            </div>
+        </div>
+        <div class="px-3 py-2 bg-yellow-900/20 border-b border-yellow-900/30 text-xs text-yellow-400 flex items-center gap-2">
+            <i data-lucide="alert-triangle" class="w-3 h-3 shrink-0"></i>
+            <span>OpenCode must be launched first from the <a href="/ai" class="underline">AI page</a>. If blank, it may block iframes. <a href="{{ opencode_url }}" target="_blank" class="underline">Open in new tab</a> instead.</span>
+        </div>
+        <iframe id="opencode-tools-frame" src="{{ opencode_url }}" class="w-full h-[700px]"></iframe>
     </div>
 
     <!-- Runner -->
@@ -247,7 +266,7 @@ let currentTab = 'caido';
 
 function switchToolTab(tab) {
     currentTab = tab;
-    ['caido', 'jupyter', 'runner'].forEach(t => {
+    ['caido', 'jupyter', 'opencode', 'runner'].forEach(t => {
         document.getElementById('panel-' + t).classList.toggle('hidden', t !== tab);
         const btn = document.getElementById('tab-' + t);
         if (t === tab) {

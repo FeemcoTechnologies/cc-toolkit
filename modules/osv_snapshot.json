@@ -1,0 +1,215 @@
+{
+  "generated_at": "2026-08-08T20:59:02.5739746-05:00",
+  "packages": [
+    {
+      "name": "flask",
+      "ecosystem": "PyPI",
+      "version": "3.1.3",
+      "vulns": []
+    },
+    {
+      "name": "pyyaml",
+      "ecosystem": "PyPI",
+      "version": "6.0.3",
+      "vulns": []
+    },
+    {
+      "name": "cryptography",
+      "ecosystem": "PyPI",
+      "version": "47.0.0",
+      "vulns": [
+        {
+          "id": "GHSA-537c-gmf6-5ccf",
+          "modified": "2026-06-16T19:59:26.897634Z",
+          "summary": "Vulnerable OpenSSL included in cryptography wheels",
+          "severity": "HIGH",
+          "cvss": "CVSS_V3:CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+          "fixed": "cryptography@48.0.1"
+        },
+        {
+          "id": "GHSA-g6cj-pr64-35w5",
+          "modified": "2026-08-04T21:26:57.762682Z",
+          "summary": "cryptography: PKCS#7 EnvelopedData decryption exposes a Bleichenbacher oracle through distinguishable errors and timing",
+          "severity": "HIGH",
+          "cvss": "CVSS_V4:CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+          "fixed": "cryptography@50.0.0"
+        },
+        {
+          "id": "GHSA-jwv3-5hgf-82ww",
+          "modified": "2026-08-05T08:56:56.745489Z",
+          "summary": "python-cryptography: Duplicate self-signed intermediates can cause exponential path-building",
+          "severity": "HIGH",
+          "cvss": "CVSS_V4:CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "fixed": "cryptography@49.0.0"
+        },
+        {
+          "id": "GHSA-m2h6-j472-rp4c",
+          "modified": "2026-08-05T08:56:57.182506Z",
+          "summary": "python-cryptography verifier accepts wildcard DNS names allowing escape from permittedSubtrees",
+          "severity": "MODERATE",
+          "cvss": "CVSS_V4:CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:L/VI:H/VA:N/SC:N/SI:N/SA:N/E:P",
+          "fixed": "cryptography@49.0.0"
+        },
+        {
+          "id": "PYSEC-2026-3552",
+          "modified": "2026-08-04T14:30:15.036332Z",
+          "summary": "cryptography: PKCS#7 EnvelopedData decryption exposes a Bleichenbacher oracle through distinguishable errors and timing",
+          "severity": "",
+          "cvss": "CVSS_V4:CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+          "fixed": "cryptography@50.0.0"
+        },
+        {
+          "id": "PYSEC-2026-3553",
+          "modified": "2026-08-04T14:30:26.222821Z",
+          "summary": "python-cryptography: Duplicate self-signed intermediates can cause exponential path-building",
+          "severity": "",
+          "cvss": "CVSS_V4:CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "fixed": "cryptography@49.0.0"
+        },
+        {
+          "id": "PYSEC-2026-3554",
+          "modified": "2026-08-04T14:30:26.230323Z",
+          "summary": "python-cryptography verifier accepts wildcard DNS names allowing escape from permittedSubtrees",
+          "severity": "",
+          "cvss": "CVSS_V4:CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:L/VI:H/VA:N/SC:N/SI:N/SA:N/E:P",
+          "fixed": "cryptography@49.0.0"
+        }
+      ]
+    },
+    {
+      "name": "dnspython",
+      "ecosystem": "PyPI",
+      "version": "2.7.0",
+      "vulns": []
+    },
+    {
+      "name": "mcp",
+      "ecosystem": "PyPI",
+      "version": "1.28.1",
+      "vulns": []
+    },
+    {
+      "name": "websockets",
+      "ecosystem": "PyPI",
+      "version": "16.0",
+      "vulns": []
+    },
+    {
+      "name": "weasyprint",
+      "ecosystem": "PyPI",
+      "version": "69.0",
+      "vulns": []
+    },
+    {
+      "name": "python-docx",
+      "ecosystem": "PyPI",
+      "version": "1.2.0",
+      "vulns": []
+    },
+    {
+      "name": "scapy",
+      "ecosystem": "PyPI",
+      "version": "2.7.0",
+      "vulns": []
+    },
+    {
+      "name": "netifaces",
+      "ecosystem": "PyPI",
+      "version": "0.11.0",
+      "vulns": []
+    },
+    {
+      "name": "papermill",
+      "ecosystem": "PyPI",
+      "version": "2.7.0",
+      "vulns": []
+    },
+    {
+      "name": "prompt-toolkit",
+      "ecosystem": "PyPI",
+      "version": "3.0.52",
+      "vulns": []
+    },
+    {
+      "name": "psutil",
+      "ecosystem": "PyPI",
+      "version": "7.1.0",
+      "vulns": []
+    },
+    {
+      "name": "chart.js",
+      "ecosystem": "npm",
+      "version": "4.5.1",
+      "vulns": []
+    },
+    {
+      "name": "chartjs-adapter-date-fns",
+      "ecosystem": "npm",
+      "version": "3.0.0",
+      "vulns": []
+    },
+    {
+      "name": "sortablejs",
+      "ecosystem": "npm",
+      "version": "1.15.7",
+      "vulns": []
+    },
+    {
+      "name": "xterm",
+      "ecosystem": "npm",
+      "version": "5.3.0",
+      "vulns": []
+    },
+    {
+      "name": "xterm-addon-fit",
+      "ecosystem": "npm",
+      "version": "0.8.0",
+      "vulns": []
+    },
+    {
+      "name": "xterm-addon-web-links",
+      "ecosystem": "npm",
+      "version": "0.9.0",
+      "vulns": []
+    },
+    {
+      "name": "quill",
+      "ecosystem": "npm",
+      "version": "2.0.3",
+      "vulns": [
+        {
+          "id": "GHSA-v3m3-f69x-jf25",
+          "modified": "2026-04-10T19:50:16.959742Z",
+          "summary": "Quill is vulnerable to XSS via HTML export feature",
+          "severity": "LOW",
+          "cvss": "CVSS_V3:CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N, CVSS_V4:CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N/E:P",
+          "fixed": ""
+        }
+      ]
+    },
+    {
+      "name": "turndown",
+      "ecosystem": "npm",
+      "version": "7.2.4",
+      "vulns": []
+    },
+    {
+      "name": "turndown-plugin-gfm",
+      "ecosystem": "npm",
+      "version": "1.0.2",
+      "vulns": []
+    },
+    {
+      "name": "marked",
+      "ecosystem": "npm",
+      "version": "18.0.9",
+      "vulns": []
+    },
+    {
+      "name": "vis-network",
+      "ecosystem": "npm",
+      "version": "10.1.1",
+      "vulns": []
+    }
+  ]
+}

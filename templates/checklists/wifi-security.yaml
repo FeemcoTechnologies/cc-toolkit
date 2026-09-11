@@ -1,0 +1,182 @@
+checklist_id: wifi-security
+title: WiFi Network Security Assessment Checklist
+description: >
+  Security testing checklist for wireless networks. Covers reconnaissance,
+  encryption cracking, enterprise authentication attacks, rogue devices,
+  denial of service, and Bluetooth/IoT proximity tests.
+version: "1.0"
+categories:
+  - name: Reconnaissance & Survey
+    items:
+      - id: WF-RS-1
+        description: Wardrive / survey all visible SSIDs, BSSIDs, channels, and signal strengths
+        mitre_attack: T1595
+        runbook: quick-recon
+      - id: WF-RS-2
+        description: Identify hidden (non-broadcast) SSIDs via deauth + probe
+        mitre_attack: T1595
+      - id: WF-RS-3
+        description: Fingerprint access point vendor via OUI and beacon frames
+      - id: WF-RS-4
+        description: Enumerate WPS-capable APs with PIN lockout status
+      - id: WF-RS-5
+        description: Map physical locations of APs with signal strength triangulation
+      - id: WF-RS-6
+        description: Document authorized vs rogue APs (baseline approved SSIDs)
+      - id: WF-RS-7
+        description: Check for PMKID in beacon frames (WPA3 transition mode leak)
+
+  - name: Encryption & Authentication Testing
+    items:
+      - id: WF-EA-1
+        description: Identify APs using WEP (weak IV, crackable in minutes)
+        mitre_attack: T1600
+      - id: WF-EA-2
+        description: Identify APs using WPA-PSK (TKIP) — legacy, attackable
+        mitre_attack: T1600
+      - id: WF-EA-3
+        description: Capture WPA 4-way handshake for PSK cracking
+        mitre_attack: T1110
+        runbook: password-audit-v2
+      - id: WF-EA-4
+        description: Capture PMKID hash from WPA2/WPA3 transition mode
+        mitre_attack: T1110
+      - id: WF-EA-5
+        description: Crack PSK with wordlist, rules, and GPU (hashcat mode 22000)
+        runbook: password-audit-v2
+      - id: WF-EA-6
+        description: Test WPA3-SAE with dictionary attack on password
+        mitre_attack: T1110
+      - id: WF-EA-7
+        description: Test WPA3 downgrade to WPA2 transition mode
+        mitre_attack: T1568
+      - id: WF-EA-8
+        description: Verify WPA3 SAE anti-clogging mechanism works
+
+  - name: Enterprise WiFi (WPA2/WPA3-Enterprise) Attacks
+    items:
+      - id: WF-EW-1
+        description: Capture EAP handshake (EAP-TTLS, PEAP, EAP-TLS) for offline attack
+        mitre_attack: T1558
+      - id: WF-EW-2
+        description: Rogue RADIUS server — capture credentials with hostapd-mana / eaphammer
+        mitre_attack: T1557
+      - id: WF-EW-3
+        description: PEAP / EAP-TTLS credential capture with captive portal
+        mitre_attack: T1557
+      - id: WF-EW-4
+        description: EAP-TLS certificate validation bypass — client cert not verified
+        mitre_attack: T1558
+      - id: WF-EW-5
+        description: Hostile portal attack — clone enterprise login page
+        mitre_attack: T1557
+      - id: WF-EW-6
+        description: Test for LDAP / RADIUS server user enumeration
+      - id: WF-EW-7
+        description: Check if enterprise AP sends anonymous identity request first
+
+  - name: Rogue Access Points & Evil Twin
+    items:
+      - id: WF-RA-1
+        description: Evil twin — same SSID, stronger signal, capture handshake
+        mitre_attack: T1557
+      - id: WF-RA-2
+        description: Rogue AP with NAT — DNS spoofing and traffic interception
+        mitre_attack: T1557
+      - id: WF-RA-3
+        description: Captive portal phishing on evil twin for credential capture
+        mitre_attack: T1557
+      - id: WF-RA-4
+        description: KARMA attack — respond to probe requests from known SSIDs
+        mitre_attack: T1557
+      - id: WF-RA-5
+        description: Known beacon SSID list attack (respond to all probes)
+        mitre_attack: T1557
+      - id: WF-RA-6
+        description: Detect rogue APs on the network via ARP / wireless IDS
+
+  - name: Deauthentication & Denial of Service
+    items:
+      - id: WF-DS-1
+        description: Deauth flood — disconnect all stations from target BSSID
+        mitre_attack: T1498
+      - id: WF-DS-2
+        description: Deauth specific client station
+        mitre_attack: T1498
+      - id: WF-DS-3
+        description: Beacon flood — create thousands of fake APs
+        mitre_attack: T1498
+      - id: WF-DS-4
+        description: CTS flood / virtual carrier sense DoS
+        mitre_attack: T1498
+      - id: WF-DS-5
+        description: Authentication flood (overwhelm AP auth table)
+        mitre_attack: T1498
+      - id: WF-DS-6
+        description: EAPOL-Logoff flood — force client disassociation
+        mitre_attack: T1498
+      - id: WF-DS-7
+        description: Test AP resilience against DoS (recovery time, logging)
+      - id: WF-DS-8
+        description: Channel switch announcement flood to confuse clients
+        mitre_attack: T1498
+
+  - name: Client-Side Attacks
+    items:
+      - id: WF-CS-1
+        description: Probe request sniffing — enumerate previously connected SSIDs
+        mitre_attack: T1595
+      - id: WF-CS-2
+        description: Probe response flooding — broadcast fake preferred SSIDs
+        mitre_attack: T1557
+      - id: WF-CS-3
+        description: Caffe-Latte attack — client deauth + ARP injection
+        mitre_attack: T1557
+      - id: WF-CS-4
+        description: WPA2 client AP roaming exploitation
+        mitre_attack: T1557
+      - id: WF-CS-5
+        description: Forge PMKID / cache attack on WPA3 clients
+
+  - name: Bluetooth & Proximity
+    items:
+      - id: WF-BT-1
+        description: Bluetooth device discovery and fingerprinting
+        mitre_attack: T1595
+      - id: WF-BT-2
+        description: Bluetooth PIN brute-force on legacy pairing
+        mitre_attack: T1110
+      - id: WF-BT-3
+        description: BLE (Bluetooth Low Energy) service enumeration
+      - id: WF-BT-4
+        description: BlueBorne vulnerability scan (CVE-2017-1000251)
+        mitre_attack: T1190
+      - id: WF-BT-5
+        description: BLE spoofing / MITM capture without pairing
+        mitre_attack: T1557
+      - id: WF-BT-6
+        description: NFC tag cloning / reading for access control bypass
+        mitre_attack: T1557
+
+  - name: Wireless Hardening Validation
+    items:
+      - id: WF-HV-1
+        description: Management frame protection (802.11w) enabled on all APs
+      - id: WF-HV-2
+        description: WPS disabled on all APs
+      - id: WF-HV-3
+        description: MAC filter not used as sole security (easily bypassed)
+      - id: WF-HV-4
+        description: Guest network isolated from corporate VLAN
+      - id: WF-HV-5
+        description: Enterprise WiFi uses server certificate validation
+      - id: WF-HV-6
+        description: AP firmware version current (no known vulns)
+      - id: WF-HV-7
+        description: TKIP / WPA-TKIP not in use (known MIC key recovery)
+      - id: WF-HV-8
+        description: PMF (Protected Management Frames) required, not optional
+      - id: WF-HV-9
+        description: Wireless intrusion prevention system (WIPS) deployed and monitoring
+      - id: WF-HV-10
+        description: AP management interface not accessible from wireless subnet

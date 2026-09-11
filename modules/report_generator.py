@@ -15,8 +15,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .config import COMPANY, TESTER, LOGO_RELPATH
+from .config import COMPANY, TESTER
 logger = logging.getLogger(__name__)
+
+# Upper bound for a raw <pre> passthrough block in _md_to_html_simple — if a
+# block never closes, force-close it so it can't swallow the rest of the report.
+_PRE_MAX_LINES = 500
 
 # Inline script for terminal-styling PoC <pre> blocks in exported HTML
 _POC_STYLE_SCRIPT = """<script>
@@ -310,7 +314,6 @@ def _section_assessment_overview(client: str = "", dates: str = "",
                                  case_data: dict = None) -> List[str]:
     cd = case_data or {}
     assessment_dates = cd.get("assessment_dates", "") or dates
-    name = client or cd.get("client", "") or "COMPANY"
     return [
         "## Assessment Overview",
         "",
@@ -545,7 +548,7 @@ def _render_evidence(evidence_records: List[dict], case_dir: Path) -> List[str]:
 
 
 def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[Path] = None) -> List[str]:
-    lines = ["## Pentest Findings", ""]
+    lines = ["## Findings", ""]
     if not findings:
         lines.append("_No findings documented._")
         lines.append("")
@@ -580,6 +583,11 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
         # CWE row
         cwe_str = cwe if cwe else "N/A"
         lines.append(f"| **CWE** | {me(cwe_str, table=True)} |")
+        # CVE row
+        cve_str = cve if cve else "N/A"
+        if isinstance(cve_str, (list, tuple)):
+            cve_str = ", ".join(str(c) for c in cve_str) if cve_str else "N/A"
+        lines.append(f"| **CVE** | {me(cve_str, table=True)} |")
         # CVSS row
         cvss_score = f.get("cvss_score")
         cvss_vector = f.get("cvss_vector", "")
@@ -589,7 +597,7 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
                 cvss_display += f" (`{cvss_vector}`)"
             lines.append(f"| **CVSS 3.1 Score** | {cvss_display} |")
         else:
-            lines.append(f"| **CVSS 3.1 Score** | N/A |")
+            lines.append("| **CVSS 3.1 Score** | N/A |")
         # Description (Incl. Root Cause)
         lines.append(f"| **Description (Incl. Root Cause)** | {me(desc or 'N/A', table=True)} |")
         # Security Impact
@@ -604,7 +612,7 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
             ref_str = "; ".join(me(r, table=True) for r in references[:5])
             lines.append(f"| **External References** | {ref_str} |")
         else:
-            lines.append(f"| **External References** | N/A |")
+            lines.append("| **External References** | N/A |")
 
         # Tags (optional)
         ftags = f.get("tags", [])
@@ -806,11 +814,37 @@ def _generate_screenshots_section(case_dir: Path) -> List[str]:
     return lines
 
 
+def _section_retest_findings(findings: List[dict]) -> List[str]:
+    """Generate a retest summary table for findings that have been retested."""
+    retested = [f for f in findings if f.get("retests")]
+    if not retested:
+        return []
+    lines = [
+        "## Retest Summary",
+        "",
+        "The following findings were retested after remediation:",
+        "",
+        "| Finding ID | Finding Title | Severity | Retest Status | Retest Notes | Tester |",
+        "|------------|--------------|----------|---------------|--------------|--------|",
+    ]
+    for f in retested:
+        last = f["retests"][-1]
+        fid = f.get("id", "?")
+        title = f.get("title", "?")
+        sev = f.get("severity", "info").upper()
+        rstatus = last.get("status", "?")
+        rnotes = (last.get("notes", "") or "")[:120]
+        rtester = last.get("tester", "") or "?"
+        lines.append(f"| {fid} | {_md_escape(title, table=True)} | {sev} | {rstatus} | {_md_escape(rnotes, table=True)} | {rtester} |")
+    lines.append("")
+    return lines
+
+
 def _render_report_markdown(case_data: dict, findings: List[dict],
                              case_dir: Optional[Path] = None,
-                             report_version: str = "1.0") -> str:
+                             report_version: str = "1.0",
+                             show_retest: bool = False) -> str:
     """Build the full Markdown report from sections. Pure Markdown — no HTML tags."""
-    case_id = case_data.get("case_id", "?")
     client = case_data.get("client", "") or "COMPANY"
     dates = case_data.get("created", "")[:10] or "DATES"
     cd = case_dir or Path()
@@ -818,19 +852,21 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
     sections = _sections_for_case(case_type)
     assessment_dates = case_data.get("assessment_dates", dates)
 
+    client_short = client.split("(")[0].strip() if "(" in client else client
     lines = [
-        "# Private Web Application",
-        "# Security Assessment",
+        f"# Private Web Application Security Assessment — {client_short}",
         "",
         "## Report of Findings",
         "",
-        f"**{client}**",
+        f"**Client:** {client}",
         "",
-        f"**{assessment_dates}**",
+        f"**Assessment Firm:** {COMPANY}",
         "",
-        f"**Version {report_version}**",
+        f"**Assessment Dates:** {assessment_dates}",
         "",
-        f"*Confidential — {COMPANY}*",
+        f"**Version:** {report_version}",
+        "",
+        f"*Confidential — {client}*",
         "",
         "---",
         "",
@@ -869,6 +905,10 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
             lines += _section_appendix_flags(cd, case_data)
         lines.append("")
 
+    # Add retest summary section (only when show_retest=True and retest data exists)
+    if show_retest:
+        lines += _section_retest_findings(findings)
+
     # Add evidence screenshots section (looks in case_dir/evidence/ for images)
     lines += _generate_screenshots_section(cd)
 
@@ -891,9 +931,10 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
 
 
 def _render_report_html(case_data: dict, findings: List[dict],
-                         case_dir: Optional[Path] = None) -> str:
+                         case_dir: Optional[Path] = None,
+                         show_retest: bool = False) -> str:
     """Build an HTML version of the same report with full styling (cover page, badges, page nums)."""
-    md = _render_report_markdown(case_data, findings, case_dir=case_dir)
+    md = _render_report_markdown(case_data, findings, case_dir=case_dir, show_retest=show_retest)
     md = re.sub(r'!\[([^\]]*)\]\(evidence/', r'![\1](../evidence/', md)
     case_id = case_data.get("case_id", "?")
     # Prepend logo to markdown so it appears on the cover page
@@ -920,7 +961,6 @@ def _md_to_html_simple(md: str) -> str:
     in_ol = False
     in_table = False
     table_header = False
-    page_break_active = False
 
     def close_ul():
         nonlocal in_ul
@@ -944,6 +984,7 @@ def _md_to_html_simple(md: str) -> str:
             in_table = False
 
     in_pre = False
+    pre_lines = 0
     in_table_html = False
 
     for line in md.split("\n"):
@@ -954,17 +995,25 @@ def _md_to_html_simple(md: str) -> str:
             html.append("</table>\n")
             in_table_html = False
 
-        # Raw HTML <pre> pass-through (used by evidence rendering)
+        # Raw HTML <pre> pass-through (used by evidence rendering).
+        # Content is expected to be pre-escaped by _render_evidence, so it is kept
+        # verbatim (no re-escape) — escaping it again would double-escape entities.
+        # A block that never closes is force-closed after _PRE_MAX_LINES so it
+        # can't swallow the rest of the document.
         if stripped.startswith("<pre"):
             close_ul()
             close_ol()
             close_table()
             html.append(stripped)
             in_pre = True
+            pre_lines = 0
+            if "</pre>" in stripped:
+                in_pre = False
             continue
         if in_pre:
             html.append(line + "\n")
-            if "</pre>" in stripped:
+            pre_lines += 1
+            if "</pre>" in stripped or pre_lines > _PRE_MAX_LINES:
                 in_pre = False
             continue
 
@@ -1141,7 +1190,7 @@ def _md_to_html_simple(md: str) -> str:
 # Public API — called by CLI and MCP server
 # ---------------------------------------------------------------------------
 
-def generate_engagement_report(case_dir: Path) -> str:
+def generate_engagement_report(case_dir: Path, show_retest: bool = False) -> str:
     """Generate both HTML and Markdown engagement reports.
 
     Returns path to the HTML report (for backward compatibility).
@@ -1153,7 +1202,7 @@ def generate_engagement_report(case_dir: Path) -> str:
     logo_tag = _logo_base64_tag(case_dir)
 
     # Generate Markdown report with base64 logo
-    md = _render_report_markdown(case_data, findings, case_dir=case_dir)
+    md = _render_report_markdown(case_data, findings, case_dir=case_dir, show_retest=show_retest)
     md = re.sub(r'!\[([^\]]*)\]\(evidence/', r'![\1](../evidence/', md)
     if logo_tag:
         md = f"{logo_tag}\n\n{md}"
@@ -1161,7 +1210,7 @@ def generate_engagement_report(case_dir: Path) -> str:
     md_path.write_text(md, encoding="utf-8")
 
     # Generate HTML report with full styling
-    html = _render_report_html(case_data, findings, case_dir=case_dir)
+    html = _render_report_html(case_data, findings, case_dir=case_dir, show_retest=show_retest)
     html_path = reports_dir / "engagement-report.html"
     html_path.write_text(html, encoding="utf-8")
 
@@ -1174,6 +1223,7 @@ def generate_obsidian_report(
     write_sections: bool = True,
     formats: Optional[List[str]] = None,
     report_version: str = "1.0",
+    show_retest: bool = False,
 ) -> Dict[str, str]:
     """Generate an Obsidian-compatible pentest report matching the template structure.
 
@@ -1189,7 +1239,7 @@ def generate_obsidian_report(
     Returns:
         Dict mapping format extension to file path, e.g. {'md': '/path/to/file.md', ...}
     """
-    from .constants import PENTEST_NOTES_DIR
+from .config import PENTEST_NOTES_DIR
     case_data, findings = _load_case(case_dir)
     case_id = case_data.get("case_id", "?")
     case_type = case_data.get("case_type", "pentest")
@@ -1274,7 +1324,7 @@ def generate_obsidian_report(
         report_lines.append(f"![[./Data/{section_name}]]\n")
 
     # Self-contained Markdown (for conversion to docx/pdf, no HTML tags)
-    flat = _render_report_markdown(case_data, findings, case_dir=case_dir)
+    flat = _render_report_markdown(case_data, findings, case_dir=case_dir, show_retest=show_retest)
 
     # Copy logo to Data/ for Obsidian vault embeds
     logo_tag = _logo_base64_tag(case_dir)
@@ -1815,6 +1865,38 @@ def _md_to_html_body(md_text: str, title: str = "") -> str:
   .page-break {{
     page-break-after: always;
   }}
+  /* Start each finding on a new page for print/PDF so sections line up */
+  h3[id^="finding-"] {{
+    page-break-before: always;
+    break-before: page;
+    border-top: 3px solid #1a1a2e;
+    padding-top: 0.8em;
+    margin-top: 1.5em;
+  }}
+  /* Keep findings readable on screen: no forced breaks, just a divider */
+  @media screen {{
+    h3[id^="finding-"] {{
+      page-break-before: auto;
+      break-before: auto;
+      border-top: 1px solid #ddd;
+      padding-top: 0.5em;
+    }}
+  }}
+  /* Avoid splitting tables/rows across pages */
+  table {{
+    page-break-inside: auto;
+  }}
+  tr {{
+    page-break-inside: avoid;
+  }}
+  tr, td, th {{
+    break-inside: avoid;
+  }}
+  /* Avoid splitting a finding's key/value table across pages */
+  h3 + table {{
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }}
   /* Horizontal rule */
   hr {{
     border: none;
@@ -1856,7 +1938,7 @@ def _md_to_html_full(md_text: str, title: str = "") -> str:
 
 def _find_logo(case_dir: Optional[Path] = None) -> Optional[Path]:
     """Search for the company logo in known template locations or case directory."""
-    from .constants import OBSIDIAN_DIR
+from .config import OBSIDIAN_DIR
     candidates = [
         OBSIDIAN_DIR / "Templates" / "Pentest Templates" / "Data" / "Logo Try 2.png",
         OBSIDIAN_DIR / "Templates" / "Pentest Templates" / "Data" / "Logo Try 2.jpg",
@@ -2140,8 +2222,8 @@ def _nmap_table(tree: ET.ElementTree) -> str:
             prod = svc.get("product", "") if svc is not None else ""
             ver = svc.get("version", "") if svc is not None else ""
             banner = f"{prod} {ver}".strip() if prod or ver else ""
-            rows.append(f"<tr><td>{ip_str}</td><td>{pid}</td>"
-                        f"<td>{state_str}</td><td>{svc_name}</td>"
+            rows.append(f"<tr><td>{_html_escape(ip_str)}</td><td>{_html_escape(pid)}</td>"
+                        f"<td>{_html_escape(state_str)}</td><td>{_html_escape(svc_name)}</td>"
                         f"<td>{_html_escape(banner)}</td></tr>")
     if not rows:
         return "<p>No open ports found.</p>"

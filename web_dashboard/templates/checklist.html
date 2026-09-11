@@ -1,0 +1,569 @@
+{% extends "base.html" %}
+{% block title %}{{ case.case_id }} / Checklist{% endblock %}
+{% block head %}
+<style>
+    .checklist-item { transition: all 0.15s ease; }
+    .checklist-item:hover { border-color: #6366f1; background: rgba(99, 102, 241, 0.05); }
+    .checklist-item.passed { border-left: 3px solid #22c55e; }
+    .checklist-item.failed { border-left: 3px solid #ef4444; }
+    .checklist-item.in_progress { border-left: 3px solid #f59e0b; }
+    .checklist-item.not_started { border-left: 3px solid #374151; }
+    .checklist-item.not_applicable { border-left: 3px solid #6b7280; opacity: 0.6; }
+    .status-badge { font-size: 0.65rem; padding: 0.125rem 0.5rem; border-radius: 999px; white-space: nowrap; }
+    .cat-header { cursor: pointer; user-select: none; }
+    .cat-header:hover { color: #e5e7eb; }
+    .cat-chevron { transition: transform 0.2s ease; }
+    .cat-chevron.open { transform: rotate(90deg); }
+    .progress-bar-bg { background: #1f2937; border-radius: 999px; height: 6px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; border-radius: 999px; transition: width 0.4s ease; }
+    .badge-owasp { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
+    .badge-mitre { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+    .instance-tab { cursor: pointer; }
+    .instance-tab.active { border-bottom: 2px solid #6366f1; color: #e5e7eb; }
+    .template-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50; display: flex; align-items: center; justify-content: center; }
+    .template-modal-content { background: #111827; border: 1px solid #374151; border-radius: 8px; max-width: 700px; width: 90%; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column; }
+</style>
+{% endblock %}
+{% block content %}
+{% set active_section = 'checklist' %}
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/{{ case.case_id }}" class="hover:text-gray-300">{{ case.case_id }}</a>
+  <span>/</span>
+  <span class="text-gray-400">Checklist</span>
+</nav>
+<div class="flex gap-4 items-start">
+{% include '_case_nav.html' %}
+<div class="min-w-0 flex-1">
+
+<div class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-2">
+        <i data-lucide="check-square" class="w-6 h-6 text-indigo-400"></i>
+        <h1 class="text-xl font-semibold">Checklist</h1>
+        <span class="text-xs text-gray-500" id="checklist-count">({{ checklists|length }})</span>
+    </div>
+    <div class="flex items-center gap-2">
+        <select id="template-select" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm">
+            <option value="">Select a template...</option>
+            {% for t in templates %}
+            <option value="{{ t.id }}">{{ t.title }}</option>
+            {% endfor %}
+        </select>
+        <button onclick="addChecklist(false)" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Add</button>
+        {% if checklists %}
+        <button onclick="addChecklist(true)" class="bg-yellow-700 hover:bg-yellow-600 px-3 py-1.5 rounded text-sm" title="Replace the last checklist">Replace</button>
+        {% endif %}
+        <button onclick="buildFromFindings(false)" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 rounded text-sm" title="Build a checklist instance from the case's findings">From Findings</button>
+        {% if checklists %}
+        <button onclick="buildFromFindings(true)" class="bg-yellow-700 hover:bg-yellow-600 px-3 py-1.5 rounded text-sm" title="Replace the last checklist with one built from findings">From Findings (replace)</button>
+        {% endif %}
+        <button onclick="openTemplateManager()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm flex items-center gap-1"><i data-lucide="settings" class="w-3.5 h-3.5"></i> Templates</button>
+    </div>
+</div>
+
+{% if not checklists %}
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-8 text-center">
+    <i data-lucide="clipboard-list" class="w-12 h-12 text-gray-600 mx-auto mb-3"></i>
+    <h2 class="text-lg font-semibold text-gray-300 mb-2">No Checklists</h2>
+    <p class="text-sm text-gray-500 mb-4">This case doesn't have any checklists yet. Initialize one from a template to get started.</p>
+    <div class="flex items-center justify-center gap-2">
+        <select id="template-select-empty" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
+            <option value="">Select a template...</option>
+            {% for t in templates %}
+            <option value="{{ t.id }}">{{ t.title }}</option>
+            {% endfor %}
+        </select>
+        <button onclick="initEmpty()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm">Initialize Checklist</button>
+        <button onclick="buildFromFindings(false)" class="bg-emerald-700 hover:bg-emerald-600 px-4 py-2 rounded text-sm">Build from Findings</button>
+    </div>
+</div>
+{% else %}
+<!-- Instance tabs -->
+<div class="flex gap-1 mb-3 border-b border-gray-800 overflow-x-auto">
+    {% for inst in checklists %}
+    <div class="instance-tab px-3 py-2 text-sm text-gray-500 {{ 'active' if loop.first }}" data-instance="{{ inst.instance_id }}" data-switch="{{ inst.instance_id }}" role="button">
+        {{ inst.title or 'Checklist' }}
+        <span class="text-xs text-gray-600 ml-1">#{{ loop.index }}</span>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Instance views -->
+{% for inst in checklists %}
+{% set iid = inst.instance_id %}
+{% set progress = {'total': 0, 'by_status': {}, 'completed': 0, 'percent': 0} %}
+{% set ns = namespace(items_total=0, items_passed=0, items_failed=0, items_in_progress=0, items_not_started=0, items_na=0) %}
+{% for cat in inst.get('categories', []) %}
+{% for item in cat.get('items', []) %}
+{% set s = inst.get('items', {}).get(item.id, {}).get('status', 'not_started') %}
+{% set ns.items_total = ns.items_total + 1 %}
+{% if s == 'passed' %}{% set ns.items_passed = ns.items_passed + 1 %}
+{% elif s == 'failed' %}{% set ns.items_failed = ns.items_failed + 1 %}
+{% elif s == 'in_progress' %}{% set ns.items_in_progress = ns.items_in_progress + 1 %}
+{% elif s == 'not_applicable' %}{% set ns.items_na = ns.items_na + 1 %}
+{% else %}{% set ns.items_not_started = ns.items_not_started + 1 %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% set pct = ((ns.items_passed + ns.items_na) / ns.items_total * 100)|round if ns.items_total else 0 %}
+
+<div class="instance-view" data-instance="{{ iid }}" {{ 'style=display:none' if not loop.first }}>
+    <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+            <span class="text-xs font-medium text-indigo-400">{{ inst.title }}</span>
+            <span class="text-xs text-gray-500">v{{ inst.template_version or '?' }}</span>
+            <span class="text-xs text-gray-600">created {{ (inst.created or '')[:10] }}</span>
+        </div>
+        <button data-del="{{ iid }}" class="text-xs text-red-500 hover:text-red-400 flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Delete</button>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-4">
+        <div class="flex items-center justify-between text-sm mb-2">
+            <span class="text-gray-400 progress-text-{{ iid }}">{{ ns.items_passed + ns.items_na }}/{{ ns.items_total }} completed</span>
+            <span class="text-gray-400 progress-pct-{{ iid }}">{{ pct }}%</span>
+        </div>
+        <div class="progress-bar-bg">
+            <div class="progress-bar-fill bg-indigo-500 progress-bar-{{ iid }}" style="width: {{ pct }}%"></div>
+        </div>
+        <div class="flex gap-3 mt-3 text-xs">
+            <span class="text-green-400">{{ ns.items_passed }} passed</span>
+            <span class="text-red-400">{{ ns.items_failed }} failed</span>
+            <span class="text-yellow-400">{{ ns.items_in_progress }} in progress</span>
+            <span class="text-gray-500">{{ ns.items_not_started }} not started</span>
+            <span class="text-gray-500">{{ ns.items_na }} N/A</span>
+        </div>
+    </div>
+
+    <!-- Categories -->
+    <div id="checklist-container-{{ iid }}">
+    {% for cat in inst.get('categories', []) %}
+    {% set cat_items = cat.get('items', []) %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 mb-3 overflow-hidden">
+        <div class="cat-header flex items-center justify-between px-4 py-3 bg-gray-800/50 border-b border-gray-800" onclick="toggleCat(this)">
+            <div class="flex items-center gap-2">
+                <i data-lucide="chevron-right" class="cat-chevron open w-4 h-4 text-gray-500"></i>
+                <span class="text-sm font-semibold text-gray-200">{{ cat.name }}</span>
+                <span class="text-xs text-gray-500">({{ cat_items|length }} items)</span>
+            </div>
+        </div>
+        <div class="cat-body">
+        {% for item in cat_items %}
+        {% set mid = item.id %}
+        {% set meta = inst.get('items', {}).get(mid, {}) %}
+        {% set status = meta.get('status', 'not_started') %}
+        {% set notes = meta.get('notes', '') %}
+        {% set finding_id = meta.get('finding_id', '') %}
+        {% set runbook = item.get('runbook', '') %}
+        <div class="checklist-item {{ status }} px-4 py-2.5 border-b border-gray-800 last:border-b-0" data-iid="{{ iid }}">
+            <div class="flex items-start gap-3">
+                <div class="pt-0.5">
+                    <select class="item-status-select text-xs bg-gray-800 border border-gray-700 rounded px-1 py-0.5 min-w-[90px]"
+                            data-item-id="{{ mid }}" data-instance-id="{{ iid }}"
+                            onchange="updateItemStatus('{{ iid }}', '{{ mid }}', this.value)">
+                        <option value="not_started" {{ 'selected' if status == 'not_started' }}>Not Started</option>
+                        <option value="in_progress" {{ 'selected' if status == 'in_progress' }}>In Progress</option>
+                        <option value="passed" {{ 'selected' if status == 'passed' }}>Passed</option>
+                        <option value="failed" {{ 'selected' if status == 'failed' }}>Failed</option>
+                        <option value="not_applicable" {{ 'selected' if status == 'not_applicable' }}>N/A</option>
+                    </select>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="text-sm text-gray-200">{{ item.description }}</span>
+                        {% if item.owasp %}
+                        <span class="status-badge badge-owasp">{{ item.owasp }}</span>
+                        {% endif %}
+                        {% if item.mitre_attack %}
+                        <span class="status-badge badge-mitre">{{ item.mitre_attack }}</span>
+                        {% endif %}
+                    </div>
+                    {% if notes %}
+                    <p class="text-xs text-gray-500 mt-1 italic">{{ notes }}</p>
+                    {% endif %}
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                    {% if finding_id %}
+                    <a href="/case/{{ case.case_id }}/finding/{{ finding_id }}" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                        <i data-lucide="search" class="w-3 h-3"></i> {{ finding_id }}
+                    </a>
+                    {% else %}
+                    <button data-quick-add="{{ iid }}" data-mid="{{ mid }}" data-desc="{{ item.description | e }}" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1" title="Add finding">
+                        <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
+                    </button>
+                    {% endif %}
+                    {% if runbook %}
+                    <button data-run="{{ iid }}" data-mid="{{ mid }}" data-runbook="{{ runbook }}" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1" title="Run: {{ runbook }}">
+                        <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                    </button>
+                    {% endif %}
+                    <button data-note="{{ iid }}" data-mid="{{ mid }}" class="text-xs {{ 'text-indigo-400' if notes else 'text-gray-500 hover:text-gray-300' }}" title="{{ 'Edit note' if notes else 'Add note' }}">
+                        {% if notes %}<i data-lucide="file-text" class="w-3.5 h-3.5"></i>{% else %}<i data-lucide="file-edit" class="w-3.5 h-3.5"></i>{% endif %}
+                    </button>
+                    <a href="/case/{{ case.case_id }}/notes" class="text-xs text-gray-600 hover:text-gray-400" title="View all notes">
+                        <i data-lucide="external-link" class="w-3 h-3"></i>
+                    </a>
+                </div>
+            </div>
+            <!-- Inline note editor -->
+            <div id="note-editor-{{ iid }}-{{ mid }}" class="note-editor" style="display:none; margin-top: 8px; padding: 8px; background: #1a1f2e; border: 1px solid #374151; border-radius: 6px;">
+                <textarea id="note-text-{{ iid }}-{{ mid }}" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm font-mono" rows="3" placeholder="Enter notes for this checklist item...">{{ notes }}</textarea>
+                <div class="flex items-center gap-2 mt-2">
+                    <button onclick="saveChecklistNote('{{ iid }}', '{{ mid }}', '{{ inst.title | e }}')" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded text-xs">Save</button>
+                    <button onclick="cancelNoteEditor('{{ iid }}', '{{ mid }}')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">Cancel</button>
+                    <span class="text-xs text-gray-600 ml-2" id="note-status-{{ iid }}-{{ mid }}"></span>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+
+</div>
+</div>
+
+<!-- Template Manager Modal -->
+<div id="template-modal" class="template-modal" style="display:none" onclick="if(event.target===this)closeTemplateManager()">
+<div class="template-modal-content">
+    <div class="flex items-center justify-between p-4 border-b border-gray-700">
+        <h2 class="text-lg font-semibold">Template Manager</h2>
+        <button onclick="closeTemplateManager()" class="text-gray-400 hover:text-white">&times;</button>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4">
+        <div class="flex gap-2 mb-4">
+            <button onclick="newTemplate()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">+ New Template</button>
+        </div>
+        <div id="template-list" class="space-y-2">
+            <p class="text-gray-500 text-sm">Loading...</p>
+        </div>
+        <div id="template-editor" style="display:none" class="mt-4 border-t border-gray-700 pt-4">
+            <h3 class="text-sm font-semibold mb-2" id="editor-title">Edit Template</h3>
+            <textarea id="template-source" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs font-mono h-64" placeholder="YAML template content..."></textarea>
+            <div class="flex gap-2 mt-2">
+                <button onclick="saveTemplate()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Save</button>
+                <button onclick="cancelEditTemplate()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function escapeHtml(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+let activeInstanceId = null;
+let editingTemplateId = null;
+
+function toggleCat(header) {
+    const body = header.nextElementSibling;
+    const chevron = header.querySelector('.cat-chevron');
+    if (body.style.display === 'none') {
+        body.style.display = 'block';
+        chevron.classList.add('open');
+    } else {
+        body.style.display = 'none';
+        chevron.classList.remove('open');
+    }
+}
+
+function switchInstance(id) {
+    document.querySelectorAll('.instance-view').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.instance-tab').forEach(el => el.classList.remove('active'));
+    document.querySelector('.instance-view[data-instance="' + id + '"]').style.display = '';
+    document.querySelector('.instance-tab[data-instance="' + id + '"]').classList.add('active');
+}
+
+function getTemplateValue() {
+    const s1 = document.getElementById('template-select');
+    const s2 = document.getElementById('template-select-empty');
+    return (s1 && s1.value) || (s2 && s2.value) || '';
+}
+
+async function addChecklist(replace) {
+    const template = getTemplateValue();
+    if (!template) { alert('Please select a template'); return; }
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/checklist/init', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({template, replace})
+        });
+        const result = await r.json();
+        if (result.status === 'ok') { location.reload(); }
+        else { alert('Error: ' + (result.error || 'unknown')); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function initEmpty() {
+    const sel = document.getElementById('template-select-empty');
+    const template = sel ? sel.value : '';
+    if (!template) { alert('Please select a template'); return; }
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/checklist/init', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({template})
+        });
+        const result = await r.json();
+        if (result.status === 'ok') { location.reload(); }
+        else { alert('Error: ' + (result.error || 'unknown')); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function buildFromFindings(replace) {
+    if (!confirm(replace ? 'Replace the last checklist with one built from this case\'s findings?' : 'Build a new checklist instance from this case\'s findings?')) return;
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/checklist/from-findings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({title: 'Findings Review', replace})
+        });
+        const result = await r.json();
+        if (result.status === 'ok') { location.reload(); }
+        else { alert('Error: ' + (result.error || 'unknown')); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function updateItemStatus(iid, itemId, status) {
+    try {
+        await fetch('/api/case/{{ case.case_id }}/checklist/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({item_id: itemId, status, instance_id: iid})
+        });
+        location.reload();
+    } catch (e) { console.error('Failed:', e); }
+}
+
+async function deleteInstance(iid) {
+    if (!confirm('Delete this checklist instance?')) return;
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/checklist/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({instance_id: iid})
+        });
+        const result = await r.json();
+        if (result.status === 'ok') { location.reload(); }
+        else { alert('Not found'); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function quickAddFinding(iid, itemId, desc) {
+    const title = prompt('Finding title:', desc || 'Checklist: ' + itemId);
+    if (!title) return;
+    const severity = prompt('Severity (info/low/medium/high/critical):', 'medium') || 'medium';
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/finding/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({title, severity, source: 'checklist:' + itemId, tags: ['checklist']})
+        });
+        const result = await r.json();
+        if (result.finding) {
+            await fetch('/api/case/{{ case.case_id }}/checklist/update', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({item_id: itemId, instance_id: iid, finding_id: result.finding.id})
+            });
+            location.reload();
+        } else { alert('Error: ' + (result.error || 'unknown')); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+function toggleNoteEditor(iid, itemId) {
+    const editor = document.getElementById('note-editor-' + iid + '-' + itemId);
+    if (editor.style.display !== 'none') {
+        editor.style.display = 'none';
+        return;
+    }
+    document.querySelectorAll('.note-editor').forEach(el => el.style.display = 'none');
+    editor.style.display = 'block';
+    const ta = document.getElementById('note-text-' + iid + '-' + itemId);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+
+function cancelNoteEditor(iid, itemId) {
+    document.getElementById('note-editor-' + iid + '-' + itemId).style.display = 'none';
+    document.getElementById('note-status-' + iid + '-' + itemId).textContent = '';
+}
+
+async function saveChecklistNote(iid, itemId, instTitle) {
+    const ta = document.getElementById('note-text-' + iid + '-' + itemId);
+    const note = ta.value.trim();
+    if (!note) {
+        document.getElementById('note-status-' + iid + '-' + itemId).textContent = 'Note is empty';
+        return;
+    }
+    const statusEl = document.getElementById('note-status-' + iid + '-' + itemId);
+    statusEl.textContent = 'Saving...';
+    try {
+        // Save to checklist item's notes field
+        const r1 = await fetch('/api/case/{{ case.case_id }}/checklist/update', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({item_id: itemId, instance_id: iid, notes: note})
+        });
+        if (!r1.ok) { statusEl.textContent = 'Error saving to checklist'; return; }
+
+        // Also create a proper case note entry linked to this checklist item
+        const noteBody = '**Checklist Item:** ' + itemId + '\n**Instance:** ' + instTitle + '\n\n' + note;
+        const r2 = await fetch('/api/case/{{ case.case_id }}/notes', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({body: noteBody, tags: ['checklist', itemId]})
+        });
+        const result = await r2.json();
+        if (result && !result.error) {
+            statusEl.textContent = 'Saved \u2713  (also in Notes)';
+        } else {
+            statusEl.textContent = 'Saved \u2713  (note save failed: ' + (result.error || 'unknown') + ')';
+        }
+        setTimeout(() => {
+            document.getElementById('note-editor-' + iid + '-' + itemId).style.display = 'none';
+            statusEl.textContent = '';
+            location.reload();
+        }, 1000);
+    } catch (e) { statusEl.textContent = 'Error: ' + e.message; }
+}
+
+async function runRunbook(iid, itemId, runbookName) {
+    if (!confirm('Run runbook "' + runbookName + '" for this item?')) return;
+    try {
+        const r = await fetch('/api/case/{{ case.case_id }}/runbook/run', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: runbookName, target: '{{ case.case_id }}'})
+        });
+        const result = await r.json();
+        if (result.job_id) {
+            alert('Runbook started (job: ' + result.job_id + ')');
+            await fetch('/api/case/{{ case.case_id }}/checklist/update', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({item_id: itemId, instance_id: iid, runbook_result: result.job_id})
+            });
+        } else { alert('Error: ' + (result.error || 'unknown')); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+// --- Template Manager ---
+async function openTemplateManager() {
+    document.getElementById('template-modal').style.display = 'flex';
+    await loadTemplateList();
+}
+
+function closeTemplateManager() {
+    document.getElementById('template-modal').style.display = 'none';
+    document.getElementById('template-editor').style.display = 'none';
+    editingTemplateId = null;
+}
+
+async function loadTemplateList() {
+    const el = document.getElementById('template-list');
+    try {
+        const r = await fetch('/api/checklist/templates');
+        const templates = await r.json();
+        if (!Array.isArray(templates) || templates.length === 0) {
+            el.innerHTML = '<p class="text-gray-500 text-sm">No templates yet. Create one.</p>';
+            return;
+        }
+        el.innerHTML = templates.map(t =>
+            '<div class="flex items-center justify-between bg-gray-800 rounded px-3 py-2">' +
+            '<div><span class="text-sm text-gray-200">' + escapeHtml(t.title) + '</span>' +
+            ' <span class="text-xs text-gray-500">(' + t.id + ' ' + (t.item_count||'?') + ' items)</span></div>' +
+            '<div class="flex gap-2">' +
+            '<button onclick="editTemplate(\'' + escapeHtml(t.id) + '\')" class="text-xs text-indigo-400 hover:text-indigo-300">Edit</button>' +
+            '<button onclick="deleteTemplate(\'' + escapeHtml(t.id) + '\')" class="text-xs text-red-400 hover:text-red-300">Delete</button>' +
+            '</div></div>'
+        ).join('');
+    } catch (e) {
+        el.innerHTML = '<p class="text-red-400 text-sm">Error loading templates: ' + e.message + '</p>';
+    }
+}
+
+async function editTemplate(id) {
+    editingTemplateId = id;
+    document.getElementById('editor-title').textContent = 'Edit Template: ' + id;
+    document.getElementById('template-editor').style.display = '';
+    try {
+        const r = await fetch('/api/checklist/templates/' + encodeURIComponent(id));
+        const data = await r.json();
+        document.getElementById('template-source').value = data.source || '';
+    } catch (e) {
+        alert('Error loading template: ' + e.message);
+    }
+}
+
+function newTemplate() {
+    const name = prompt('Template ID (e.g. my-checklist):');
+    if (!name) return;
+    editingTemplateId = name;
+    document.getElementById('editor-title').textContent = 'New Template: ' + name;
+    document.getElementById('template-editor').style.display = '';
+    document.getElementById('template-source').value =
+'checklist_id: ' + name + '\n' +
+'title: My Checklist\n' +
+'description: "Description here"\n' +
+'version: "1.0"\n' +
+'categories:\n' +
+'  - name: Category Name\n' +
+'    items:\n' +
+'      - id: C1\n' +
+'        description: Item description\n';
+}
+
+async function saveTemplate() {
+    const source = document.getElementById('template-source').value;
+    if (!source || !editingTemplateId) return;
+    try {
+        const r = await fetch('/api/checklist/templates/' + encodeURIComponent(editingTemplateId) + '/save', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source})
+        });
+        const result = await r.json();
+        if (result.status === 'ok') {
+            document.getElementById('template-editor').style.display = 'none';
+            editingTemplateId = null;
+            await loadTemplateList();
+        } else { alert('Error: ' + (result.error || 'unknown')); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+function cancelEditTemplate() {
+    document.getElementById('template-editor').style.display = 'none';
+    editingTemplateId = null;
+}
+
+async function deleteTemplate(id) {
+    if (!confirm('Delete template "' + id + '"?')) return;
+    try {
+        const r = await fetch('/api/checklist/templates/' + encodeURIComponent(id) + '/delete', {method: 'POST'});
+        const result = await r.json();
+        if (result.status === 'ok') { await loadTemplateList(); }
+        else { alert('Not found'); }
+    } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Delegated handler: values come from data-* attributes (attribute-escaped), never inline JS strings.
+document.addEventListener('click', function(e) {
+    const el = e.target.closest('[data-switch],[data-del],[data-quick-add],[data-run],[data-note]');
+    if (!el) return;
+    if (el.hasAttribute('data-switch')) { switchInstance(el.getAttribute('data-switch')); return; }
+    if (el.hasAttribute('data-del')) { deleteInstance(el.getAttribute('data-del')); return; }
+    if (el.hasAttribute('data-quick-add')) {
+        quickAddFinding(el.getAttribute('data-quick-add'), el.getAttribute('data-mid'), el.getAttribute('data-desc'));
+        return;
+    }
+    if (el.hasAttribute('data-run')) {
+        runRunbook(el.getAttribute('data-run'), el.getAttribute('data-mid'), el.getAttribute('data-runbook'));
+        return;
+    }
+    if (el.hasAttribute('data-note')) { toggleNoteEditor(el.getAttribute('data-note'), el.getAttribute('data-mid')); }
+});
+</script>
+{% endblock %}

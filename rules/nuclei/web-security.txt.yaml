@@ -1,0 +1,20 @@
+id: security-txt-check
+
+info:
+  name: Check for security.txt
+  author: ferasdour
+  severity: info
+  description: This template checks for the existence of a security.txt file (maybe useful to read sometimes)
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.well-known/security.txt"
+
+    matchers:
+      - type: word
+        words:
+          - "Contact:"
+          - "Encryption:"
+          - "Acknowledgments:"
+        part: body

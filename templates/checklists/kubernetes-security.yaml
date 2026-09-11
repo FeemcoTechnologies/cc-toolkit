@@ -1,0 +1,281 @@
+checklist_id: kubernetes-security
+title: Kubernetes Security Checklist (K8s / K3s / kubeadm)
+description: >
+  Security assessment checklist for Kubernetes distributions (k8s, k3s, kubeadm,
+  microk8s, minikube). Covers control plane hardening, etcd security, RBAC,
+  pod security, network policies, secrets, audit logging, admission control,
+  and node-level security. OpenShift-specific items are in a separate template.
+version: "1.0"
+categories:
+  - name: Control Plane & API Server Hardening
+    items:
+      - id: K8S-AP-1
+        description: Kubernetes version is current and within supported patch window
+        runbook: quick-recon
+      - id: K8S-AP-2
+        description: API server --anonymous-auth=false for non-RBAC users
+        mitre_attack: T1526
+      - id: K8S-AP-3
+        description: API server TLS cert validated, strong cipher suites enforced
+      - id: K8S-AP-4
+        description: API server audit logging enabled (--audit-log-path) with sufficient retention
+        mitre_attack: T1562
+      - id: K8S-AP-5
+        description: API server --enable-admission-plugins includes NodeRestriction, PodSecurity, etc.
+      - id: K8S-AP-6
+        description: API server --authorization-mode=Node,RBAC (not AlwaysAllow)
+        mitre_attack: T1078
+      - id: K8S-AP-7
+        description: API server --profiling=false to disable pprof endpoints
+      - id: K8S-AP-8
+        description: API server --service-account-key-file set, signing key rotated
+      - id: K8S-AP-9
+        description: API server not exposed to public internet (private/restricted network only)
+      - id: K8S-AP-10
+        description: RequestTimeout, MaxMutatingRequestInflight, MaxRequestsInflight tuned against DoS
+
+  - name: etcd Security
+    items:
+      - id: K8S-ET-1
+        description: etcd encryption at rest enabled (EncryptionConfiguration)
+        mitre_attack: T1562
+      - id: K8S-ET-2
+        description: etcd peer/client communication uses TLS with mutual auth
+      - id: K8S-ET-3
+        description: etcd network access restricted to control plane nodes only
+      - id: K8S-ET-4
+        description: etcd data directory permissions 700, owned by etcd user
+      - id: K8S-ET-5
+        description: etcd snapshots backed up encrypted and stored off-cluster
+      - id: K8S-ET-6
+        description: etcd --auto-compaction-retention set (prevent disk exhaustion)
+      - id: K8S-ET-7
+        description: Root TLS certificate used for etcd secure client is properly managed
+
+  - name: Kubelet & Node Security
+    items:
+      - id: K8S-KL-1
+        description: kubelet --anonymous-auth=false
+        mitre_attack: T1526
+      - id: K8S-KL-2
+        description: kubelet --read-only-port=0 (read-only API disabled)
+        mitre_attack: T1526
+      - id: K8S-KL-3
+        description: kubelet uses TLS client certificate authentication
+      - id: K8S-KL-4
+        description: kubelet --protect-kernel-defaults=true
+      - id: K8S-KL-5
+        description: kubelet --event-qps limited (prevent event spam DoS)
+      - id: K8S-KL-6
+        description: Node-level firewall restricts kubelet port (10250) to control plane
+        mitre_attack: T1049
+      - id: K8S-KL-7
+        description: Kernel hardening (sysctl) applied via kubelet config or init containers
+      - id: K8S-KL-8
+        description: K3s node token rotated from default install value
+      - id: K8S-KL-9
+        description: Node Operating System security patches current (CVE scan)
+      - id: K8S-KL-10
+        description: Container runtime (containerd/cri-o/docker) is current and patched
+
+  - name: RBAC & Access Control
+    items:
+      - id: K8S-RB-1
+        description: Cluster-admin role assigned to minimum necessary service accounts
+        mitre_attack: T1078
+      - id: K8S-RB-2
+        description: No users directly bound to cluster-admin via ClusterRoleBinding
+        mitre_attack: T1098
+      - id: K8S-RB-3
+        description: Custom roles follow least privilege (no wildcards in verbs/resources)
+        mitre_attack: T1078
+      - id: K8S-RB-4
+        description: Service account token automount disabled for workloads that don't need API access
+      - id: K8S-RB-5
+        description: Regular audit of RoleBindings and ClusterRoleBindings performed
+      - id: K8S-RB-6
+        description: No anonymous or unauthenticated API access to cluster resources
+        mitre_attack: T1526
+      - id: K8S-RB-7
+        description: Impersonation headers (Impersonate-User/Group) restricted
+        mitre_attack: T1098
+      - id: K8S-RB-8
+        description: 'Tokens for default service accounts not created in namespaces (automountServiceAccountToken: false)'
+      - id: K8S-RB-9
+        description: SubjectAccessReview used for fine-grained permission checks
+
+  - name: Pod Security & Workload Hardening
+    items:
+      - id: K8S-PS-1
+        description: Pod Security Standards (PSA) enforced at namespace level (baseline/restricted)
+      - id: K8S-PS-2
+        description: 'Containers not running as root (securityContext.runAsNonRoot: true)'
+        mitre_attack: T1611
+      - id: K8S-PS-3
+        description: 'Privileged containers not allowed (securityContext.privileged: false)'
+        mitre_attack: T1611
+      - id: K8S-PS-4
+        description: 'Container filesystem mounted read-only (readOnlyRootFilesystem: true)'
+      - id: K8S-PS-5
+        description: Linux capabilities dropped (NET_RAW, SYS_ADMIN, DAC_OVERRIDE, etc.)
+        mitre_attack: T1611
+      - id: K8S-PS-6
+        description: hostNetwork access not granted to workloads unless explicitly required
+      - id: K8S-PS-7
+        description: hostPID / hostIPC sharing disabled for workloads
+      - id: K8S-PS-8
+        description: Pod resource limits (CPU/memory) defined to prevent resource exhaustion
+      - id: K8S-PS-9
+        description: PodDisruptionBudget configured for critical workloads
+      - id: K8S-PS-10
+        description: Seccomp profile applied (RuntimeDefault or custom)
+        mitre_attack: T1611
+      - id: K8S-PS-11
+        description: AppArmor / SELinux profile applied to pods
+      - id: K8S-PS-12
+        description: Pod priority classes prevent preemption of critical system pods
+      - id: K8S-PS-13
+        description: K3s --disable-agent (if running embedded etcd-only) not leaking services
+
+  - name: Network Security
+    items:
+      - id: K8S-NW-1
+        description: NetworkPolicy objects exist with default deny ingress/egress
+        mitre_attack: T1049
+      - id: K8S-NW-2
+        description: Ingress/egress traffic explicitly allowed, nothing implicit
+      - id: K8S-NW-3
+        description: No LoadBalancer services exposing internal workloads to internet
+      - id: K8S-NW-4
+        description: NodePort services not used in production, or restricted via --node-port-range
+      - id: K8S-NW-5
+        description: Cluster CIDR (--cluster-cidr, --service-cidr) not overlapping with other networks
+      - id: K8S-NW-6
+        description: Ingress controllers enforce TLS termination, no plain HTTP allowed
+      - id: K8S-NW-7
+        description: mTLS between services via service mesh (Istio, Linkerd) or Cilium NetworkPolicy
+      - id: K8S-NW-8
+        description: DNS spoofing protection — CoreDNS/CNI configured securely
+      - id: K8S-NW-9
+        description: K3s built-in Traefik ingress hardened (dashboard disabled, proper auth)
+      - id: K8S-NW-10
+        description: Cilium/Kube-OVN/Calico network policies tested with actual connectivity probes
+
+  - name: Secrets & Data Protection
+    items:
+      - id: K8S-SC-1
+        description: Secrets not stored in environment variables (prefer volumes or CSI)
+      - id: K8S-SC-2
+        description: External Secrets Operator / SealedSecrets used for GitOps workflows
+      - id: K8S-SC-3
+        description: Secrets encrypted at rest via EncryptionConfiguration
+      - id: K8S-SC-4
+        description: Secrets not checked into Git repositories
+        mitre_attack: T1552
+      - id: K8S-SC-5
+        description: HashiCorp Vault / cloud KMS CSI driver for automated secret rotation
+      - id: K8S-SC-6
+        description: Service account tokens not used as secrets for external authentication
+      - id: K8S-SC-7
+        description: ConfigMaps do not contain sensitive data (passwords, keys, certs)
+      - id: K8S-SC-8
+        description: PersistentVolume access modes restrict multi-pod access when not intended
+
+  - name: Admission Control & Policy Engines
+    items:
+      - id: K8S-AC-1
+        description: PodSecurity admission plugin enabled (built-in, PSA levels set)
+      - id: K8S-AC-2
+        description: OPA / Gatekeeper installed with policy-as-code for critical constraints
+        mitre_attack: T1611
+      - id: K8S-AC-3
+        description: Kyverno policies applied for pod security, label validation, and annotations
+      - id: K8S-AC-4
+        description: ValidatingAdmissionWebhooks prevent dangerous configurations (privileged escalation)
+      - id: K8S-AC-5
+        description: MutatingAdmissionWebhooks audited for unintended side effects
+      - id: K8S-AC-6
+        description: Image policy webhook (e.g., Ratify/Portieris) enforces signature verification
+        mitre_attack: T1195
+      - id: K8S-AC-7
+        description: K3s built-in admission plugins not disabled in kube-apiserver args
+
+  - name: Image & Container Registry Security
+    items:
+      - id: K8S-IR-1
+        description: Image signing (cosign/notation) verified via admission webhook
+        mitre_attack: T1195
+      - id: K8S-IR-2
+        description: Image vulnerability scanning integrated (Trivy, Grype, Clair)
+      - id: K8S-IR-3
+        description: No images tagged latest — pinned digests in production deployments
+      - id: K8S-IR-4
+        description: ImagePullSecrets scoped per namespace, not shared across namespaces
+      - id: K8S-IR-5
+        description: Base images from trusted registries, minimal distroless preferred
+      - id: K8S-IR-6
+        description: Image immutability enforced — no overwriting existing tags in registry
+
+  - name: Audit Logging & Monitoring
+    items:
+      - id: K8S-ML-1
+        description: API server audit logs shipped to external SIEM (Splunk, Loki, ELK)
+        mitre_attack: T1562
+      - id: K8S-ML-2
+        description: Falco / Tracee for runtime threat detection (syscall-level)
+      - id: K8S-ML-3
+        description: kube-bench / kube-hunter scheduled scans for CIS benchmark compliance
+      - id: K8S-ML-4
+        description: Kubernetes events monitored for suspicious patterns (CrashLoopBackOff, ImagePullBackOff)
+      - id: K8S-ML-5
+        description: Cluster metrics and alerts for anomalous API call patterns (403/401 spikes)
+      - id: K8S-ML-6
+        description: Node metrics (CPU/memory/disk) monitored for resource exhaustion attacks
+      - id: K8S-ML-7
+        description: Audit policy set to log RequestResponse for sensitive resources (secrets, configmaps)
+
+  - name: Supply Chain & CI/CD Security
+    items:
+      - id: K8S-SC-1
+        description: CI/CD pipeline service account follows least-privilege RBAC
+        mitre_attack: T1078
+      - id: K8S-SC-2
+        description: Image builds run in isolated namespaces with resource limits
+      - id: K8S-SC-3
+        description: GitOps tool (ArgoCD, Flux) uses webhook secret verification for commit authenticity
+      - id: K8S-SC-4
+        description: SBOM generated for all production container images
+      - id: K8S-SC-5
+        description: CI/CD secrets not exposed in build logs or environment variables
+      - id: K8S-SC-6
+        description: Git repository branch protection + signed commits enforced for deploy branches
+
+  - name: Multi-tenancy & Isolation (K3s / Cluster Sharing)
+    items:
+      - id: K8S-MT-1
+        description: K3s --data-dir permissions restrict access to root only
+      - id: K8S-MT-2
+        description: Namespace resource quotas set to prevent noisy-neighbor DoS
+      - id: K8S-MT-3
+        description: LimitRange objects defined per namespace for default resource constraints
+      - id: K8S-MT-4
+        description: NetworkPolicy default deny cross-namespace traffic enforced
+      - id: K8S-MT-5
+        description: K3s built-in servicelb not used in multi-tenant clusters (CNI LB preferred)
+      - id: K8S-MT-6
+        description: Pod anti-affinity rules prevent co-location of sensitive workloads
+      - id: K8S-MT-7
+        description: RuntimeClass (gVisor/Kata Containers) for untrusted workload isolation
+
+  - name: Backup, Disaster Recovery & Resilience
+    items:
+      - id: K8S-DR-1
+        description: etcd snapshots automated and stored off-cluster
+      - id: K8S-DR-2
+        description: Cluster state backed up (Velero/Ark) with application consistent snapshots
+      - id: K8S-DR-3
+        description: Backup restoration tested regularly (documented RTO/RPO)
+      - id: K8S-DR-4
+        description: K3s embedded etcd backup plan documented (k3s etcd-snapshot)
+      - id: K8S-DR-5
+        description: Multi-master / HA control plane configured for production clusters

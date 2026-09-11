@@ -1,14 +1,30 @@
-import logging
 """Findings database — structured findings per case."""
 
 import datetime
 import json
+import logging
 import os
-import tempfile
 import threading
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
+
+from .config import CASES_DIR
 logger = logging.getLogger(__name__)
+
+# Module-level per-case locks shared across ALL FindingsDB instances. The MCP
+# layer builds a fresh instance per call, so per-instance locks would never
+# serialize concurrent writers and would allow lost updates on the same case.
+_DB_LOCKS = {}
+_DB_LOCKS_GUARD = threading.Lock()
+
+
+def _db_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _DB_LOCKS_GUARD:
+        if key not in _DB_LOCKS:
+            _DB_LOCKS[key] = threading.Lock()
+        return _DB_LOCKS[key]
 
 
 class FindingsDB:
@@ -17,22 +33,45 @@ class FindingsDB:
     SEVERITIES = ["info", "low", "medium", "high", "critical"]
 
     def __init__(self, case_dir: Path):
-        self.case_dir = Path(case_dir)
+        self.case_dir = Path(case_dir).resolve()
+        base = Path(CASES_DIR).resolve()
+        if os.path.commonpath([str(self.case_dir), str(base)]) != str(base):
+            raise ValueError(f"Invalid case directory: {self.case_dir}")
         self._path = self.case_dir / "findings.json"
-        self._lock = threading.Lock()
+        self._lock = _db_lock(self._path)
 
     def _read(self) -> dict:
         if self._path.exists():
             try:
                 return json.loads(self._path.read_text())
             except (json.JSONDecodeError, ValueError, OSError):
+                # Never silently drop a corrupt file — back it up so data
+                # isn't lost when the next write overwrites it.
+                logger.warning("Corrupt findings.json at %s; backing up before reset", self._path)
+                try:
+                    backup = self._path.with_name(
+                        f"findings.json.corrupt-{int(datetime.datetime.now().timestamp())}")
+                    self._path.rename(backup)
+                except OSError:
+                    pass
                 return {"findings": [], "_counter": 0}
         return {"findings": [], "_counter": 0}
 
     def _write(self, data: dict):
         tmp = self._path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, default=str))
-        tmp.replace(self._path)
+        # On Windows, an antivirus/antimalware transient scan can briefly hold
+        # the destination open, making os.replace fail with PermissionError.
+        # Retry a few times before giving up so a concurrent writer doesn't
+        # silently drop the whole file.
+        for attempt in range(10):
+            try:
+                tmp.replace(self._path)
+                return
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
 
     def add(self, title: str, severity: str = "medium",
             description: str = "", remediation: str = "",
@@ -41,7 +80,8 @@ class FindingsDB:
             poc: str = "", references: list = None,
             command_output: str = "",
             cvss_score: float = None, cvss_vector: str = "",
-            tags: list = None, affected_hosts: str = "") -> dict:
+            tags: list = None, affected_hosts: str = "",
+            cpe: str = "") -> dict:
         if severity not in self.SEVERITIES:
             severity = "medium"
         finding = {
@@ -63,6 +103,7 @@ class FindingsDB:
             "cvss_score": cvss_score,
             "cvss_vector": cvss_vector or "",
             "tags": tags or [],
+            "cpe": cpe,
             "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "updated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
@@ -131,7 +172,7 @@ class FindingsDB:
                    "evidence_refs", "status", "source",
                    "cve", "cwe", "impact", "poc", "references",
                    "command_output", "cvss_score", "cvss_vector", "tags",
-                   "affected_hosts"}
+                   "affected_hosts", "cpe"}
         with self._lock:
             data = self._read()
             for f in data["findings"]:
@@ -158,6 +199,62 @@ class FindingsDB:
 
     def close(self, finding_id: str) -> Optional[dict]:
         return self.update(finding_id, status="closed_other")
+
+    # ---- Retest support ----
+
+    def add_retest(self, finding_id: str, status: str,
+                   notes: str = "", tester: str = "") -> Optional[dict]:
+        """Add a retest entry to a finding. Status: resolved, not_resolved, partial."""
+        if status not in ("resolved", "not_resolved", "partial"):
+            return None
+        retest = {
+            "id": None,
+            "tester": tester,
+            "status": status,
+            "notes": notes,
+            "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        with self._lock:
+            data = self._read()
+            for f in data["findings"]:
+                if f["id"] == finding_id:
+                    retests = f.setdefault("retests", [])
+                    # Use max existing id + 1 so a retest id is never reused
+                    # after delete_retest removes an entry.
+                    counter = max(
+                        (int(r["id"][1:]) for r in retests
+                         if r.get("id", "")[1:].isdigit()),
+                        default=0,
+                    ) + 1
+                    retest["id"] = f"R{counter:03d}"
+                    retests.append(retest)
+                    f["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    self._write(data)
+                    return dict(retest)
+        return None
+
+    def get_retests(self, finding_id: str) -> List[dict]:
+        """Return all retest entries for a finding."""
+        with self._lock:
+            for f in self._read()["findings"]:
+                if f["id"] == finding_id:
+                    return list(f.get("retests", []))
+        return []
+
+    def delete_retest(self, finding_id: str, retest_id: str) -> bool:
+        """Remove a retest entry from a finding."""
+        with self._lock:
+            data = self._read()
+            for f in data["findings"]:
+                if f["id"] == finding_id:
+                    before = len(f.get("retests", []))
+                    f["retests"] = [r for r in f.get("retests", [])
+                                    if r.get("id") != retest_id]
+                    if len(f["retests"]) < before:
+                        f["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        self._write(data)
+                        return True
+        return False
 
     def summary(self) -> dict:
         with self._lock:

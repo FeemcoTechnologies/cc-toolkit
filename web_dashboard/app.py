@@ -15,7 +15,11 @@ import os
 import re
 import secrets
 import shlex
+import socket
+import tempfile
+import threading
 import time
+import urllib.parse
 import shutil
 import sys
 import subprocess
@@ -23,13 +27,15 @@ import traceback
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file, session, redirect
+from flask import Flask, jsonify, render_template, request, send_file, session, redirect, url_for
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from modules.case_manager import CaseManager
 from modules.config import CASES_DIR, load_config, BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
 from modules.findings_db import FindingsDB
+from modules.checklist_manager import (ChecklistInstance, list_templates as list_checklist_templates,
+                                         get_template_source, _save_template, _delete_template)
 from modules.tag_refs import resolve as resolve_tag, search as search_tags
 from modules.job_queue import get_job_manager, run_in_thread
 try:
@@ -54,9 +60,12 @@ CASES_DIR.mkdir(parents=True, exist_ok=True)
 CFG = load_config()
 
 _ws_port = int(os.environ.get("CC_WS_PORT", 5001))
+_opencode_port = int(CFG.get("opencode_port", 4096))
 DASHBOARD_CONFIG = {
     "jupyter_url": CFG.get("jupyter_url", "http://127.0.0.1:8888"),
     "caido_url": CFG.get("caido_url", "http://127.0.0.1:8080"),
+    "opencode_url": CFG.get("opencode_url", f"http://127.0.0.1:{_opencode_port}"),
+    "opencode_port": _opencode_port,
     "ai_tunnel_target": CFG.get("ai_tunnel_target", "127.0.0.1"),
     "listen_host": CFG.get("dashboard_host", "0.0.0.0"),
     "listen_port": CFG.get("dashboard_port", 5000),
@@ -69,6 +78,17 @@ DASHBOARD_CONFIG = {
 }
 
 API_KEY = CFG.get("dashboard_api_key", "")
+
+
+def _safe_int(value, default):
+    """Coerce a user-supplied value to int, else return default.
+    Returns (int, True) on success or (default, False) when unparseable."""
+    try:
+        if value is None or value == "":
+            return default, True
+        return int(value), True
+    except (ValueError, TypeError):
+        return default, False
 
 # ---------------------------------------------------------------------------
 # Case type icons & colors (used in templates)
@@ -96,6 +116,30 @@ CASE_TYPE_COLORS = {
     "forensics": "#10b981",
     "osint": "#6366f1",
 }
+
+# ---------------------------------------------------------------------------
+# Case lookup helpers (dedupe ~20 routes that do the same case-404 dance)
+# ---------------------------------------------------------------------------
+def _get_case(case_id: str):
+    """Return case info dict, or None if the case is missing/invalid."""
+    try:
+        return CaseManager().info(case_id)
+    except Exception:
+        return None
+
+
+def _case_or_404(case_id: str, html: bool = False):
+    """Resolve a case or return a (info, None) / (None, response_404) pair.
+
+    Routes call ``info, err = _case_or_404(case_id)`` and ``return err`` when
+    err is truthy. ``html=True`` renders the error page instead of JSON."""
+    info = _get_case(case_id)
+    if info is not None:
+        return info, None
+    if html:
+        return None, (render_template("error.html", message="Case not found"), 404)
+    return None, (jsonify({"error": "Case not found"}), 404)
+
 
 # ---------------------------------------------------------------------------
 # Debug logging ring buffer + file log
@@ -130,20 +174,22 @@ def log_debug(level: str, msg: str):
 # Optional API key auth
 # ---------------------------------------------------------------------------
 def _check_auth():
-    """Check API key header OR session CSRF token (header or JSON body)."""
+    """Check session login OR API key header OR session CSRF token."""
     if not API_KEY:
         return True
+    if session.get("_authed"):
+        return True
     key = request.headers.get("X-API-Key", "")
-    if key == API_KEY:
+    if API_KEY and secrets.compare_digest(key, API_KEY):
         return True
     csrf_hdr = request.headers.get("X-CSRF-Token", "")
     sess_token = session.get("_csrf_token", "")
-    log_debug("AUTH", f"key={key!r} csrf_hdr={csrf_hdr[:16]!r} sess={sess_token[:16]!r}")
+    log_debug("AUTH", f"key={'present' if key else 'absent'} csrf_hdr={csrf_hdr[:8]!r} sess={sess_token[:8]!r}")
     if csrf_hdr and csrf_hdr == sess_token:
         return True
     body = request.get_json(silent=True) or {}
     body_token = body.get("csrf_token", "")
-    log_debug("AUTH", f"body_token={body_token[:16]!r} sess={sess_token[:16]!r}")
+    log_debug("AUTH", f"body_token={'present' if body_token else 'absent'} sess={'present' if sess_token else 'absent'}")
     if body_token and body_token == sess_token:
         return True
     return False
@@ -157,12 +203,11 @@ def require_api_key(f):
     return wrapper
 
 def require_api_key_html(f):
-    """For HTML pages: redirect to home if no key (only when API_KEY is set)."""
+    """For HTML pages: redirect to the login page when not authenticated."""
     @wraps(f)
     def wrapper(*a, **kw):
         if not _check_auth():
-            return render_template("error.html",
-                                   message="Unauthorized — provide X-API-Key header"), 401
+            return redirect(url_for("login", next=request.path))
         return f(*a, **kw)
     return wrapper
 
@@ -211,6 +256,41 @@ def csrf_required(f):
         return f(*a, **kw)
     return wrapper
 
+# ---------------------------------------------------------------------------
+# Login / logout (browser entry point for the dashboard API key)
+# ---------------------------------------------------------------------------
+def _safe_next_url(value):
+    """Same-origin relative redirects only (open-redirect guard)."""
+    value = (value or "/").strip()
+    if not value.startswith("/") or value.startswith("//"):
+        return "/"
+    return value
+
+
+@app.route("/login", methods=["GET", "POST"])
+@csrf_required
+def login():
+    if not API_KEY:
+        return redirect(url_for("index"))
+    if _check_auth():
+        return redirect(url_for("index"))
+    next_url = _safe_next_url(request.args.get("next") or request.form.get("next") or "/")
+    if request.method == "POST":
+        key = request.form.get("api_key", "")
+        if API_KEY and secrets.compare_digest(key, API_KEY):
+            session["_authed"] = True
+            return redirect(next_url)
+        return render_template("login.html",
+                               error="Invalid API key",
+                               next=next_url), 401
+    return render_template("login.html", next=next_url)
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    session.pop("_authed", None)
+    return redirect(url_for("login"))
+
 @app.context_processor
 def inject_csrf_token():
     """Make csrf_token() available in all Jinja2 templates."""
@@ -228,7 +308,7 @@ def _run_cc_command(cmd_str: str) -> dict:
         "wordlists", "recon", "web", "ad", "exploit", "wifi", "forensics",
         "case", "ir", "playbook", "report", "findings", "tools", "infra",
         "kerberos", "bloodhound", "nmap", "browser", "dns", "ref", "binary",
-        "history", "flashcards",
+        "history", "flashcards", "appsec", "dast", "bin-surface",
     }
     try:
         parts = shlex.split(cmd_str)
@@ -320,29 +400,19 @@ def _save_dashboard_layout(widgets: list):
 @app.route("/")
 @require_api_key_html
 def index():
-    cm = CaseManager()
-    cases = cm.list_cases()
-    for c in cases:
-        ctype = c.get("type", "pentest")
-        c["icon"] = CASE_TYPE_ICONS.get(ctype, "folder")
-        c["color"] = CASE_TYPE_COLORS.get(ctype, "#6b7280")
+    # The home page is widget-driven: cases load client-side via
+    # /api/dashboard/cases, so listing every case here is wasted I/O.
     widget_layout = _load_dashboard_layout()
-    return render_template("index.html", cases=cases,
-                           config=DASHBOARD_CONFIG,
+    return render_template("index.html", config=DASHBOARD_CONFIG,
                            widget_layout=widget_layout)
 
 
 @app.route("/case/<case_id>")
 @require_api_key_html
 def case_dashboard(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html",
-                               message=f"Case '{case_id}' not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     ctype = info.get("type", "pentest")
     # ensure _findings_by_severity always exists
     if "_findings_by_severity" not in info:
@@ -357,14 +427,9 @@ def case_dashboard(case_id: str):
 @app.route("/case/<case_id>/edit")
 @require_api_key_html
 def case_edit(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html",
-                               message=f"Case '{case_id}' not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("case_edit.html",
                            case=info,
                            config=DASHBOARD_CONFIG)
@@ -375,9 +440,8 @@ def case_edit(case_id: str):
 @csrf_required
 def api_case_meta_update(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     data = request.json or {}
     allowed = {"executive_summary", "key_observations", "recommendations", "status"}
@@ -445,9 +509,8 @@ def api_archives():
 @csrf_required
 def api_case_strength_add(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     text = (request.json or {}).get("text", "")
     if not text.strip():
@@ -461,9 +524,8 @@ def api_case_strength_add(case_id: str):
 @csrf_required
 def api_case_strength_remove(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     index = (request.json or {}).get("index", -1)
     cm.remove_strength(case_id, index=index)
@@ -475,9 +537,8 @@ def api_case_strength_remove(case_id: str):
 @csrf_required
 def api_case_weakness_add(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     text = (request.json or {}).get("text", "")
     if not text.strip():
@@ -491,9 +552,8 @@ def api_case_weakness_add(case_id: str):
 @csrf_required
 def api_case_weakness_remove(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     index = (request.json or {}).get("index", -1)
     cm.remove_weakness(case_id, index=index)
@@ -509,9 +569,8 @@ def api_case_weakness_remove(case_id: str):
 @csrf_required
 def api_case_scope_add(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     target = (request.json or {}).get("target", "").strip()
     if not target:
@@ -526,9 +585,8 @@ def api_case_scope_add(case_id: str):
 @csrf_required
 def api_case_scope_remove(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     target = (request.json or {}).get("target", "").strip()
     if not target:
@@ -564,15 +622,16 @@ def api_case_scope_check(case_id: str):
 def api_case_scan_nmap(case_id: str):
     """Run an nmap scan subcommand for this case. Results go to case scans/ + evidence."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     data = request.json or {}
     subcommand = data.get("subcommand", "")
     target = data.get("target", "")
     ports = data.get("ports", "")
-    timeout = int(data.get("timeout", 7200))
+    timeout, timeout_ok = _safe_int(data.get("timeout"), 7200)
+    if not timeout_ok:
+        return jsonify({"error": "timeout must be an integer"}), 400
     VALID = ["init-tcp", "init-udp", "full-tcp", "full-ack",
              "service-version", "versions-tcp", "versions-udp",
              "vuln", "pipeline", "parse", "custom"]
@@ -580,7 +639,7 @@ def api_case_scan_nmap(case_id: str):
         return jsonify({"error": f"Unknown subcommand '{subcommand}'. Valid: {', '.join(VALID)}"}), 400
     if not target:
         return jsonify({"error": "target required"}), 400
-    import subprocess, sys, json as _json
+    import subprocess, sys
     from pathlib import Path as _Path
     script = str(_Path(__file__).resolve().parent.parent / "kali-command-center.py")
     cmd = [
@@ -666,11 +725,7 @@ def api_case_tasks_delete(case_id: str, task_id: str):
 @app.route("/case/<case_id>/data")
 @require_api_key
 def case_data(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
+    info = _get_case(case_id)
     if not info:
         return jsonify({"error": "Case not found"}), 404
     return jsonify(info)
@@ -814,10 +869,7 @@ def api_assets_import_nmap():
 def api_case_assets_extract(case_id: str):
     cm = CaseManager()
     from modules.findings_db import FindingsDB
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        return jsonify({"error": "Case not found"}), 404
+    info = _get_case(case_id)
     if not info:
         return jsonify({"error": "Case not found"}), 404
     db = FindingsDB(cm._case_path(case_id))
@@ -888,9 +940,8 @@ def api_credentials_delete(cred_id: str):
 def api_case_topology(case_id: str):
     """Parse nmap outputs in case scans/ dir and return structured topology data."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
 
     hosts = []
@@ -967,13 +1018,9 @@ def api_case_topology(case_id: str):
 @app.route("/case/<case_id>/topology")
 @require_api_key_html
 def case_topology(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("topology.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -984,6 +1031,10 @@ def case_topology(case_id: str):
 @require_api_key
 def api_findings_stats():
     """Aggregated findings statistics across all cases."""
+    return jsonify(_cached_stats("findings_stats", _compute_findings_stats))
+
+
+def _compute_findings_stats():
     cm = CaseManager()
     cases = cm.list_cases()
     all_findings = []
@@ -1012,14 +1063,14 @@ def api_findings_stats():
                 cwe_counts[cwe] = cwe_counts.get(cwe, 0) + 1
         findings_by_case[cid] = len(findings)
 
-    return jsonify({
+    return {
         "total": len(all_findings),
         "severity_counts": dict(sorted(severity_counts.items(), key=lambda x: severity_counts[x[0]], reverse=True)),
         "status_counts": status_counts,
         "cve_counts": dict(sorted(cve_counts.items(), key=lambda x: -x[1])[:20]),
         "cwe_counts": dict(sorted(cwe_counts.items(), key=lambda x: -x[1])[:20]),
         "findings_by_case": dict(sorted(findings_by_case.items(), key=lambda x: -x[1])),
-    })
+    }
 
 
 @app.route("/api/findings/list")
@@ -1062,9 +1113,8 @@ def api_findings_list():
 def api_case_findings_stats(case_id: str):
     """Aggregated findings statistics for a single case."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     db = FindingsDB(cm._case_path(case_id))
     findings = db.list()
@@ -1194,13 +1244,9 @@ def api_cc_command():
 @app.route("/case/<case_id>/notes")
 @require_api_key_html
 def case_notes(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("notes.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -1209,6 +1255,9 @@ def case_notes(case_id: str):
 @csrf_required
 def api_notes(case_id: str):
     cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
     if request.method == "POST":
         j = request.json or {}
         body = j.get("body", "")
@@ -1218,16 +1267,160 @@ def api_notes(case_id: str):
     return jsonify(cm.get_notes(case_id))
 
 
+# ---------------------------------------------------------------------------
+# Checklist routes
+# ---------------------------------------------------------------------------
+
+@app.route("/case/<case_id>/checklist")
+@require_api_key_html
+def case_checklist(case_id: str):
+    cm = CaseManager()
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
+    cl = ChecklistInstance(cm._case_path(case_id))
+    instances = cl.get()
+    templates = list_checklist_templates()
+    return render_template("checklist.html", case=info, checklists=instances,
+                           templates=templates, config=DASHBOARD_CONFIG)
+
+
+@app.route("/api/case/<case_id>/checklist")
+@require_api_key
+def api_checklist(case_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    cl = ChecklistInstance(cm._case_path(case_id))
+    instances = cl.get()
+    return jsonify(instances)
+
+
+@app.route("/api/case/<case_id>/checklist/init", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_checklist_init(case_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    data = request.json or {}
+    template_id = data.get("template", "")
+    replace = data.get("replace", False)
+    if not template_id:
+        return jsonify({"error": "template required"}), 400
+    cl = ChecklistInstance(cm._case_path(case_id))
+    result = cl.initialize(template_id, replace=replace)
+    if "error" in result:
+        return jsonify(result), 404
+    return jsonify({"status": "ok", "checklist": result})
+
+
+@app.route("/api/case/<case_id>/checklist/update", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_checklist_update(case_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    data = request.json or {}
+    item_id = data.get("item_id", "")
+    if not item_id:
+        return jsonify({"error": "item_id required"}), 400
+    cl = ChecklistInstance(cm._case_path(case_id))
+    result = cl.update_item(
+        item_id,
+        status=data.get("status"),
+        notes=data.get("notes"),
+        finding_id=data.get("finding_id"),
+        runbook_result=data.get("runbook_result"),
+        instance_id=data.get("instance_id", ""),
+    )
+    if result is None:
+        return jsonify({"error": f"Item '{item_id}' not found"}), 404
+    return jsonify({"status": "ok", "item": result})
+
+
+@app.route("/api/case/<case_id>/checklist/delete", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_checklist_delete(case_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    instance_id = (request.json or {}).get("instance_id", "")
+    if not instance_id:
+        return jsonify({"error": "instance_id required"}), 400
+    cl = ChecklistInstance(cm._case_path(case_id))
+    ok = cl.delete_instance(instance_id)
+    return jsonify({"status": "ok" if ok else "not_found"})
+
+
+@app.route("/api/case/<case_id>/checklist/progress")
+@require_api_key
+def api_checklist_progress(case_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    instance_id = request.args.get("instance_id", "")
+    cl = ChecklistInstance(cm._case_path(case_id))
+    return jsonify(cl.get_progress(instance_id=instance_id))
+
+
+@app.route("/api/checklist/templates")
+@require_api_key
+def api_checklist_templates():
+    return jsonify(list_checklist_templates())
+
+
+@app.route("/api/checklist/templates/<path:template_id>")
+@require_api_key
+def api_checklist_template_get(template_id: str):
+    source = get_template_source(template_id)
+    if source is None:
+        return jsonify({"error": "Template not found"}), 404
+    import yaml
+    data = yaml.safe_load(source)
+    return jsonify({"id": template_id, "source": source, "data": data})
+
+
+@app.route("/api/checklist/templates/<path:template_id>/save", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_checklist_template_save(template_id: str):
+    data = request.json or {}
+    source = data.get("source", "")
+    if not source:
+        return jsonify({"error": "source required"}), 400
+    import yaml
+    try:
+        parsed = yaml.safe_load(source)
+        if not isinstance(parsed, dict) or "categories" not in parsed:
+            return jsonify({"error": "Invalid template: must have 'categories' key"}), 400
+    except yaml.YAMLError as e:
+        return jsonify({"error": f"YAML parse error: {e}"}), 400
+    _save_template(template_id, parsed)
+    return jsonify({"status": "ok", "template_id": template_id})
+
+
+@app.route("/api/checklist/templates/<path:template_id>/delete", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_checklist_template_delete(template_id: str):
+    ok = _delete_template(template_id)
+    return jsonify({"status": "ok" if ok else "not_found"})
+
+
 @app.route("/case/<case_id>/evidence")
 @require_api_key_html
 def case_evidence(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("evidence.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -1236,6 +1429,9 @@ def case_evidence(case_id: str):
 def api_case_evidence(case_id: str):
     """Return evidence list for a case (reads only the manifest, not full case data)."""
     cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
     return jsonify(cm.get_evidence(case_id))
 
 
@@ -1293,9 +1489,8 @@ def api_evidence_verify(case_id: str):
 def api_evidence_delete(case_id: str):
     """Delete an evidence record by filename."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     filename = (request.json or {}).get("filename", "").strip()
     if not filename:
@@ -1343,13 +1538,9 @@ def _walk_case_dir(case_dir: Path, prefix: str = "") -> list:
 @app.route("/case/<case_id>/files")
 @require_api_key_html
 def case_files(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("files.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -1358,9 +1549,8 @@ def case_files(case_id: str):
 def api_case_file_tree(case_id: str):
     """Return the full directory tree for a case."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     case_dir = cm._case_path(case_id)
     if not case_dir.exists():
@@ -1374,9 +1564,8 @@ def api_case_file_tree(case_id: str):
 def api_case_file_list(case_id: str):
     """List files in a specific subdirectory of the case."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     sub = request.args.get("path", "")
     case_dir = cm._case_path(case_id)
@@ -1414,9 +1603,8 @@ def api_case_file_list(case_id: str):
 def api_case_file_preview(case_id: str):
     """Preview a file's contents (text, image, or hex dump)."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     file_path = request.args.get("path", "")
     case_dir = cm._case_path(case_id)
@@ -1474,9 +1662,8 @@ def api_case_file_preview(case_id: str):
 def api_case_file_upload(case_id: str):
     """Upload a file to a specific subdirectory within the case."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     sub = request.form.get("path", "")
     case_dir = cm._case_path(case_id)
@@ -1503,9 +1690,8 @@ def api_case_file_upload(case_id: str):
 def api_case_file_delete(case_id: str):
     """Delete a file from the case directory (NOT evidence — use evidence API for that)."""
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     file_path = (request.json or {}).get("path", "")
     case_dir = cm._case_path(case_id)
@@ -1527,13 +1713,9 @@ def api_case_file_delete(case_id: str):
 @app.route("/case/<case_id>/board")
 @require_api_key_html
 def case_board(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("board.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -1541,9 +1723,8 @@ def case_board(case_id: str):
 @require_api_key
 def api_case_board_data(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     db = FindingsDB(cm._case_path(case_id))
     findings = db.list()
@@ -1576,9 +1757,8 @@ def api_case_board_data(case_id: str):
 @csrf_required
 def api_case_board_update(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     data = request.json or {}
     finding_id = data.get("finding_id", "")
@@ -1603,54 +1783,98 @@ def project_board():
     return render_template("project_board.html", config=DASHBOARD_CONFIG)
 
 
+def _board_page_args():
+    """Parse shared limit/offset query args for paginated case endpoints."""
+    try:
+        limit = max(1, min(int(request.args.get("limit", "20")), 200))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = max(0, int(request.args.get("offset", "0")))
+    except (TypeError, ValueError):
+        offset = 0
+    return limit, offset
+
+
+FINDING_STATUS_MAP = {
+    "open": "unvalidated", "in_progress": "validated",
+    "resolved": "remediated", "closed": "closed_other",
+}
+CASE_COLORS = {
+    "open": {"color": "#6b7280", "title": "Open"},
+    "pending": {"color": "#eab308", "title": "Pending"},
+    "on-hold": {"color": "#f97316", "title": "On Hold"},
+    "closed": {"color": "#374151", "title": "Closed"},
+}
+
+
+def _board_case_status(c) -> str:
+    st = c.get("status", "open")
+    return st if st in CASE_COLORS else "open"
+
+
+def _enrich_board_case(cm, c) -> dict:
+    cid = c.get("case_id", "")
+    try:
+        db = FindingsDB(cm._case_path(cid))
+        findings = db.list()
+        mapped_findings = []
+        for f in findings:
+            fs = f.get("status", "unvalidated")
+            fs = FINDING_STATUS_MAP.get(fs, fs)
+            mapped_findings.append({**f, "status": fs})
+        by_sev = {}
+        for f in findings:
+            s = f.get("severity", "info")
+            by_sev[s] = by_sev.get(s, 0) + 1
+        c["findings"] = mapped_findings[:8]
+        c["finding_count"] = len(findings)
+        c["findings_by_severity"] = by_sev
+    except Exception:
+        c["findings"] = []
+        c["finding_count"] = 0
+        c["findings_by_severity"] = {}
+    return c
+
+
 @app.route("/api/projects/board/data")
 @require_api_key
 def api_projects_board_data():
+    limit, offset = _board_page_args()
+    only_column = request.args.get("column", "").strip()
     cm = CaseManager()
     cases = cm.list_cases()
-    FINDING_STATUS_MAP = {
-        "open": "unvalidated", "in_progress": "validated",
-        "resolved": "remediated", "closed": "closed_other",
-    }
-    CASE_COLORS = {
-        "open": {"color": "#6b7280", "title": "Open"},
-        "pending": {"color": "#eab308", "title": "Pending"},
-        "on-hold": {"color": "#f97316", "title": "On Hold"},
-        "closed": {"color": "#374151", "title": "Closed"},
-    }
+
+    # Single-column page (infinite scroll): filter, sort, slice, then enrich
+    # only the requested page so findings DBs are not read for every case.
+    if only_column in CASE_COLORS:
+        col_cases = [c for c in cases if _board_case_status(c) == only_column]
+        col_cases.sort(key=lambda x: x.get("created", ""), reverse=True)
+        total = len(col_cases)
+        page = [_enrich_board_case(cm, c) for c in col_cases[offset:offset + limit]]
+        return jsonify({
+            "column": only_column,
+            "title": CASE_COLORS[only_column]["title"],
+            "color": CASE_COLORS[only_column]["color"],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "items": page,
+        })
+
     columns = {}
     for key, val in CASE_COLORS.items():
-        columns[key] = {**val, "items": []}
+        columns[key] = {**val, "items": [], "total": 0}
 
     for c in cases:
-        cid = c.get("case_id", "")
-        status = c.get("status", "open")
-        if status not in columns:
-            status = "open"
-        try:
-            db = FindingsDB(cm._case_path(cid))
-            findings = db.list()
-            mapped_findings = []
-            for f in findings:
-                fs = f.get("status", "unvalidated")
-                fs = FINDING_STATUS_MAP.get(fs, fs)
-                mapped_findings.append({**f, "status": fs})
-            by_sev = {}
-            for f in findings:
-                s = f.get("severity", "info")
-                by_sev[s] = by_sev.get(s, 0) + 1
-            c["findings"] = mapped_findings
-            c["finding_count"] = len(findings)
-            c["findings_by_severity"] = by_sev
-        except Exception:
-            c["findings"] = []
-            c["finding_count"] = 0
-            c["findings_by_severity"] = {}
-        columns[status]["items"].append(c)
+        key = _board_case_status(c)
+        columns[key]["items"].append(c)
 
-    # Sort items within each column by created date descending
-    for col in columns.values():
+    for key, col in columns.items():
         col["items"].sort(key=lambda x: x.get("created", ""), reverse=True)
+        col["total"] = len(col["items"])
+        col["items"] = [_enrich_board_case(cm, c)
+                        for c in col["items"][offset:offset + limit]]
     return jsonify({"columns": columns})
 
 
@@ -1682,9 +1906,8 @@ def api_projects_board_update():
 @csrf_required
 def api_case_finding_create(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     data = request.json or {}
     title = data.get("title", "").strip()
@@ -1708,6 +1931,7 @@ def api_case_finding_create(case_id: str):
         cvss_vector=data.get("cvss_vector", ""),
         tags=tags,
         affected_hosts=data.get("affected_hosts", ""),
+        cpe=data.get("cpe", ""),
     )
     # Override default status if provided
     new_status = data.get("status", "")
@@ -1725,12 +1949,9 @@ def api_case_finding_create(case_id: str):
 @require_api_key_html
 def case_finding_detail(case_id: str, finding_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     db = FindingsDB(cm._case_path(case_id))
     finding = db.get(finding_id)
     if not finding:
@@ -1745,9 +1966,8 @@ def case_finding_detail(case_id: str, finding_id: str):
 @require_api_key
 def api_case_finding_detail(case_id: str, finding_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     db = FindingsDB(cm._case_path(case_id))
     finding = db.get(finding_id)
@@ -1762,9 +1982,8 @@ def api_case_finding_detail(case_id: str, finding_id: str):
 @require_api_key
 def api_case_finding_update(case_id: str, finding_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     data = request.json or {}
     db = FindingsDB(cm._case_path(case_id))
@@ -1774,7 +1993,7 @@ def api_case_finding_update(case_id: str, finding_id: str):
     allowed = {"title", "severity", "status", "description", "remediation",
                "impact", "poc", "source", "cve", "cwe", "references",
                "cvss_score", "cvss_vector", "tags", "affected_hosts",
-               "command_output", "evidence_refs"}
+               "command_output", "evidence_refs", "cpe"}
     kwargs = {k: v for k, v in data.items() if k in allowed}
     log_debug("INFO", f"Updating finding {case_id}/{finding_id}: {kwargs}")
     db.update(finding_id, **kwargs)
@@ -1787,9 +2006,8 @@ def api_case_finding_update(case_id: str, finding_id: str):
 @csrf_required
 def api_case_finding_tag_add(case_id: str, finding_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     tag = (request.json or {}).get("tag", "").strip()
     if not tag:
@@ -1807,9 +2025,8 @@ def api_case_finding_tag_add(case_id: str, finding_id: str):
 @csrf_required
 def api_case_finding_tag_remove(case_id: str, finding_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     tag = (request.json or {}).get("tag", "").strip()
     if not tag:
@@ -1825,9 +2042,8 @@ def api_case_finding_tag_remove(case_id: str, finding_id: str):
 @require_api_key
 def api_case_tags(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     db = FindingsDB(cm._case_path(case_id))
     return jsonify(db.tags())
@@ -1859,14 +2075,75 @@ def api_tags_resolve():
 @csrf_required
 def api_case_finding_delete(case_id: str, finding_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     db = FindingsDB(cm._case_path(case_id))
     if db.delete(finding_id):
         return jsonify({"status": "deleted"})
     return jsonify({"error": "Finding not found"}), 404
+
+
+# ---- Retest routes ----
+
+@app.route("/api/case/<case_id>/finding/<finding_id>/retests",
+           methods=["GET", "POST"])
+@require_api_key
+@csrf_required
+def api_finding_retests(case_id: str, finding_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    db = FindingsDB(cm._case_path(case_id))
+    if request.method == "POST":
+        j = request.json or {}
+        status = j.get("status", "")
+        notes = j.get("notes", "")
+        tester = j.get("tester", "")
+        result = db.add_retest(finding_id, status, notes=notes, tester=tester)
+        if result:
+            return jsonify({"status": "ok", "retest": result})
+        return jsonify({"error": "Finding not found or invalid status"}), 400
+    retests = db.get_retests(finding_id)
+    return jsonify({"status": "ok", "retests": retests})
+
+
+@app.route("/api/case/<case_id>/finding/<finding_id>/retests/<retest_id>",
+           methods=["DELETE"])
+@require_api_key
+@csrf_required
+def api_finding_retest_delete(case_id: str, finding_id: str, retest_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    db = FindingsDB(cm._case_path(case_id))
+    if db.delete_retest(finding_id, retest_id):
+        return jsonify({"status": "ok"})
+    return jsonify({"error": "Retest not found"}), 404
+
+
+@app.route("/api/case/<case_id>/retests")
+@require_api_key
+def api_case_retests(case_id: str):
+    cm = CaseManager()
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    db = FindingsDB(cm._case_path(case_id))
+    findings = db.list()
+    result = []
+    for f in findings:
+        retests = f.get("retests", [])
+        if retests:
+            result.append({
+                "finding_id": f["id"],
+                "title": f["title"],
+                "severity": f["severity"],
+                "retests": retests,
+            })
+    return jsonify({"status": "ok", "retested_findings": result})
 
 
 @app.route("/api/findings/bulk-update", methods=["POST"])
@@ -1934,19 +2211,88 @@ def api_findings_bulk_delete():
 
 
 # ---------------------------------------------------------------------------
+# Compliance / Interop exports
+# ---------------------------------------------------------------------------
+
+@app.route("/api/case/<case_id>/export")
+@require_api_key
+def api_case_export(case_id: str):
+    """Export case findings as SARIF 2.1.0 or XCCDF 1.2.
+    Query params: format=sarif|xccdf, include_checklist=1|0
+    """
+    from modules.compliance_export import export_case
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    fmt = request.args.get("format", "sarif").lower()
+    include_checklist = request.args.get("include_checklist", "1") not in ("0", "false", "False")
+    result = export_case(case_id, fmt=fmt, include_checklist=include_checklist)
+    if "error" in result:
+        return jsonify(result), 400
+    payload = {k: v for k, v in result.items() if k != "path"}
+    payload["path"] = result["path"]
+    return jsonify(payload)
+
+
+@app.route("/api/case/<case_id>/export/download")
+@require_api_key_html
+def api_case_export_download(case_id: str):
+    """Download a case's findings export. Query params: format=sarif|xccdf"""
+    from modules.compliance_export import export_case
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
+    fmt = request.args.get("format", "sarif").lower()
+    result = export_case(case_id, fmt=fmt)
+    if "error" in result:
+        return jsonify(result), 400
+    path = Path(result["path"])
+    if not path.exists():
+        return jsonify({"error": "Export file missing"}), 500
+    mime = "application/json" if fmt == "sarif" else "application/xml"
+    return send_file(str(path), mimetype=mime,
+                     as_attachment=True,
+                     download_name=f"{case_id}-{fmt}.{'sarif' if fmt == 'sarif' else 'xml'}")
+
+
+@app.route("/api/case/<case_id>/checklist/from-findings", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_case_checklist_from_findings(case_id: str):
+    """Build a checklist instance from a case's findings.
+    Body: {"title": "...", "replace": false}
+    """
+    from modules.checklist_manager import ChecklistInstance
+    info = _get_case(case_id)
+    if not info:
+        return jsonify({"error": "Case not found"}), 404
+    data = request.json or {}
+    cm = CaseManager()
+    db = FindingsDB(cm._case_path(case_id))
+    findings = db.list()
+    if not findings:
+        return jsonify({"error": "No findings to build a checklist from"}), 400
+    cl = ChecklistInstance(cm._case_path(case_id))
+    instance = cl.from_findings(findings, title=data.get("title", ""),
+                                replace=bool(data.get("replace", False)))
+    if "error" in instance:
+        return jsonify(instance), 400
+    return jsonify({"status": "ok",
+                    "instance_id": instance.get("instance_id", ""),
+                    "items": len(instance.get("items", {})),
+                    "findings": len(findings)})
+
+
+# ---------------------------------------------------------------------------
 # Gantt / Timeline View
 # ---------------------------------------------------------------------------
 
 @app.route("/case/<case_id>/gantt")
 @require_api_key_html
 def case_gantt(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("gantt.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -1954,9 +2300,8 @@ def case_gantt(case_id: str):
 @require_api_key
 def api_case_gantt_data(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     # Gather timeline + findings for Gantt
     timeline = info.get("ir_timeline", info.get("timeline", []))
@@ -2010,13 +2355,9 @@ def api_case_gantt_data(case_id: str):
 @app.route("/case/<case_id>/runbook")
 @require_api_key_html
 def case_runbook(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("runbook_editor.html", case=info, config=DASHBOARD_CONFIG)
 
 # Legacy redirect
@@ -2030,9 +2371,8 @@ def case_playbook_redirect(case_id: str):
 @csrf_required
 def api_case_runbook(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     runbook_path = cm._case_path(case_id) / "playbook.json"  # keep storage filename for compat
     if request.method == "GET":
@@ -2052,14 +2392,13 @@ def api_case_runbook(case_id: str):
 @csrf_required
 def api_case_runbook_run(case_id: str):
     """Run this case's runbook steps against a target using RunbookEngine."""
-    from modules.playbook_engine import RunbookEngine, RunContext
+    from modules.playbook_engine import RunContext
     from modules.case_manager import CaseManager
     import json as _json, shlex
 
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
 
     runbook_path = cm._case_path(case_id) / "playbook.json"
@@ -2077,13 +2416,13 @@ def api_case_runbook_run(case_id: str):
 
     targets = [target]
     job_id = _jm.create("runbook", f"Runbook for {case_id} against {target}",
-                         total_steps=len(steps) + 2)
+                         total_steps=len(steps) + 2, case_id=case_id)
     prog = _make_job_progress("", job_id)
 
     def _run(*, _progress=None):
         try:
             from modules.playbook_engine import RunbookEngine
-            from modules.constants import PLAYBOOKS_DIR
+from modules.config import PLAYBOOKS_DIR
             if _progress:
                 _progress(current_step=1, message="Building runbook...")
 
@@ -2128,7 +2467,7 @@ def api_case_runbook_run(case_id: str):
             if runlog_path.exists():
                 runlog = _json.loads(runlog_path.read_text())
                 step_outs = runlog.get("step_outputs", {})
-                note_lines = [f"## Runbook Execution Results"]
+                note_lines = ["## Runbook Execution Results"]
                 for sid, out in step_outs.items():
                     rc = out.get("rc", "?")
                     err = out.get("error", "")
@@ -2156,9 +2495,8 @@ def api_case_runbook_run(case_id: str):
 @require_api_key
 def api_case_runbook_log(case_id: str):
     cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
+    info = _get_case(case_id)
+    if not info:
         return jsonify({"error": "Case not found"}), 404
     log_path = cm._case_path(case_id) / "runbook-log.json"
     if not log_path.exists():
@@ -2179,7 +2517,7 @@ def api_case_runbook_log(case_id: str):
 def runbooks_list():
     try:
         from modules.playbook_engine import RunbookEngine
-        from modules.constants import PLAYBOOKS_DIR
+from modules.config import PLAYBOOKS_DIR
         import yaml
         engine = RunbookEngine(PLAYBOOKS_DIR)
         files = engine.list_runbooks()
@@ -2187,16 +2525,12 @@ def runbooks_list():
         for f in files:
             try:
                 data = yaml.safe_load(f.read_text()) or {}
-                steps = data.get("steps", [])
-                pre = data.get("preflight", [])
-                post = data.get("postflight", [])
-                all_steps = steps + pre + post
                 step_count = _count_runbook_steps(data)
                 type_counts = _count_step_types(data)
                 phases = []
-                if pre:
+                if data.get("preflight"):
                     phases.append("preflight")
-                if post:
+                if data.get("postflight"):
                     phases.append("postflight")
                 runbooks.append({
                     "filename": f.name,
@@ -2218,49 +2552,47 @@ def runbooks_list():
                     "phases": "",
                 })
         runbooks.sort(key=lambda x: x["name"].lower())
-    except Exception as e:
+    except Exception:
         runbooks = []
     return render_template("runbooks.html", runbooks=runbooks,
                            config=DASHBOARD_CONFIG)
 
 
-def _count_runbook_steps(data: dict) -> int:
-    count = 0
+def _walk_runbook(data: dict):
+    """Yield every step across preflight/steps/postflight, flattened depth-first.
+
+    Deduplicates by object identity so a step referenced in multiple places
+    (e.g. shared sub-steps) is counted only once."""
+    seen = set()
     for phase in ("preflight", "steps", "postflight"):
         for step in data.get(phase, []):
-            count += 1
-            count += _count_nested_steps(step)
-    return count
+            for s in _walk_runbook_step(step, seen):
+                yield s
 
 
-def _count_nested_steps(step) -> int:
+def _walk_runbook_step(step, seen: set):
     if not isinstance(step, dict):
-        return 0
-    count = 0
-    for key in ("steps", "then", "else"):
-        for child in step.get(key, []):
-            if isinstance(child, dict):
-                count += 1
-                count += _count_nested_steps(child)
-    return count
+        return
+    key = id(step)
+    if key in seen:
+        return
+    seen.add(key)
+    yield step
+    for child_key in ("steps", "then", "else"):
+        for child in step.get(child_key, []):
+            yield from _walk_runbook_step(child, seen)
+
+
+def _count_runbook_steps(data: dict) -> int:
+    return sum(1 for _ in _walk_runbook(data))
 
 
 def _count_step_types(data: dict) -> dict:
     counts = {}
-    for phase in ("preflight", "steps", "postflight"):
-        for step in data.get(phase, []):
-            _count_types_in_step(step, counts)
+    for s in _walk_runbook(data):
+        t = s.get("type", "tool")
+        counts[t] = counts.get(t, 0) + 1
     return dict(sorted(counts.items()))
-
-
-def _count_types_in_step(step, counts: dict):
-    if not isinstance(step, dict):
-        return
-    t = step.get("type", "tool")
-    counts[t] = counts.get(t, 0) + 1
-    for key in ("steps", "then", "else"):
-        for child in step.get(key, []):
-            _count_types_in_step(child, counts)
 
 
 @app.route("/runbook/<filename>")
@@ -2268,7 +2600,7 @@ def _count_types_in_step(step, counts: dict):
 def runbook_detail(filename: str):
     try:
         from modules.playbook_engine import RunbookEngine
-        from modules.constants import PLAYBOOKS_DIR
+from modules.config import PLAYBOOKS_DIR
         engine = RunbookEngine(PLAYBOOKS_DIR)
         data = engine.load(filename)
     except Exception as e:
@@ -2303,13 +2635,13 @@ def api_runbook_run(filename: str):
         pass  # case already exists, that's fine
 
     job_id = _jm.create("runbook", f"Run {filename} against {target}",
-                         total_steps=5)
+                         total_steps=5, case_id=resolved_case_id)
     prog = _make_job_progress("", job_id)
 
     def _run(*, _progress=None):
         try:
             from modules.playbook_engine import RunbookEngine
-            from modules.constants import PLAYBOOKS_DIR
+from modules.config import PLAYBOOKS_DIR
             from modules.case_manager import CaseManager
             import json as _json
             if _progress:
@@ -2369,7 +2701,7 @@ def api_runbook_run(filename: str):
 def api_runbooks_list():
     try:
         from modules.playbook_engine import RunbookEngine
-        from modules.constants import PLAYBOOKS_DIR
+from modules.config import PLAYBOOKS_DIR
         import yaml
         engine = RunbookEngine(PLAYBOOKS_DIR)
         files = engine.list_runbooks()
@@ -2401,8 +2733,7 @@ def api_runbooks_list():
 def api_runbook_steps(filename: str):
     try:
         from modules.playbook_engine import RunbookEngine
-        from modules.constants import PLAYBOOKS_DIR
-        import yaml
+from modules.config import PLAYBOOKS_DIR
         engine = RunbookEngine(PLAYBOOKS_DIR)
         data = engine.load(filename)
         steps = []
@@ -2647,34 +2978,28 @@ def _scan_single_rule(rule_format: str, rule_id: str, target: str,
 def _scan_all_rules(rule_format: str, target: str,
                     output_dir: str, prog) -> dict:
     """Run a scan with all rules of a given format. Returns results dict."""
-    rm = _get_rm()
-    from modules.rules_manager import RULE_ROOTS, FLAT_ROOTS
+    from modules.rules_manager import get_scan_roots
 
     if rule_format == "nuclei":
-        root = RULE_ROOTS.get("nuclei") or FLAT_ROOTS.get("nuclei")
-        if not root or not root.exists():
+        roots = get_scan_roots("nuclei")
+        if not roots:
             return {"error": "Nuclei rules directory not found"}
         from modules.tool_wrappers import nuclei_scan
-        result = nuclei_scan(target, templates_dir=str(root),
+        result = nuclei_scan(target, templates_dir=[str(r) for r in roots],
                              output_dir=Path(output_dir))
     elif rule_format == "yara":
-        root = RULE_ROOTS.get("yara") or FLAT_ROOTS.get("yara")
-        flat = FLAT_ROOTS.get("yara")
-        if not root or not root.exists():
+        roots = get_scan_roots("yara")
+        if not roots:
             return {"error": "YARA rules directory not found"}
         from modules.tool_wrappers import yara_scan
-        result = yara_scan(str(root), target)
+        result = yara_scan([str(r) for r in roots], target)
     elif rule_format == "semgrep":
-        root = RULE_ROOTS.get("semgrep")
-        if not root or not root.exists():
+        roots = get_scan_roots("semgrep")
+        if not roots:
             return {"error": "Semgrep rules directory not found"}
         from modules.tool_wrappers import semgrep_scan
-        result = semgrep_scan(str(root), target)
+        result = semgrep_scan([str(r) for r in roots], target)
     elif rule_format == "codeql":
-        root = RULE_ROOTS.get("codeql")
-        if not root or not root.exists():
-            return {"error": "CodeQL rules directory not found"}
-        from modules.tool_wrappers import codeql_scan
         # CodeQL batch scan not supported — must pick a query for a specific language
         result = {"error": "Use single-rule scan for CodeQL (requires language parameter)"}
     else:
@@ -2692,9 +3017,10 @@ def api_rule_scan(format_name: str, rule_id: str):
     if not target:
         return jsonify({"error": "target required"}), 400
     output_dir = data.get("output_dir", "").strip()
+    case_id = (data.get("case_id") or "").strip()
 
     job_id = _jm.create("rule-scan", f"Scan {target} with {rule_id}",
-                        total_steps=5)
+                        total_steps=5, case_id=case_id)
     prog = _make_job_progress("", job_id)
 
     def _run(*, _progress=None):
@@ -2708,11 +3034,10 @@ def api_rule_scan(format_name: str, rule_id: str):
                 _progress(current_step=4,
                           message=f"Scan complete: {result.get('finding_count', result.get('total', 'done'))} results")
             if result.get("error"):
-                _jm.fail(job_id, result["error"])
-            else:
-                _jm.complete(job_id, result)
+                raise RuntimeError(result["error"])
+            return result
         except Exception as e:
-            _jm.fail(job_id, str(e))
+            raise RuntimeError(str(e)) from e
 
     run_in_thread(_jm, job_id, _run, progress_callback=prog)
     return jsonify({"status": "ok", "job_id": job_id}), 202
@@ -2728,9 +3053,10 @@ def api_rule_scan_all(format_name: str):
     if not target:
         return jsonify({"error": "target required"}), 400
     output_dir = data.get("output_dir", "").strip()
+    case_id = (data.get("case_id") or "").strip()
 
     job_id = _jm.create("rule-scan-all", f"Scan {target} with all {format_name} rules",
-                        total_steps=5)
+                        total_steps=5, case_id=case_id)
     prog = _make_job_progress("", job_id)
 
     def _run(*, _progress=None):
@@ -2743,11 +3069,10 @@ def api_rule_scan_all(format_name: str):
                 _progress(current_step=4,
                           message=f"Scan complete: {result.get('finding_count', result.get('total', 'done'))} results")
             if result.get("error"):
-                _jm.fail(job_id, result["error"])
-            else:
-                _jm.complete(job_id, result)
+                raise RuntimeError(result["error"])
+            return result
         except Exception as e:
-            _jm.fail(job_id, str(e))
+            raise RuntimeError(str(e)) from e
 
     run_in_thread(_jm, job_id, _run, progress_callback=prog)
     return jsonify({"status": "ok", "job_id": job_id}), 202
@@ -2761,13 +3086,9 @@ def api_rule_scan_all(format_name: str):
 @app.route("/case/<case_id>/report")
 @require_api_key_html
 def case_report(case_id: str):
-    cm = CaseManager()
-    try:
-        info = cm.info(case_id)
-    except Exception:
-        info = None
-    if not info:
-        return render_template("error.html", message="Case not found"), 404
+    info, err = _case_or_404(case_id, html=True)
+    if err:
+        return err
     return render_template("report.html", case=info, config=DASHBOARD_CONFIG)
 
 
@@ -2863,15 +3184,18 @@ def api_report_generate(case_id: str):
     # For raw markdown, use _render_report_markdown directly (avoids file-path bugs)
     if fmt == "md":
         case_data, findings = _load_case(case_dir)
-        md = _render_report_markdown(case_data, findings, case_dir=case_dir)
+        md = _render_report_markdown(case_data, findings, case_dir=case_dir,
+                                     show_retest=data.get("show_retest", False))
         return jsonify({"status": "ok", "output": md})
 
     # Full report generation from case data (original flow for html/docx/pdf)
-    job_id = _jm.create("report", f"Generate {fmt.upper()} report for {case_id}", total_steps=5)
+    job_id = _jm.create("report", f"Generate {fmt.upper()} report for {case_id}",
+                        total_steps=5, case_id=case_id)
     prog = _make_job_progress(case_id, job_id)
     try:
         prog(current_step=1, message="Loading case data...")
-        result = generate_obsidian_report(case_dir, formats=[fmt])
+        result = generate_obsidian_report(case_dir, formats=[fmt],
+                                          show_retest=data.get("show_retest", False))
         prog(current_step=4, message="Rendering output...")
         output_path = result.get(fmt, "")
         output_path = Path(str(output_path)) if output_path else None
@@ -2906,7 +3230,11 @@ def terminal():
 @app.route("/tools")
 @require_api_key_html
 def tools_page():
-    return render_template("tools.html", config=DASHBOARD_CONFIG)
+    _oc_host = request.host.split(":")[0]
+    _oc_url = f"http://{_oc_host}:{DASHBOARD_CONFIG['opencode_port']}"
+    return render_template("tools.html", config=DASHBOARD_CONFIG,
+                           request_host=request.host,
+                           opencode_url=_oc_url)
 
 
 @app.route("/prompts")
@@ -2976,14 +3304,35 @@ def api_ai_status():
     })
 
 
+_SECRET_KEY_RE = re.compile(r"(api[_-]?key|secret|token|password|passwd|credential|authorization|bearer)", re.I)
+
+
+def _redact_config(raw: str) -> str:
+    """Mask secret-valued keys in a JSON config blob."""
+    try:
+        cfg = json.loads(raw)
+    except Exception:
+        return "{}"
+
+    def _walk(node):
+        if isinstance(node, dict):
+            return {k: ("***" if _SECRET_KEY_RE.search(k) and isinstance(v, str) and v else _walk(v))
+                    for k, v in node.items()}
+        if isinstance(node, list):
+            return [_walk(x) for x in node]
+        return node
+
+    return json.dumps(_walk(cfg), indent=2, default=str)
+
+
 @app.route("/api/ai/config")
 @require_api_key
 def api_ai_config():
-    """Return the active opencode.json config."""
+    """Return the active opencode.json config (secrets masked)."""
     try:
         cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
         if cfg_path.exists():
-            return jsonify({"config": cfg_path.read_text()})
+            return jsonify({"config": _redact_config(cfg_path.read_text())})
         return jsonify({"config": "{}"})
     except Exception as e:
         return jsonify({"config": "{}", "error": str(e)})
@@ -3040,23 +3389,59 @@ def api_ai_stop():
     return jsonify({"status": "stopped", **results})
 
 
+def _find_opencode() -> str | None:
+    """Locate the opencode binary on the server."""
+    candidates = [
+        "/root/.opencode/bin/opencode",
+        os.path.expanduser("~/.opencode/bin/opencode"),
+        os.path.expanduser("~/.local/bin/opencode"),
+        os.path.expanduser("~/.local/share/opencode/bin/opencode"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return shutil.which("opencode")
+
+
 @app.route("/api/ai/run-opencode", methods=["POST"])
 @require_api_key
 @csrf_required
 def api_ai_run_opencode():
-    """Launch opencode in a tmux session (for in-browser terminal access)."""
+    """Launch opencode web UI in a tmux session (iframe-embeddable)."""
     if _tmux_running("opencode"):
-        return jsonify({"status": "already_running", "session": "opencode"})
+        return jsonify({"status": "already_running", "session": "opencode",
+                        "url": DASHBOARD_CONFIG["opencode_url"]})
+    oc = _find_opencode()
+    if not oc:
+        return jsonify({"status": "failed",
+                        "error": "opencode binary not found on server (searched /root/.opencode/bin, "
+                                 "~/.opencode/bin, ~/.local/bin, PATH)"}), 500
     try:
-        oc = shutil.which("opencode") or "/usr/bin/opencode"
+        data = request.get_json(silent=True) or {}
+        workdir = data.get("dir") or None
+        oc_port = DASHBOARD_CONFIG["opencode_port"]
+        log = "/tmp/opencode_run.log"
+        # Launch opencode in web mode (serves browser UI on port oc_port)
+        run = "exec " + shlex.quote(oc) + " web --port " + str(oc_port) + " 2>&1 | tee " + log
+        if workdir:
+            run = "cd " + shlex.quote(str(workdir)) + " && " + run
         r = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", "opencode", oc],
+            ["tmux", "new-session", "-d", "-s", "opencode", run],
             capture_output=True, text=True, timeout=10
         )
-        if r.returncode == 0:
-            return jsonify({"status": "started", "session": "opencode"})
-        else:
+        if r.returncode != 0:
             return jsonify({"status": "failed", "error": r.stderr[:200]}), 500
+        time.sleep(2)
+        if not _tmux_running("opencode"):
+            tail = ""
+            try:
+                tail = Path(log).read_text()[-300:]
+            except Exception:
+                pass
+            return jsonify({"status": "failed",
+                            "error": "opencode exited immediately: " + (tail or "no log output")}), 500
+        return jsonify({"status": "started", "session": "opencode",
+                        "url": DASHBOARD_CONFIG["opencode_url"]})
     except Exception as e:
         return jsonify({"status": "failed", "error": str(e)}), 500
 
@@ -3082,7 +3467,12 @@ def api_ai_opencode_output():
 @require_api_key_html
 def ai_dashboard():
     """AI Infrastructure dashboard page."""
-    return render_template("ai.html", config=DASHBOARD_CONFIG, ai_tunnel_target=DASHBOARD_CONFIG["ai_tunnel_target"])
+    _oc_host = request.host.split(":")[0]
+    _oc_url = f"http://{_oc_host}:{DASHBOARD_CONFIG['opencode_port']}"
+    return render_template("ai.html", config=DASHBOARD_CONFIG,
+                           ai_tunnel_target=DASHBOARD_CONFIG["ai_tunnel_target"],
+                           request_host=request.host,
+                           opencode_url=_oc_url)
 
 
 # ---------------------------------------------------------------------------
@@ -3145,7 +3535,8 @@ def api_jobs_create():
     job_type = data.get("type", "custom")
     title = data.get("title", "Untitled Job")
     total_steps = data.get("total_steps", 100)
-    job_id = _jm.create(job_type, title, total_steps)
+    case_id = (data.get("case_id") or "").strip()
+    job_id = _jm.create(job_type, title, total_steps, case_id=case_id)
     return jsonify({"job_id": job_id}), 201
 
 
@@ -3208,8 +3599,11 @@ def api_flashcards_list():
 @app.route("/api/flashcards/<name>")
 @require_api_key
 def api_flashcards_deck(name):
-    path = CC_DIR / "flashcards" / f"{name}.yaml"
-    if not path.is_file():
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name or ""):
+        return jsonify({"error": "Invalid deck name"}), 400
+    decks_dir = (CC_DIR / "flashcards").resolve()
+    path = decks_dir / f"{name}.yaml"
+    if path.parent != decks_dir or not path.is_file():
         return jsonify({"error": "Deck not found"}), 404
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -3252,8 +3646,10 @@ def api_dns_start_monitor():
     if not domain:
         return jsonify({"error": "domain required"}), 400
     types = data.get("types")
-    interval = int(data.get("interval", 300))
-    duration = int(data.get("duration", 0))
+    interval, interval_ok = _safe_int(data.get("interval"), 300)
+    duration, duration_ok = _safe_int(data.get("duration"), 0)
+    if not interval_ok or not duration_ok:
+        return jsonify({"error": "interval/duration must be integers"}), 400
     from modules.dns_wrapper import start_monitor, start_background_monitor
     start_background_monitor()
     result = start_monitor(domain, types, interval, duration)
@@ -3463,13 +3859,19 @@ import yaml
 
 PROMPTS_DIR = CC_DIR / "prompts"
 
+
+def _safe_prompt_name(raw: str) -> str:
+    """Normalize a prompt name to [a-z0-9-] (path-safe)."""
+    return re.sub(r"[^a-z0-9-]", "", (raw or "").strip().lower().replace(" ", "-"))
+
+
 @app.route("/api/prompts", methods=["GET", "POST"])
 @csrf_required
 @require_api_key
 def api_prompts():
     if request.method == "POST":
-        data = request.get_json(force=True)
-        name = data.get("id") or data.get("title", "").lower().replace(" ", "-").replace(r"[^a-z0-9-]", "")
+        data = request.get_json(silent=True) or {}
+        name = _safe_prompt_name(data.get("id") or data.get("title", ""))
         if not name:
             return jsonify({"error": "Name is required"}), 400
         path = PROMPTS_DIR / f"{name}.yaml"
@@ -3506,6 +3908,9 @@ def api_prompts():
 @csrf_required
 @require_api_key
 def api_prompt_detail(name):
+    name = _safe_prompt_name(name)
+    if not name:
+        return jsonify({"error": "Invalid name"}), 400
     path = PROMPTS_DIR / f"{name}.yaml"
     if request.method == "DELETE":
         if not path.exists():
@@ -3514,7 +3919,7 @@ def api_prompt_detail(name):
         return jsonify({"status": "deleted"})
     if not path.exists():
         return jsonify({"error": "Not found"}), 404
-    data = request.get_json(force=True)
+    data = request.get_json(silent=True) or {}
     current = yaml.safe_load(path.read_text()) or {}
     current.update({
         "title": data.get("title", current.get("title", name)),
@@ -3529,16 +3934,70 @@ def api_prompt_detail(name):
 # ---------------------------------------------------------------------------
 # Dashboard API
 # ---------------------------------------------------------------------------
+_STATS_CACHE: dict = {}
+_STATS_TTL = 60.0  # seconds
+_STATS_LOCK = threading.Lock()
+_STATS_INFLIGHT: set = set()
+
+
+def _refresh_stats_async(key: str, factory):
+    """Recompute a stale aggregate in the background, keeping the cache fresh."""
+    try:
+        payload = factory()
+        with _STATS_LOCK:
+            _STATS_CACHE[key] = (time.monotonic(), payload)
+    except Exception:
+        _logger.exception("Background stats refresh failed for %s", key)
+    finally:
+        with _STATS_LOCK:
+            _STATS_INFLIGHT.discard(key)
+
+
+def _cached_stats(key: str, factory):
+    """TTL-cache expensive cross-case aggregate payloads with stale-while-revalidate.
+
+    key: stable cache key (e.g. "dashboard_stats", "findings_stats"). Mutations
+    to cases/findings are picked up within one TTL, keeping the dashboard fast
+    on frequent polls without stale data for more than a few seconds. When the
+    entry is expired we serve the stale copy immediately and refresh in a
+    background thread, so the first request never blocks on a full recompute.
+    A single in-flight refresh per key prevents a stampede."""
+    now = time.monotonic()
+    hit = _STATS_CACHE.get(key)
+    if hit and now - hit[0] < _STATS_TTL:
+        return hit[1]
+    with _STATS_LOCK:
+        if key in _STATS_INFLIGHT:
+            if hit:
+                return hit[1]
+            # No cache yet but another thread is computing — fall through and
+            # compute (rare cold-start duplicate, safe under the lock).
+        else:
+            _STATS_INFLIGHT.add(key)
+            if hit:
+                threading.Thread(target=_refresh_stats_async,
+                                 args=(key, factory), daemon=True).start()
+                return hit[1]
+    payload = factory()
+    with _STATS_LOCK:
+        _STATS_CACHE[key] = (time.monotonic(), payload)
+        _STATS_INFLIGHT.discard(key)
+    return payload
+
+
 @app.route("/api/dashboard/stats")
 @require_api_key
 def api_dashboard_stats():
+    return jsonify(_cached_stats("dashboard_stats", _compute_dashboard_stats))
+
+
+def _compute_dashboard_stats():
     cm = CaseManager()
     cases = cm.list_cases()
     cases_by_status: dict = {}
     cases_by_type: dict = {}
     all_findings = []
 
-    cases_list = []
     for c in cases:
         st = c.get("status", "unknown")
         cases_by_status[st] = cases_by_status.get(st, 0) + 1
@@ -3547,21 +4006,6 @@ def api_dashboard_stats():
         cid = c.get("case_id", "")
         db = FindingsDB(cm._case_path(cid))
         c_findings = db.list()
-        c_finding_sev = {}
-        for ff in c_findings:
-            s = ff.get("severity", "info")
-            c_finding_sev[s] = c_finding_sev.get(s, 0) + 1
-        cases_list.append({
-            "case_id": cid,
-            "client": c.get("client", ""),
-            "type": tp,
-            "status": st,
-            "created": c.get("created", ""),
-            "findings": len(c_findings),
-            "findings_by_severity": c_finding_sev,
-            "critical": c_finding_sev.get("critical", 0),
-            "high": c_finding_sev.get("high", 0),
-        })
         for f in c_findings:
             f["_case_id"] = cid
             f["_case_title"] = c.get("client", cid)
@@ -3579,10 +4023,25 @@ def api_dashboard_stats():
         if cve:
             cve_counts[cve] = cve_counts.get(cve, 0) + 1
 
-    # Recent 10 findings (by updated timestamp)
-    recent_findings = sorted(
-        all_findings, key=lambda x: x.get("updated", ""), reverse=True
-    )[:10]
+    # Recent 10 findings (by updated timestamp). Projected to the fields the
+    # dashboard widgets actually render — full finding dicts (description, poc,
+    # command_output, remediation, references…) are far too heavy for this.
+    recent_findings = [
+        {
+            "id": f.get("id", ""),
+            "title": f.get("title", ""),
+            "severity": f.get("severity", "info"),
+            "status": f.get("status", "unvalidated"),
+            "cve": f.get("cve", ""),
+            "updated": f.get("updated", ""),
+            "created": f.get("created", ""),
+            "_case_id": f.get("_case_id", ""),
+            "_case_title": f.get("_case_title", ""),
+        }
+        for f in sorted(
+            all_findings, key=lambda x: x.get("updated", ""), reverse=True
+        )[:10]
+    ]
 
     # Build activity timeline from case modified + finding updates
     activity = []
@@ -3608,12 +4067,11 @@ def api_dashboard_stats():
         })
     activity.sort(key=lambda x: x.get("ts", ""), reverse=True)
 
-    return jsonify({
+    return {
         "cases": {
             "total": len(cases),
             "by_status": cases_by_status,
             "by_type": cases_by_type,
-            "list": cases_list,
         },
         "findings": {
             "total": len(all_findings),
@@ -3623,6 +4081,43 @@ def api_dashboard_stats():
         },
         "top_cves": dict(sorted(cve_counts.items(), key=lambda x: -x[1])[:10]),
         "recent_activity": activity[:20],
+    }
+
+
+@app.route("/api/dashboard/cases")
+@require_api_key
+def api_dashboard_cases():
+    """Paginated case overview for the home dashboard widget."""
+    limit, offset = _board_page_args()
+    cm = CaseManager()
+    cases = cm.list_cases()
+    cases.sort(key=lambda x: x.get("created", ""), reverse=True)
+    page = cases[offset:offset + limit]
+    items = []
+    for c in page:
+        cid = c.get("case_id", "")
+        db = FindingsDB(cm._case_path(cid))
+        c_findings = db.list()
+        c_finding_sev = {}
+        for ff in c_findings:
+            s = ff.get("severity", "info")
+            c_finding_sev[s] = c_finding_sev.get(s, 0) + 1
+        items.append({
+            "case_id": cid,
+            "client": c.get("client", ""),
+            "type": c.get("type", "unknown"),
+            "status": c.get("status", "unknown"),
+            "created": c.get("created", ""),
+            "findings": len(c_findings),
+            "findings_by_severity": c_finding_sev,
+            "critical": c_finding_sev.get("critical", 0),
+            "high": c_finding_sev.get("high", 0),
+        })
+    return jsonify({
+        "total": len(cases),
+        "limit": limit,
+        "offset": offset,
+        "items": items,
     })
 
 
@@ -3652,7 +4147,7 @@ def _get_loot_db():
     global _LOOT
     if _LOOT is None:
         from modules.tool_wrappers import LootDB
-        from modules.constants import CC_DIR
+from modules.config import CC_DIR
         _LOOT = LootDB(CC_DIR / "loot.db")
     return _LOOT
 
@@ -3685,12 +4180,15 @@ def api_loot_add():
     if not source or not target or not username:
         return jsonify({"error": "source, target, username required"}), 400
     db = _get_loot_db()
+    port, port_ok = _safe_int(data.get("port"), 0)
+    if not port_ok:
+        return jsonify({"error": "port must be an integer"}), 400
     cid = db.add_credential(
         source=source, target=target, username=username,
         password=data.get("password", ""),
         hash=data.get("hash", ""), hash_type=data.get("hash_type", ""),
         domain=data.get("domain", ""), protocol=data.get("protocol", ""),
-        port=int(data["port"]) if data.get("port") else 0,
+        port=port,
         notes=data.get("notes", ""),
     )
     return jsonify({"status": "ok", "id": cid}), 201
@@ -3916,9 +4414,8 @@ def _read_mcp_resource(uri: str) -> str:
     """Read an MCP resource by URI — shared logic with cc_mcp_server.py."""
     import yaml
     from modules.case_manager import CaseManager
-    from modules.constants import CASES_DIR, CC_DIR
+from modules.config import CASES_DIR, CC_DIR
     from modules.findings_db import FindingsDB
-    from modules.tool_wrappers import LootDB
     import json as _json
 
     # Static resources (no parameters)
@@ -4004,7 +4501,7 @@ def _read_mcp_playbooks() -> str:
 
 def _read_mcp_prompts() -> str:
     import yaml
-    from modules.constants import CC_DIR
+from modules.config import CC_DIR
     prompts_dir = CC_DIR / "prompts"
     if not prompts_dir.is_dir():
         return "[]"
@@ -4099,7 +4596,10 @@ def burp_scans():
 @app.route("/burp/settings")
 @require_api_key_html
 def burp_settings():
-    return render_template("burp_settings.html", config=DASHBOARD_CONFIG)
+    masked = dict(DASHBOARD_CONFIG)
+    masked["burp_api_key"] = (DASHBOARD_CONFIG["burp_api_key"][:8] + "..."
+                              if DASHBOARD_CONFIG["burp_api_key"] else "")
+    return render_template("burp_settings.html", config=masked)
 
 # --- API endpoints ---
 
@@ -4127,7 +4627,7 @@ def api_burp_scan_detail(scan_id: str):
 @require_api_key
 @csrf_required
 def api_burp_scan_start():
-    data = request.get_json(force=True) or {}
+    data = request.get_json(silent=True) or {}
     urls = data.get("urls", [])
     if isinstance(urls, str):
         urls = [u.strip() for u in urls.split(",") if u.strip()]
@@ -4162,20 +4662,947 @@ def api_burp_config():
 @require_api_key
 @csrf_required
 def api_burp_config_update():
-    data = request.get_json(force=True) or {}
-    cfg = load_config()
+    data = request.get_json(silent=True) or {}
+    updates = {}
     if "api_url" in data:
-        cfg["burp_api_url"] = data["api_url"]
+        updates["burp_api_url"] = data["api_url"]
         DASHBOARD_CONFIG["burp_api_url"] = data["api_url"]
     if "api_key" in data:
-        cfg["burp_api_key"] = data["api_key"]
-        DASHBOARD_CONFIG["burp_api_key"] = data["api_key"]
+        k = data["api_key"]
+        if k and not k.endswith("..."):
+            updates["burp_api_key"] = k
+            DASHBOARD_CONFIG["burp_api_key"] = k
     if "proxy_url" in data:
-        cfg["burp_proxy_url"] = data["proxy_url"]
+        updates["burp_proxy_url"] = data["proxy_url"]
         DASHBOARD_CONFIG["burp_proxy_url"] = data["proxy_url"]
-    from modules.constants import CONFIG_FILE
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    if updates:
+from modules.config import update_config
+        update_config(lambda cfg, u=updates: cfg.update(u))
     return jsonify({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# AppSec — Web Dashboard (DAST + file/repo scans)
+# ---------------------------------------------------------------------------
+
+def _zap_client():
+    from modules.zap_client import ZapClient
+    zc = load_config().get("zap") or {}
+    return ZapClient(api_url=zc.get("url", "http://127.0.0.1:8080"),
+                     api_key=zc.get("api_key", "changeme"))
+
+
+def _caido_client():
+    from modules.caido_client import CaidoClient
+    cfg = load_config()
+    return CaidoClient(
+        base_url=cfg.get("caido_url", "http://192.168.56.1:8080"),
+        api_key=cfg.get("caido_api_key", ""),
+        api_token=cfg.get("caido_api_token", ""),
+    )
+
+
+# In-memory registry of Caido scans started from this dashboard process:
+# scan_id -> {url, host, workflow_name, workflow_id, started_at}
+_CAIDO_SCANS = {}
+
+
+def _bounded_store(store: dict, key: str, value, maxlen: int = 200) -> None:
+    """Insert into an in-memory registry, evicting the oldest entry when the
+    store exceeds maxlen so long-running dashboard processes don't leak."""
+    while len(store) >= maxlen:
+        try:
+            store.pop(next(iter(store)))
+        except StopIteration:
+            break
+    store[key] = value
+
+
+# --- CLI DAST runners (nuclei / wafw00f / wapiti / nikto / whatweb) ---
+
+def _url_key(url: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", url)[:80]
+
+
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+_GOBUSTER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML) Chrome/126.0.0.0 Safari/537.36")
+
+
+def _url_host(url: str) -> str:
+    try:
+        return urllib.parse.urlsplit(url).hostname or ""
+    except Exception:
+        return ""
+
+
+def _url_scheme(url: str) -> str:
+    try:
+        return urllib.parse.urlsplit(url).scheme or ""
+    except Exception:
+        return ""
+
+
+def _resolve_ipv4(url: str) -> str:
+    """Rewrite the URL hostname to a resolved IPv4 address.
+
+    Some servers resolve to an unreachable AAAA record first while the web
+    server itself listens on IPv4. Curl/Python fall back automatically but
+    Ruby/Perl-based scanners (whatweb) do not, so force IPv4 when possible.
+    """
+    host = _url_host(url)
+    if not host:
+        return url
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET)
+    except OSError:
+        return url
+    if not infos:
+        return url
+    scheme = _url_scheme(url)
+    port = ""
+    try:
+        p = urllib.parse.urlsplit(url).port
+        if p:
+            port = f":{p}"
+    except ValueError:
+        pass
+    return f"{scheme}://{infos[0][4][0]}{port}/"
+
+
+def _pick_dirbust_wordlist() -> str:
+    cfg = load_config()
+    wordlists_dir = (cfg.get("wordlists_dir") or "").strip() or "/wordlists"
+    candidates = [
+        "/usr/share/dirb/wordlists/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/common.txt",
+        os.path.join(wordlists_dir, "SecLists", "Discovery", "Web-Content",
+                     "raft-medium-directories-lowercase.txt"),
+        "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories-lowercase.txt",
+        "/usr/share/dirbuster/wordlists/directory-list-2.3-medium.txt",
+        os.path.join(wordlists_dir, "SecLists", "Discovery", "Web-Content",
+                     "raft-large-directories-lowercase.txt"),
+        "/usr/share/seclists/Discovery/Web-Content/raft-large-directories-lowercase.txt",
+        "/usr/share/dirb/wordlists/big.txt",
+    ]
+    cfg_wl = (cfg.get("wordlist_web") or "").strip()
+    if cfg_wl:
+        candidates.append(cfg_wl)
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return ""
+
+
+def _cli_dast_files(tool: str, url: str) -> str:
+    key = _url_key(url)
+    tmp = tempfile.gettempdir()
+    ext = {"wapiti": ".json", "nuclei": ".jsonl", "nikto": ".json",
+           "dirbust": ".json"}.get(tool, "")
+    return os.path.join(tmp, f"cc_{tool}_{key}{ext}") if ext else ""
+
+
+_CLI_DAST_TIMEOUTS = {"wafw00f": 120, "whatweb": 180, "nikto": 900,
+                      "wapiti": 1800, "nuclei": 900, "dirbust": 1500}
+
+
+def _cli_dast_cmd(tool: str, url: str) -> list:
+    tmp = tempfile.gettempdir()
+    key = _url_key(url)
+    if tool == "wafw00f":
+        return ["wafw00f", "-a", _BROWSER_UA, url]
+    if tool == "whatweb":
+        return ["whatweb", "-a", "1", "--color=never", "--no-errors",
+                "-H", f"User-Agent: {_BROWSER_UA}", _resolve_ipv4(url)]
+    if tool == "nikto":
+        cmd = ["nikto", "-h", url, "-nocheck", "-nointeractive",
+               "-followredirects", "-maxtime", "10m",
+               "-useragent", _BROWSER_UA, "-404code", "301,302",
+               "-Display", "2",
+               "-o", os.path.join(tmp, f"cc_nikto_{key}"),
+               "-Format", "json"]
+        if _url_scheme(url) == "https":
+            cmd.insert(1, "-ssl")
+        return cmd
+    if tool == "wapiti":
+        return ["wapiti", "-u", url, "-d", "3", "--max-scan-time", "1200",
+                "-f", "json", "--flush-session",
+                "-o", os.path.join(tmp, f"cc_wapiti_{key}.json")]
+    if tool == "nuclei":
+        return ["nuclei", "-u", url, "-fr", "-follow-redirects",
+                "-retries", "2", "-timeout", "15",
+                "-H", f"User-Agent: {_BROWSER_UA}",
+                "-jsonl", "-silent",
+                "-o", os.path.join(tmp, f"cc_nuclei_{key}.jsonl")]
+    if tool == "dirbust":
+        wl = _pick_dirbust_wordlist()
+        if not wl:
+            return []
+        return ["gobuster", "dir", "-u", url, "-w", wl, "-t", "10", "-q",
+                "-k", "--exclude-length", "0", "--timeout", "20s",
+                "-H", f"User-Agent: {_GOBUSTER_UA}",
+                "-o", os.path.join(tmp, f"cc_dirbust_{key}.json")]
+    return []
+
+
+def _run_cli_cmd(cmd: list, timeout: int) -> dict:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return {"rc": r.returncode, "stdout": r.stdout or "",
+                "stderr": r.stderr or "", "timed_out": False}
+    except subprocess.TimeoutExpired:
+        return {"rc": -1, "stdout": "", "stderr": f"timed out after {timeout}s",
+                "timed_out": True}
+    except FileNotFoundError:
+        return {"rc": -1, "stdout": "", "stderr": f"binary not found: {cmd[0]}",
+                "timed_out": False}
+    except Exception as e:
+        return {"rc": -1, "stdout": "", "stderr": str(e), "timed_out": False}
+
+
+def _parse_gobuster(out: str, json_file: str = "") -> list:
+    paths = []
+    if json_file:
+        try:
+            data = json.loads(Path(json_file).read_text(encoding="utf-8"))
+            results = data.get("results") if isinstance(data, dict) else None
+            if results is None and isinstance(data, list):
+                results = data
+            for it in results or []:
+                if not isinstance(it, dict):
+                    continue
+                paths.append({
+                    "path": it.get("path") or "/",
+                    "status": int(it.get("status") or 0),
+                    "size": int(it.get("size") or 0),
+                    "redirect": it.get("redirect") or "",
+                })
+        except (OSError, json.JSONDecodeError):
+            pass
+    if not paths:
+        lines = (out.splitlines() if out
+                 else _read_file_lines(json_file) if json_file else [])
+        for ln in lines:
+            ln = ln.strip()
+            m = re.match(r"^(/\S+)\s+\(Status:\s*(\d+)\)\s+\[Size:\s*(\d+)\]", ln)
+            if not m:
+                continue
+            entry = {"path": m.group(1), "status": int(m.group(2)),
+                     "size": int(m.group(3)), "redirect": ""}
+            redir = re.search(r"\[-->\s*(\S+)\]", ln)
+            if redir:
+                entry["redirect"] = redir.group(1)
+            paths.append(entry)
+    # Drop rate-limit / bot-block flood: if one 5xx status dominates the
+    # results (>50%) it is the WAF wildcard response, not real content.
+    if paths:
+        from collections import Counter
+        cnt = Counter(e["status"] for e in paths)
+        top_status, top_n = cnt.most_common(1)[0]
+        if top_status >= 500 and top_n > len(paths) // 2:
+            paths = [e for e in paths if e["status"] != top_status]
+    return paths
+
+
+def _read_file_lines(path: str) -> list:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def _read_nikto_json(tmpfile: str) -> dict:
+    """Load nikto -Format json output. Nikto 2.6.0 writes a list of
+    per-target objects and may append '.json' to the -o filename."""
+    candidates = [tmpfile, f"{tmpfile}.json"]
+    if tmpfile.endswith(".json"):
+        candidates = [tmpfile, tmpfile[:-5]]
+    for c in candidates:
+        try:
+            data = json.loads(Path(c).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _summarize_cli_dast(tool: str, r: dict, tmpfile: str, url: str = "") -> dict:
+    out = r.get("stdout", "")
+    if tool == "wafw00f":
+        detail = ""
+        for ln in out.splitlines():
+            low = ln.strip().lower()
+            if ("behind a waf" in low or "waf detected" in low
+                    or "number of requests" in low):
+                detail = ln.strip()
+        return {"waf_detected": "behind a WAF" in out,
+                "detail": detail[:200] or "no output"}
+    if tool == "whatweb":
+        lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+        return {"detail": (lines[0] if lines else "no output")[:400]}
+    if tool == "nikto":
+        data = _read_nikto_json(tmpfile)
+        vulns = data.get("vulnerabilities") or []
+        server = ""
+        for v in vulns:
+            m = re.search(r"Server banner changed from '([^']+)'", v.get("msg") or "")
+            if m:
+                server = m.group(1)
+                break
+        return {"hosts_tested": max(out.count("Target IP:"),
+                                    1 if data else 0),
+                "findings": len(vulns),
+                "server": server or (data.get("server_banner") or "").strip(),
+                "report": out[:4000]}
+    if tool == "wapiti":
+        try:
+            data = json.loads(Path(tmpfile).read_text(encoding="utf-8"))
+            vulns = data.get("vulnerabilities") or {}
+            total = sum(len(v) for v in vulns.values())
+            return {"categories": vulns, "findings": total}
+        except (OSError, json.JSONDecodeError):
+            return {"findings": 0}
+    if tool == "nuclei":
+        leaks = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                it = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(it, dict):
+                info = it.get("info") or {}
+                leaks.append({"name": info.get("name"),
+                              "severity": info.get("severity")})
+        sev = {}
+        for l in leaks:
+            k = l.get("severity") or "info"
+            sev[k] = sev.get(k, 0) + 1
+        return {"findings": len(leaks), "by_severity": sev}
+    if tool == "dirbust":
+        paths = _parse_gobuster(out, _cli_dast_files("dirbust", url))
+        return {"findings": len(paths), "paths": paths[:50],
+                "wordlist": _pick_dirbust_wordlist() or ""}
+    return {"findings": 0}
+
+
+def _run_cli_dast(scan_id: str, tool: str, url: str):
+    rec = _CLI_DAST[scan_id]
+    rec["status"] = "running"
+    cmd = _cli_dast_cmd(tool, url)
+    r = _run_cli_cmd(cmd, _CLI_DAST_TIMEOUTS.get(tool, 900))
+    rec.update(r)
+    rec["summary"] = _summarize_cli_dast(tool, r,
+                                         _cli_dast_files(tool, url), url)
+    rec["status"] = "timed_out" if r["timed_out"] else "done"
+    rec["ended_at"] = time.time()
+
+
+_WAPITI_SEV = {"0": "info", "1": "low", "2": "medium", "3": "high",
+               "4": "critical"}
+
+
+def _cli_dast_issues(rec: dict) -> dict:
+    tool = rec.get("tool")
+    out = rec.get("stdout") or ""
+    url = rec.get("url") or ""
+    if tool == "nuclei":
+        issues = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                it = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(it, dict):
+                continue
+            info = it.get("info") or {}
+            issues.append({
+                "title": info.get("name") or "nuclei finding",
+                "severity": info.get("severity") or "info",
+                "url": it.get("matched-at") or url,
+                "description": (info.get("description") or "")[:400],
+            })
+        return {"issues": issues, "report": rec.get("summary") or {}}
+    if tool == "wapiti":
+        try:
+            tmpfile = _cli_dast_files("wapiti", url)
+            data = json.loads(Path(tmpfile).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        vulns = data.get("vulnerabilities") or {}
+        issues = []
+        for cat, items in vulns.items():
+            for it in items:
+                issues.append({
+                    "title": cat,
+                    "severity": _WAPITI_SEV.get(str(it.get("level")), "info"),
+                    "url": it.get("url") or url,
+                    "description": (it.get("detail") or it.get("info")
+                                    or "")[:400],
+                })
+        return {"issues": issues, "report": rec.get("summary") or {}}
+    if tool == "nikto":
+        issues = []
+        data = _read_nikto_json(_cli_dast_files("nikto", url))
+        for v in data.get("vulnerabilities") or []:
+            msg = (v.get("msg") or "").strip()
+            ref = (v.get("references") or "").strip()
+            desc = msg
+            if ref:
+                desc = f"{msg}\nRef: {ref}"
+            issues.append({
+                "title": (msg.splitlines()[0] if msg else "nikto finding")[:100],
+                "severity": "info",
+                "url": v.get("url") or url,
+                "description": desc[:600],
+            })
+        return {"issues": issues, "report": rec.get("summary") or {}}
+    if tool == "dirbust":
+        paths = _parse_gobuster(out, _cli_dast_files("dirbust", url))
+        issues = []
+        base = url.rstrip("/")
+        for p in paths:
+            st = p.get("status", 0)
+            sev = "info" if st in (301, 302, 307, 308, 401, 403) else "low"
+            desc = f"Status {st}"
+            if p.get("size"):
+                desc += f", size {p['size']}"
+            if p.get("redirect"):
+                desc += f", redirects to {p['redirect']}"
+            issues.append({
+                "title": f"Directory/File found: {p.get('path', '')}",
+                "severity": sev,
+                "url": f"{base}{p.get('path', '')}",
+                "description": desc,
+            })
+        return {"issues": issues, "report": rec.get("summary") or {}}
+    return {"issues": [], "report": rec.get("summary") or {}, "output": out[:4000]}
+
+
+_CLI_DAST = {}
+
+
+@app.route("/appsec")
+@require_api_key_html
+def appsec_page():
+    return render_template("appsec.html", config=DASHBOARD_CONFIG)
+
+
+@app.route("/api/appsec/health")
+@require_api_key
+def api_appsec_health():
+    out = {"dast": {}, "file_tools": {}}
+    out["dast"]["zap"] = _zap_client().health()
+    out["dast"]["burp"] = _burp_client().health()
+    caido = _caido_client().detect()
+    cfg = load_config()
+    caido["pat_configured"] = bool((cfg.get("caido_api_token") or "").strip())
+    caido["api_key_configured"] = bool((cfg.get("caido_api_key") or "").strip())
+    caido["base_url"] = cfg.get("caido_url", "http://192.168.56.1:8080")
+    out["dast"]["caido"] = caido
+    for name in ("nuclei", "wafw00f", "wapiti", "nikto", "whatweb",
+                 "ffuf", "gobuster", "sqlmap", "katana", "hakrawler",
+                 "subfinder", "amass"):
+        out["dast"][name] = shutil.which(name) is not None
+    out["dast"]["dirbust"] = (shutil.which("gobuster") is not None
+                              and bool(_pick_dirbust_wordlist()))
+    for name in ("syft", "trivy", "grype", "gitleaks", "trufflehog",
+                 "semgrep", "codeql", "pip-audit",
+                 "nm", "objdump", "readelf", "strings", "radare2"):
+        out["file_tools"][name] = shutil.which(name) is not None
+    return jsonify(out)
+
+
+@app.route("/api/appsec/caido/config")
+@require_api_key
+def api_appsec_caido_config():
+    cfg = load_config()
+    return jsonify({
+        "base_url": cfg.get("caido_url", "http://192.168.56.1:8080"),
+        "api_key": (cfg.get("caido_api_key") or "")[:8] + "..." if cfg.get("caido_api_key") else "",
+        "api_key_configured": bool((cfg.get("caido_api_key") or "").strip()),
+        "pat_configured": bool((cfg.get("caido_api_token") or "").strip()),
+    })
+
+
+@app.route("/api/appsec/caido/config", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_appsec_caido_config_update():
+    data = request.get_json(silent=True) or {}
+from modules.config import update_config
+    updates = {}
+    if "base_url" in data and data["base_url"].strip():
+        updates["caido_url"] = data["base_url"].strip()
+        DASHBOARD_CONFIG["caido_url"] = data["base_url"].strip()
+    if "api_key" in data:
+        updates["caido_api_key"] = data["api_key"].strip()
+    if "api_token" in data and data["api_token"].strip():
+        updates["caido_api_token"] = data["api_token"].strip()
+    if updates:
+        update_config(lambda c, u=updates: c.update(u))
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/appsec/zap/config")
+@require_api_key
+def api_appsec_zap_config():
+    cfg = load_config()
+    z = cfg.get("zap") or {}
+    return jsonify({
+        "url": z.get("url", "http://127.0.0.1:8080"),
+        "api_key": (z.get("api_key") or "")[:8] + "..." if z.get("api_key") else "",
+        "bin": z.get("bin", "zaproxy"),
+    })
+
+
+@app.route("/api/appsec/zap/config", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_appsec_zap_config_update():
+    data = request.get_json(silent=True) or {}
+from modules.config import update_config
+    def _mut(cfg):
+        z = dict(cfg.get("zap") or {})
+        if data.get("url", "").strip():
+            z["url"] = data["url"].strip()
+        if data.get("api_key", "").strip():
+            z["api_key"] = data["api_key"].strip()
+        if data.get("bin", "").strip():
+            z["bin"] = data["bin"].strip()
+        cfg["zap"] = z
+    update_config(_mut)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/appsec/burp/config")
+@require_api_key
+def api_appsec_burp_config():
+    cfg = load_config()
+    return jsonify({
+        "api_url": cfg.get("burp_api_url", BURP_API_URL),
+        "api_key": (cfg.get("burp_api_key") or "")[:8] + "..." if cfg.get("burp_api_key") else "",
+        "proxy_url": cfg.get("burp_proxy_url", BURP_PROXY_URL),
+    })
+
+
+@app.route("/api/appsec/burp/config", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_appsec_burp_config_update():
+    data = request.get_json(silent=True) or {}
+from modules.config import update_config
+    def _mut(cfg):
+        if data.get("api_url", "").strip():
+            cfg["burp_api_url"] = data["api_url"].strip()
+            DASHBOARD_CONFIG["burp_api_url"] = data["api_url"].strip()
+        if data.get("api_key", "").strip():
+            cfg["burp_api_key"] = data["api_key"].strip()
+            DASHBOARD_CONFIG["burp_api_key"] = data["api_key"].strip()
+        if data.get("proxy_url", "").strip():
+            cfg["burp_proxy_url"] = data["proxy_url"].strip()
+            DASHBOARD_CONFIG["burp_proxy_url"] = data["proxy_url"].strip()
+    update_config(_mut)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/appsec/caido/workflows")
+@require_api_key
+def api_appsec_caido_workflows():
+    try:
+        return jsonify({"workflows": _caido_client().list_workflows()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/appsec/dast/zap-start", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_appsec_zap_start():
+    """Start the ZAP daemon in the background (cold start can take ~90s)."""
+    zc = load_config().get("zap") or {}
+    client = _zap_client()
+    job_id = _jm.create("appsec-zap", "Start ZAP daemon", 1)
+
+    def _run(*, _progress=None):
+        if _progress:
+            _progress(current_step=1, message="Starting ZAP daemon (cold start ~90s)...")
+        r = client.ensure_running(zap_bin=zc.get("bin", "zaproxy"))
+        if _progress:
+            _progress(current_step=1, message="ZAP daemon ready" if r.get("status") == "ok" else "ZAP failed to start")
+        return r
+
+    run_in_thread(_jm, job_id, _run, progress_callback=_make_job_progress("", job_id))
+    return jsonify({"job_id": job_id}), 201
+
+
+@app.route("/api/appsec/dast/start", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_appsec_dast_start():
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "No target URL provided"}), 400
+    tools = data.get("tools") or []
+    if isinstance(tools, str):
+        tools = [t.strip() for t in tools.split(",") if t.strip()]
+    if not tools:
+        return jsonify({"error": "Select at least one tool"}), 400
+    zap = _zap_client()
+    bc = _burp_client()
+    cc = _caido_client()
+    if any(t.startswith("zap") for t in tools):
+        try:
+            zap.import_url(url)
+        except Exception:
+            pass
+    results = {}
+    for t in tools:
+        if t in ("zap-active", "zap-spider", "zap-ajax"):
+            if t == "zap-active":
+                r = zap.active_scan_start(url)
+            elif t == "zap-spider":
+                r = zap.spider_start(url)
+            else:
+                r = zap.ajax_spider_start(url)
+            results[t] = {
+                "scan_id": r.get("scan_id", ""),
+                "mode": t.replace("zap-", ""),
+                "started": "error" not in r,
+                "error": r.get("error"),
+            }
+        elif t == "burp":
+            r = bc.scan_start([url])
+            results[t] = {
+                "scan_id": str(r.get("scan_id", r.get("id", ""))),
+                "mode": "active",
+                "started": "error" not in r,
+                "error": r.get("error"),
+            }
+        elif t == "caido":
+            try:
+                scan = cc.run_workflow_on_url(url)
+            except Exception as e:
+                results[t] = {
+                    "scan_id": "", "mode": "workflow", "started": False,
+                    "error": str(e),
+                }
+            else:
+                _bounded_store(_CAIDO_SCANS, scan["scan_id"], {
+                    "url": url,
+                    "host": scan["host"],
+                    "workflow_name": scan.get("workflow_name"),
+                    "workflow_id": scan.get("workflow_id"),
+                    "reporter": scan.get("reporter"),
+                    "started_at": time.time(),
+                })
+                results[t] = {
+                    "scan_id": scan["scan_id"],
+                    "mode": "workflow",
+                    "started": True,
+                    "workflow": scan.get("workflow_name"),
+                    "task_id": scan.get("task_id"),
+                }
+        elif t == "dirbust":
+            if shutil.which("gobuster") is None:
+                results[t] = {"started": False,
+                              "error": "gobuster not installed on server"}
+                continue
+            wl = _pick_dirbust_wordlist()
+            if not wl:
+                results[t] = {"started": False,
+                              "error": "no dirbust wordlist found on server"}
+                continue
+            scan_id = f"cli_dirbust_{secrets.token_hex(4)}"
+            _bounded_store(_CLI_DAST, scan_id, {"tool": "dirbust", "url": url,
+                                                "status": "queued",
+                                                "started_at": time.time()})
+            threading.Thread(target=_run_cli_dast,
+                             args=(scan_id, "dirbust", url), daemon=True).start()
+            results[t] = {"scan_id": scan_id, "mode": "cli",
+                          "started": True, "wordlist": wl}
+        elif t in _CLI_DAST_TIMEOUTS:
+            if shutil.which(t) is None:
+                results[t] = {"started": False,
+                              "error": f"{t} not installed on server"}
+                continue
+            scan_id = f"cli_{t}_{secrets.token_hex(4)}"
+            _bounded_store(_CLI_DAST, scan_id, {"tool": t, "url": url,
+                                                "status": "queued",
+                                                "started_at": time.time()})
+            threading.Thread(target=_run_cli_dast,
+                             args=(scan_id, t, url), daemon=True).start()
+            results[t] = {"scan_id": scan_id, "mode": "cli", "started": True}
+        else:
+            results[t] = {"started": False, "error": f"unknown tool {t}"}
+    return jsonify({"url": url, "results": results})
+
+
+@app.route("/api/appsec/dast/status")
+@require_api_key
+def api_appsec_dast_status():
+    tool = request.args.get("tool", "")
+    scan_id = request.args.get("scan_id", "")
+    try:
+        if tool == "zap-active":
+            return jsonify(_zap_client().active_scan_status(scan_id))
+        if tool == "zap-spider":
+            return jsonify(_zap_client().spider_status(scan_id))
+        if tool == "zap-ajax":
+            return jsonify(_zap_client().ajax_spider_status())
+        if tool == "burp":
+            return jsonify(_burp_client().scan_status(scan_id))
+        if tool == "caido":
+            meta = _CAIDO_SCANS.get(scan_id, {})
+            if not meta:
+                return jsonify({"error": f"Unknown Caido scan: {scan_id}"}), 400
+            try:
+                since = int(meta.get("started_at", 0) * 1000)
+                n = _caido_client().count_findings(
+                    host=meta.get("host", ""),
+                    since_epoch_ms=since)
+            except Exception as e:
+                return jsonify({"status": "error", "error": str(e)}), 500
+            return jsonify({
+                "status": "active",
+                "findings": n,
+                "host": meta.get("host", ""),
+                "workflow": meta.get("workflow_name"),
+                "reporter": meta.get("reporter"),
+            })
+        if tool in _CLI_DAST_TIMEOUTS:
+            rec = _CLI_DAST.get(scan_id)
+            if not rec:
+                return jsonify({"error": f"Unknown {tool} scan: {scan_id}"}), 400
+            body = {"status": rec.get("status", "queued"), "tool": tool}
+            if rec.get("status") in ("done", "timed_out"):
+                body["findings"] = (rec.get("summary") or {}).get("findings", 0)
+                body["summary"] = rec.get("summary")
+                body["stderr"] = (rec.get("stderr") or "")[:400]
+            return jsonify(body)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"error": f"Unknown tool: {tool}"}), 400
+
+
+@app.route("/api/appsec/dast/issues")
+@require_api_key
+def api_appsec_dast_issues():
+    tool = request.args.get("tool", "")
+    scan_id = request.args.get("scan_id", "")
+    risk = request.args.get("risk", "")
+    try:
+        if tool.startswith("zap"):
+            return jsonify({"alerts": _zap_client().alerts(risk=risk)})
+        if tool == "burp":
+            return jsonify({"issues": _burp_client().issues_list(scan_id, severity=risk)})
+        if tool == "caido":
+            meta = _CAIDO_SCANS.get(scan_id, {})
+            if not meta:
+                return jsonify({"error": f"Unknown Caido scan: {scan_id}"}), 400
+            since = int(meta.get("started_at", 0) * 1000)
+            issues = _caido_client().list_findings(
+                host=meta.get("host", ""),
+                since_epoch_ms=since,
+                limit=500)
+            return jsonify({
+                "issues": issues,
+                "host": meta.get("host", ""),
+                "workflow": meta.get("workflow_name"),
+                "reporter": meta.get("reporter"),
+            })
+        if tool in _CLI_DAST_TIMEOUTS:
+            rec = _CLI_DAST.get(scan_id)
+            if not rec:
+                return jsonify({"error": f"Unknown {tool} scan: {scan_id}"}), 400
+            return jsonify(_cli_dast_issues(rec))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"error": f"Unknown tool: {tool}"}), 400
+
+
+def _appsec_file_scan_job(path, tools, case_id="", _progress=None):
+    from modules.bin_surface import scan_binary, scan_directory, format_report
+    from modules import appsec as _appsec
+    results = {}
+    p = Path(path)
+
+    def _bin_surface(p):
+        if p.is_file():
+            r = {"target": str(p), "found": 1, "scanned": 1,
+                 "results": [scan_binary(p)], "errors": []}
+        else:
+            r = scan_directory(p, max_depth=3)
+        return {"summary": {"target": str(p),
+                            "found": r.get("found", 0),
+                            "scanned": r.get("scanned", 0)},
+                "report": format_report(r)}
+
+    def _compiled_scan(p):
+        from modules.compiled_scan import scan_target as _cst, format_report as _cfr
+        r = _cst(str(p), max_depth=4)
+        s = r.get("summary", {})
+        return {"summary": {"target": str(p),
+                            "scanned": r.get("scanned", 0),
+                            "findings": s.get("findings", 0),
+                            "severity": s.get("severity", {})},
+                "report": _cfr(r)}
+
+    dispatch = {
+        "bin_surface": _bin_surface,
+        "compiled": _compiled_scan,
+        "sbom": lambda p: _appsec.sbom_generate(str(p)),
+        "grype": lambda p: _appsec.sca_grype_scan(str(p)),
+        "trivy": lambda p: _appsec.sca_trivy_scan(str(p)),
+        "secrets": lambda p: _appsec.secret_scan(str(p)),
+        "trufflehog": lambda p: _appsec.trufflehog_scan(str(p)),
+        "sast": lambda p: _appsec.sast_scan(str(p)),
+        "osv": lambda p: _appsec.osv_scan(str(p)),
+        "cdn": lambda p: _appsec.cdn_scan(str(p)),
+        "sbom_existing": lambda p: _appsec.sbom_existing(str(p)),
+        "appsec": lambda p: _appsec.appsec_scan(str(p)),
+    }
+
+    total = len(tools) or 1
+    for i, t in enumerate(tools, start=1):
+        _progress(i, f"Running {t} on {path} ...", total)
+        try:
+            fn = dispatch.get(t)
+            if fn is None:
+                results[t] = {"error": f"unknown tool {t}"}
+            else:
+                results[t] = fn(p)
+        except Exception as e:
+            results[t] = {"error": str(e)}
+        _progress(i, f"Finished {t}", total)
+    out = {"path": str(p), "tools": tools, "results": results}
+    if case_id:
+        out["case_id"] = case_id
+        # Persist the scan output into the linked case so results are not lost
+        # when the job history is pruned.
+        try:
+            from modules.case_manager import CaseManager
+            cm = CaseManager()
+            scans_dir = cm._case_path(case_id) / "scans"
+            scans_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"appsec_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+            (scans_dir / fname).write_text(
+                json.dumps(out, indent=2, default=str), encoding="utf-8")
+            out["saved_to_case"] = str(scans_dir / fname)
+            cm.ir_timeline_add(case_id, datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                               f"File scan of {p} ({', '.join(tools)}) -> {fname}",
+                               severity="info", source="system")
+        except Exception as e:
+            out["case_save_error"] = str(e)
+    return out
+
+
+@app.route("/api/appsec/file/scan", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_appsec_file_scan():
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "No target path provided"}), 400
+    tools = data.get("tools") or []
+    if isinstance(tools, str):
+        tools = [t.strip() for t in tools.split(",") if t.strip()]
+    if not tools:
+        return jsonify({"error": "Select at least one scan"}), 400
+    valid = {"bin_surface", "compiled", "sbom", "grype", "trivy", "secrets",
+             "trufflehog", "sast", "osv", "cdn", "sbom_existing", "appsec"}
+    bad = [t for t in tools if t not in valid]
+    if bad:
+        return jsonify({"error": f"Unknown scan types: {', '.join(bad)}"}), 400
+    # Accept a git repo URL: clone into a temp workspace and scan that.
+    is_repo = path.startswith(("http://", "https://", "git@", "ssh://", "git://"))
+    if is_repo:
+        repo_url = path
+        ws = Path(tempfile.gettempdir()) / "cc_scan_repos" / _url_key(repo_url)
+        if ws.exists():
+            shutil.rmtree(str(ws))
+        ws.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(["git", "clone", "--quiet", "--depth", "1",
+                            repo_url, str(ws)], check=True, timeout=300,
+                           capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "git clone timed out"}), 500
+        except subprocess.CalledProcessError as e:
+            return jsonify({"error": "git clone failed: "
+                                     f"{(e.stderr or '').strip()[:400]}"}), 500
+        path = str(ws)
+    if not Path(path).expanduser().exists():
+        return jsonify({"error": f"Path not found on server: {path}"}), 400
+    case_id = (data.get("case_id") or "").strip()
+    # Auto-create the case when a scan references a case_id that does not yet
+    # exist, so the scan is always linked to a real case directory. Otherwise
+    # the job would run and record case_id without any case on disk.
+    if case_id:
+        cm = CaseManager()
+        if cm.info(case_id) is None:
+            label0 = repo_url.rstrip("/").split("/")[-1] if is_repo else Path(path).name
+            try:
+                cm.create(case_id, case_type="pentest",
+                          description=f"Auto-created by file scan of {path} "
+                                      f"({', '.join(tools)})",
+                          targets=[path])
+            except (FileExistsError, ValueError) as e:
+                return jsonify({"error": str(e)}), 400
+    label = repo_url.rstrip("/").split("/")[-1] if is_repo else Path(path).name
+    job_id = _jm.create("appsec-file-scan", f"File scan: {label}",
+                        len(tools), case_id=case_id)
+    run_in_thread(_jm, job_id, _appsec_file_scan_job, path=path, tools=tools,
+                  case_id=case_id,
+                  progress_callback=_make_job_progress("", job_id))
+    return jsonify({"job_id": job_id, "case_id": case_id,
+                    "scanned_path": path, "is_repo": is_repo}), 201
+
+
+# ---------------------------------------------------------------------------
+# Features — MCP lightweight toggles
+# ---------------------------------------------------------------------------
+@app.route("/features")
+@require_api_key_html
+def features_page():
+    return render_template("features.html", config=DASHBOARD_CONFIG)
+
+@app.route("/api/features")
+@require_api_key
+def api_features():
+    from modules.feature_groups import summarize
+    feats = load_config().get("features") or {}
+    return jsonify(summarize(feats))
+
+@app.route("/api/features", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_features_update():
+    data = request.get_json(silent=True) or {}
+from modules.config import update_config
+    def _mut(cfg):
+        feats = dict(cfg.get("features") or {})
+        if "enabled_groups" in data and isinstance(data["enabled_groups"], list):
+            feats["enabled_groups"] = [g for g in data["enabled_groups"] if isinstance(g, str)]
+        if "enabled_tools" in data and isinstance(data["enabled_tools"], list):
+            feats["enabled_tools"] = [t for t in data["enabled_tools"] if isinstance(t, str)]
+        if "disabled_tools" in data and isinstance(data["disabled_tools"], list):
+            feats["disabled_tools"] = [t for t in data["disabled_tools"] if isinstance(t, str)]
+        cfg["features"] = feats
+    update_config(_mut)
+    from modules.feature_groups import summarize
+    return jsonify({"status": "ok", **summarize((load_config().get("features") or {}))})
 
 
 # ---------------------------------------------------------------------------
@@ -4209,26 +5636,249 @@ def api_debug_flush():
 
 
 # ---------------------------------------------------------------------------
+# Bug Bounty (HackerOne / Bugcrowd)
+# ---------------------------------------------------------------------------
+
+_BB_PLATFORMS = ("hackerone", "bugcrowd", "yeswehack", "intigriti", "immunefi")
+
+
+@app.route("/bb")
+@require_api_key_html
+def bb_page():
+    return render_template("bb.html", config=DASHBOARD_CONFIG)
+
+
+@app.route("/api/bb/status")
+@require_api_key
+def api_bb_status():
+    from modules.bugbounty_clients import BugBountyManager
+    bm = BugBountyManager()
+    platforms = bm.configured_platforms()
+    cache = bm._load_cache()
+    for p in platforms:
+        p["program_count"] = len([k for k in cache.get("programs", {})
+                                  if k.startswith(p["platform"] + ":")])
+    return jsonify({"platforms": platforms})
+
+
+@app.route("/api/bb/programs")
+@require_api_key
+def api_bb_programs():
+    from modules.bugbounty_clients import BugBountyManager
+    bm = BugBountyManager()
+    platform = request.args.get("platform", "")
+    search = request.args.get("search", "")
+    try:
+        programs = bm.list_programs(platform=platform, search=search)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify(programs)
+
+
+@app.route("/api/bb/program")
+@require_api_key
+def api_bb_program():
+    from modules.bugbounty_clients import BugBountyManager
+    bm = BugBountyManager()
+    platform = request.args.get("platform", "")
+    slug = request.args.get("slug", "")
+    if platform not in _BB_PLATFORMS or not slug:
+        return jsonify({"error": "platform and slug required"}), 400
+    try:
+        prog = bm.get_program(platform, slug, refresh=False)
+    except Exception:
+        return jsonify({"error": "Program not in cache"}), 404
+    if not prog:
+        return jsonify({"error": "Program not in cache"}), 404
+    return jsonify(prog)
+
+
+@app.route("/api/bb/creds", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_bb_creds():
+    from modules.bugbounty_clients import BugBountyManager
+    data = request.get_json(silent=True) or {}
+    platform = data.get("platform", "").strip().lower()
+    if platform not in _BB_PLATFORMS:
+        return jsonify({"error": f"platform must be one of {', '.join(_BB_PLATFORMS)}"}), 400
+    try:
+        BugBountyManager().set_credentials(
+            platform,
+            identifier=data.get("identifier", ""),
+            token=data.get("token", ""),
+            client_id=data.get("client_id", ""),
+            client_secret=data.get("client_secret", ""),
+            public_only=bool(data.get("public_only", True)),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/bb/creds/clear", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_bb_creds_clear():
+    from modules.bugbounty_clients import BugBountyManager
+    data = request.get_json(silent=True) or {}
+    platform = data.get("platform", "").strip().lower()
+    if platform not in _BB_PLATFORMS:
+        return jsonify({"error": f"platform must be one of {', '.join(_BB_PLATFORMS)}"}), 400
+    BugBountyManager().clear_credentials(platform)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/bb/sync", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_bb_sync():
+    from modules.bugbounty_clients import BugBountyManager
+    data = request.get_json(silent=True) or {}
+    platform = data.get("platform", "").strip().lower()
+    slug = data.get("slug", "").strip().lower()
+    if platform not in _BB_PLATFORMS or not slug:
+        return jsonify({"error": "platform and slug required"}), 400
+    try:
+        prog = BugBountyManager().sync_program(platform, slug,
+                                               refresh=bool(data.get("refresh", True)))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(prog)
+
+
+@app.route("/api/bb/discover", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_bb_discover():
+    from modules.bugbounty_clients import BugBountyManager
+    data = request.get_json(silent=True) or {}
+    platform = data.get("platform", "hackerone").strip().lower()
+    if platform not in _BB_PLATFORMS:
+        return jsonify({"error": f"platform must be one of {', '.join(_BB_PLATFORMS)}"}), 400
+    try:
+        found = BugBountyManager().discover(platform)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"programs": found})
+
+
+@app.route("/api/bb/sync-all", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_bb_sync_all():
+    from modules.bugbounty_clients import BugBountyManager
+    data = request.get_json(silent=True) or {}
+    limit, limit_ok = _safe_int(data.get("limit"), 0)
+    if not limit_ok:
+        return jsonify({"error": "limit must be an integer"}), 400
+    try:
+        result = BugBountyManager().sync_all(
+            platform=data.get("platform", ""),
+            limit=limit,
+            refresh=True,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(result)
+
+
+@app.route("/api/bb/import", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_bb_import():
+    from modules.bugbounty_clients import BugBountyManager
+    data = request.get_json(silent=True) or {}
+    platform = data.get("platform", "").strip().lower()
+    slug = data.get("slug", "").strip().lower()
+    if platform not in _BB_PLATFORMS or not slug:
+        return jsonify({"error": "platform and slug required"}), 400
+    try:
+        result = BugBountyManager().import_case(
+            platform, slug,
+            case_id=data.get("case_id", ""),
+            client=data.get("client", ""),
+            customer_id=data.get("customer_id", ""),
+            include_assets=bool(data.get("include_assets", True)),
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(result)
+
+
+@app.route("/api/bb/reports")
+@require_api_key
+def api_bb_reports():
+    from modules.bugbounty_clients import BugBountyManager
+    platform = request.args.get("platform", "hackerone").strip().lower() or "hackerone"
+    limit, limit_ok = _safe_int(request.args.get("limit"), 50)
+    if not limit_ok:
+        return jsonify({"error": "limit must be an integer"}), 400
+    slugs = [s.strip() for s in request.args.get("programs", "").split(",") if s.strip()]
+    try:
+        reports = BugBountyManager().get_reports(platform, limit=limit,
+                                                 program_slugs=slugs or None)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(reports)
+
+
+# ---------------------------------------------------------------------------
+# EDR (Endpoint Detection & Response)
+# ---------------------------------------------------------------------------
+try:
+    from web_dashboard.edr_routes import edr_bp
+    app.register_blueprint(edr_bp, url_prefix="/edr")
+except Exception as _edr_err:
+    print(f"EDR blueprint not loaded: {_edr_err}")
+
+
+# ---------------------------------------------------------------------------
+# Ghidra Headless (Route B)
+# ---------------------------------------------------------------------------
+try:
+    from web_dashboard.ghidra_routes import ghidra_bp
+    app.register_blueprint(ghidra_bp, url_prefix="/ghidra")
+except Exception as _ghidra_err:
+    print(f"Ghidra blueprint not loaded: {_ghidra_err}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Start WebSocket terminal server
     ws_port = int(os.environ.get("CC_WS_PORT", 5001))
+    # CLI/env overrides: kali-command-center.py web forwards --host/--port/--debug.
+    host = os.environ.get("CC_LISTEN_HOST") or DASHBOARD_CONFIG["listen_host"]
+    port = int(os.environ.get("CC_LISTEN_PORT") or DASHBOARD_CONFIG["listen_port"])
+    debug = (os.environ.get("CC_DEBUG", "").lower() in ("1", "true", "yes", "on")
+             or DASHBOARD_CONFIG["debug"])
+
+    # Zero-auth guard: never bind a non-loopback interface with no API key set.
+    if not API_KEY:
+        loopback = host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
+        if not loopback:
+            print("Refusing to start: dashboard is bound to a non-loopback")
+            print("address but dashboard_api_key is empty (zero-auth exposure).")
+            print("Set 'dashboard_api_key' in config.json or bind to 127.0.0.1.")
+            sys.exit(1)
+
     ws_term = None
     if HAS_WS_TERMINAL:
-        ws_term = WSTerminalServer(host="0.0.0.0", port=ws_port)
-        ws_term.start()
+        # debug=True uses the Werkzeug reloader, which re-executes this module
+        # in a child process. Only start the WS terminal server in the reloader
+        # child to avoid double-binding port 5001.
+        if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+            ws_term = WSTerminalServer(host="0.0.0.0", port=ws_port)
+            ws_term.start()
     else:
         print("WS Terminal: unavailable (pip install websockets)")
 
-    host = DASHBOARD_CONFIG["listen_host"]
-    port = DASHBOARD_CONFIG["listen_port"]
-    debug = DASHBOARD_CONFIG["debug"]
     print(f"CC Dashboard: http://{host}:{port}  (debug={debug})")
-    if HAS_WS_TERMINAL:
+    if ws_term:
         print(f"WS Terminal:  ws://{host}:{ws_port}")
     if API_KEY:
-        print("API key auth enabled — pass X-API-Key header")
+        print("API key auth enabled — log in at /login or pass X-API-Key header")
     try:
         app.run(host=host, port=port, debug=debug)
     finally:

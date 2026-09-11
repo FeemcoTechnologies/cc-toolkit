@@ -3,10 +3,8 @@
 
 import argparse
 import json
-import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 from shutil import which
@@ -30,7 +28,7 @@ def parse_nmap_ports(stdout):
     for line in stdout.splitlines():
         m = re.match(r'^(\d+)/(tcp|udp)\s+open\s+(\S+)', line)
         if m:
-            port, proto, service = m.group(1), m.group(2), m.group(3)
+            port, proto = m.group(1), m.group(2)
             ports[proto].add(int(port))
     return ports
 
@@ -135,19 +133,15 @@ def main():
     print("Phase 3: Service scan on discovered ports")
     if tcp_ports:
         tcp_csv = ",".join(str(p) for p in tcp_ports)
-        phase3_tcp = run(["nmap", "-sS", "-sV", "-T3", "-Pn", "-p", tcp_csv,
-                          "-oA", str(case_dir / "tcp_services"), target],
-                         timeout=1200, verbose=verbose)
-    else:
-        phase3_tcp = {"rc": 0, "stdout": "No TCP ports to scan", "stderr": ""}
+        run(["nmap", "-sS", "-sV", "-T3", "-Pn", "-p", tcp_csv,
+             "-oA", str(case_dir / "tcp_services"), target],
+            timeout=1200, verbose=verbose)
 
     if udp_ports:
         udp_csv = ",".join(str(p) for p in udp_ports)
-        phase3_udp = run(["nmap", "-sU", "-sV", "-T3", "-Pn", "-p", udp_csv,
-                          "-oA", str(case_dir / "udp_services"), target],
-                         timeout=1200, verbose=verbose)
-    else:
-        phase3_udp = {"rc": 0, "stdout": "No UDP ports to scan", "stderr": ""}
+        run(["nmap", "-sU", "-sV", "-T3", "-Pn", "-p", udp_csv,
+             "-oA", str(case_dir / "udp_services"), target],
+            timeout=1200, verbose=verbose)
 
     # ---- Phase 4: Web discovery with httpx ----
     print("Phase 4: Web service discovery")
@@ -253,10 +247,11 @@ def main():
     with open(case_dir / "nuclei-targets.txt", "w") as f:
         f.write("\n".join(deduped))
 
-    # Determine nuclei flags
-    test_jsonl = run(["nuclei", "-jsonl", "-u", target, "-duc", "-nt", "-stats", "-j"],
-                     timeout=10, verbose=verbose)
-    nuclei_flags = ["-jsonl"] if test_jsonl["rc"] != -2 else ["-json"]
+    # nuclei >= v2 writes JSON lines to a FILE with -jsonl; the legacy -json
+    # flag writes per-host files to a DIRECTORY. Use -jsonl unconditionally —
+    # the previous version probe actually ran a live 10s nuclei scan against
+    # the target on every pipeline run just to detect flag support.
+    nuclei_flags = ["-jsonl"]
 
     if deduped:
         with open(case_dir / "nuclei-input.txt", "w") as f:

@@ -1,0 +1,112 @@
+checklist_id: compliance-controls
+title: Compliance Controls (NIST SP 800-53 Rev5 selected families)
+description: >
+  Selected NIST SP 800-53 Rev5 control families relevant to web application
+  and infrastructure penetration testing. Each item maps to a control ID so
+  findings can be tied to compliance evidence in XCCDF/SCAP exports.
+version: "1.0"
+categories:
+  - name: Access Control (AC)
+    items:
+      - id: AC-1
+        control: AC-1
+        description: Access control policy and procedures
+      - id: AC-2
+        control: AC-2
+        description: Account management — validate accounts, least privilege, review
+      - id: AC-3
+        control: AC-3
+        description: Access enforcement — role/attribute-based, least privilege
+      - id: AC-4
+        control: AC-4
+        description: Information flow enforcement (segmentation, egress filtering)
+      - id: AC-6
+        control: AC-6
+        description: Least privilege — remove unnecessary rights/privileges
+      - id: AC-8
+        control: AC-8
+        description: System use notification / login banners
+      - id: AC-11
+        control: AC-11
+        description: Session lock / idle session termination
+      - id: AC-17
+        control: AC-17
+        description: Remote access — VPN, MFA, monitoring
+
+  - name: Audit and Accountability (AU)
+    items:
+      - id: AU-2
+        control: AU-2
+        description: Event logging — security-relevant events defined and logged
+      - id: AU-6
+        control: AU-6
+        description: Audit record review, analysis, and reporting
+      - id: AU-8
+        control: AU-8
+        description: Time stamps — synchronized clocks (NTP)
+      - id: AU-9
+        control: AU-9
+        description: Protection of audit information (immutable, access-restricted)
+      - id: AU-12
+        control: AU-12
+        description: Audit record generation — comprehensive logging
+
+  - name: Configuration Management (CM)
+    items:
+      - id: CM-2
+        control: CM-2
+        description: Baseline configuration — current, reviewed, documented
+      - id: CM-6
+        control: CM-6
+        description: Configuration settings — hardened, deviation review
+      - id: CM-7
+        control: CM-7
+        description: Least functionality — disable unused services/protocols
+      - id: CM-8
+        control: CM-8
+        description: System component inventory (hardware, software, services)
+
+  - name: Identification and Authentication (IA)
+    items:
+      - id: IA-2
+        control: IA-2
+        description: Identification and authentication of users
+      - id: IA-5
+        control: IA-5
+        description: Authenticator management — no default creds, secure storage
+      - id: IA-8
+        control: IA-8
+        description: Unique identification — no shared accounts
+
+  - name: System and Communications Protection (SC)
+    items:
+      - id: SC-7
+        control: SC-7
+        description: Boundary protection — firewalls, egress filtering
+      - id: SC-8
+        control: SC-8
+        description: Transmission confidentiality — TLS in transit
+      - id: SC-12
+        control: SC-12
+        description: Cryptographic key establishment and management
+      - id: SC-13
+        control: SC-13
+        description: Cryptographic protection — approved algorithms (TLS 1.2+)
+
+  - name: System and Information Integrity (SI)
+    items:
+      - id: SI-2
+        control: SI-2
+        description: Flaw remediation — patching and vuln management
+      - id: SI-3
+        control: SI-3
+        description: Malicious code protection
+      - id: SI-4
+        control: SI-4
+        description: System monitoring — intrusion detection, log correlation
+      - id: SI-7
+        control: SI-7
+        description: Software/firmware integrity — signed updates, hash verification
+      - id: SI-16
+        control: SI-16
+        description: Memory protection — ASLR, DEP, stack canaries

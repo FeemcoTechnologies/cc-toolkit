@@ -46,7 +46,6 @@
 
     <title>{% block title %}CC Dashboard{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lucide-icons@0.130.0/dist/umd/lucide.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
     <script src="https://unpkg.com/lucide@latest"></script>
     {% block head %}{% endblock %}
@@ -91,9 +90,14 @@
                 <a href="/loot" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="database" class="w-3.5 h-3.5"></i> Loot</a>
                 {% endcall %}
 
+                {% call dropdown("bugbounty", "target", "Bug Bounty") %}
+                <a href="/bb" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="target" class="w-3.5 h-3.5"></i> Programs</a>
+                {% endcall %}
+
                 {% call dropdown("infra", "terminal", "Infrastructure") %}
                 <a href="/terminal" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="terminal" class="w-3.5 h-3.5"></i> Terminal</a>
                 <a href="/tools" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="wrench" class="w-3.5 h-3.5"></i> Tools</a>
+                <a href="/appsec" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="shield-half" class="w-3.5 h-3.5"></i> AppSec</a>
                 <a href="/burp" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Burp</a>
                 <a href="/wifi-monitor" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="wifi" class="w-3.5 h-3.5"></i> WiFi</a>
                 {% endcall %}
@@ -107,6 +111,7 @@
                 {% call dropdown("system", "settings", "System") %}
                 <a href="/ai" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> AI</a>
                 <a href="/jobs" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 relative"><i data-lucide="clock" class="w-3.5 h-3.5"></i> Jobs <span id="job-badge-nav" class="bg-indigo-500 text-white text-xs rounded-full px-1.5 ml-1 hidden">0</span></a>
+                <a href="/features" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="sliders" class="w-3.5 h-3.5"></i> Features</a>
                 <a href="/debug" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Debug</a>
                 <a href="/docs" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="book-open" class="w-3.5 h-3.5"></i> API Docs</a>
                 <a href="/mcp-resources" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="database" class="w-3.5 h-3.5"></i> MCP Resources</a>
@@ -122,9 +127,12 @@
             <a href="/runbooks" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="book-open" class="w-4 h-4"></i> Runbooks</a>
             <a href="/assets" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="hard-drive" class="w-4 h-4"></i> Assets</a>
             <a href="/loot" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="database" class="w-4 h-4"></i> Loot</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Bug Bounty</div>
+            <a href="/bb" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="target" class="w-4 h-4"></i> Programs</a>
             <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Infrastructure</div>
             <a href="/terminal" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="terminal" class="w-4 h-4"></i> Terminal</a>
             <a href="/tools" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="wrench" class="w-4 h-4"></i> Tools</a>
+            <a href="/appsec" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="shield-half" class="w-4 h-4"></i> AppSec</a>
             <a href="/burp" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="bug" class="w-4 h-4"></i> Burp</a>
             <a href="/wifi-monitor" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="wifi" class="w-4 h-4"></i> WiFi</a>
             <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Library</div>
@@ -134,6 +142,7 @@
             <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">System</div>
             <a href="/ai" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="cpu" class="w-4 h-4"></i> AI</a>
             <a href="/jobs" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="clock" class="w-4 h-4"></i> Jobs <span id="job-badge-mobile" class="bg-indigo-500 text-white text-xs rounded-full px-1.5 ml-1 hidden">0</span></a>
+            <a href="/features" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="sliders" class="w-4 h-4"></i> Features</a>
             <a href="/debug" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="bug" class="w-4 h-4"></i> Debug</a>
             <a href="/docs" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="book-open" class="w-4 h-4"></i> API Docs</a>
             <a href="/mcp-resources" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="database" class="w-4 h-4"></i> MCP Resources</a>

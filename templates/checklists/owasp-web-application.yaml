@@ -1,0 +1,328 @@
+checklist_id: owasp-web-application
+title: OWASP Web Application Security Checklist
+description: >
+  Modified OWASP checklist covering application recon, general web tests, and
+  crypto tests. Maps each item to OWASP WSTG, MITRE ATT&CK, and relevant
+  runbooks where available.
+version: "1.0"
+categories:
+  - name: Application Recon — Searching
+    items:
+      - id: AR-S-1
+        description: Backups and unreferenced files
+        owasp: WSTG-CONF-04
+        mitre_attack: T1083
+      - id: AR-S-2
+        description: Metafiles
+        owasp: WSTG-INFO-03
+        mitre_attack: T1083
+        runbook: web-pentest-v2
+      - id: AR-S-3
+        description: Webpage info leak
+        owasp: WSTG-INFO-05
+        mitre_attack: T1592
+      - id: AR-S-4
+        description: Search engine info leak
+        owasp: WSTG-INFO-01
+        mitre_attack: T1593
+      - id: AR-S-5
+        description: Other applications on server
+        owasp: WSTG-INFO-06
+        runbook: comprehensive-recon
+      - id: AR-S-6
+        description: Infrastructure and application admin interfaces
+        owasp: WSTG-CONF-05
+        runbook: web-pentest-comprehensive-v2
+
+  - name: Application Recon — App Details
+    items:
+      - id: AR-D-1
+        description: App entry points
+        owasp: WSTG-INFO-06
+        mitre_attack: T1595
+      - id: AR-D-2
+        description: Map execution paths through application
+        owasp: WSTG-INFO-07
+      - id: AR-D-3
+        description: Fingerprint web application framework
+        owasp: WSTG-INFO-08
+        mitre_attack: T1595
+        runbook: quick-recon
+      - id: AR-D-4
+        description: Map architecture
+        owasp: WSTG-INFO-06
+      - id: AR-D-5
+        description: Network infrastructure configuration
+        owasp: WSTG-CONF-01
+        runbook: comprehensive-recon
+      - id: AR-D-6
+        description: Enumerate APIs and their functionality
+        owasp: WSTG-INFO-09
+        mitre_attack: T1595
+        runbook: api-testing-v2
+
+  - name: General Tests
+    items:
+      - id: GT-1
+        description: Test for default or known bad app configurations
+        owasp: WSTG-CONF-02
+        mitre_attack: T1505
+      - id: GT-2
+        description: Test file extension handling
+        owasp: WSTG-CONF-03
+      - id: GT-3
+        description: Test HTTP method handling
+        owasp: WSTG-CONF-06
+        mitre_attack: T1589
+      - id: GT-4
+        description: Test for HSTS
+        owasp: WSTG-CONF-07
+      - id: GT-5
+        description: Test RIA cross domain policy (crossdomain.xml)
+        owasp: WSTG-CONF-08
+      - id: GT-6
+        description: Test file permissions
+        owasp: WSTG-CONF-09
+      - id: GT-7
+        description: Test cloud storage
+        owasp: WSTG-CONF-10
+        runbook: cloud-enum-v3
+      - id: GT-8
+        description: Test role definitions
+        owasp: WSTG-IDNT-01
+        mitre_attack: T1078
+      - id: GT-9
+        description: Test user registration process
+        owasp: WSTG-IDNT-02
+      - id: GT-10
+        description: Test account provisioning process
+        owasp: WSTG-IDNT-03
+      - id: GT-11
+        description: Test for account enumeration and guessable user accounts
+        owasp: WSTG-IDNT-04
+        mitre_attack: T1589
+      - id: GT-12
+        description: Test for weak or unenforced username policy
+        owasp: WSTG-IDNT-04
+      - id: GT-13
+        description: Test for credentials transported over encrypted channel
+        owasp: WSTG-ATHN-01
+      - id: GT-14
+        description: Test for default credentials
+        owasp: WSTG-ATHN-02
+        runbook: password-audit-v2
+      - id: GT-15
+        description: Test for weak lockout mechanism
+        owasp: WSTG-ATHN-03
+      - id: GT-16
+        description: Test for vulnerable remember password feature
+        owasp: WSTG-ATHN-05
+      - id: GT-17
+        description: Test for browser cache weaknesses
+        owasp: WSTG-ATHN-06
+      - id: GT-18
+        description: Test for weak password policy
+        owasp: WSTG-ATHN-07
+      - id: GT-19
+        description: Test for weak security question or answer
+        owasp: WSTG-ATHN-08
+      - id: GT-20
+        description: Test for weak password change or reset functionality
+        owasp: WSTG-ATHN-09
+      - id: GT-21
+        description: Test for weaker authentication in alternative channel
+        owasp: WSTG-ATHN-10
+      - id: GT-22
+        description: Test for directory traversal
+        owasp: WSTG-ATHZ-01
+        mitre_attack: T1500
+      - id: GT-23
+        description: Test for authorization bypass
+        owasp: WSTG-ATHZ-02
+        mitre_attack: T1548
+        runbook: web-app-authentication-bypass
+      - id: GT-24
+        description: Test for privilege escalation
+        owasp: WSTG-ATHZ-03
+        mitre_attack: T1068
+      - id: GT-25
+        description: Test for IDOR
+        owasp: WSTG-ATHZ-04
+        mitre_attack: T1660
+      - id: GT-26
+        description: Test for session management schema
+        owasp: WSTG-SESS-01
+        mitre_attack: T1523
+      - id: GT-27
+        description: Test for cookie attributes
+        owasp: WSTG-SESS-02
+      - id: GT-28
+        description: Test for session fixation
+        owasp: WSTG-SESS-03
+        mitre_attack: T1523
+      - id: GT-29
+        description: Test for exported session variables
+        owasp: WSTG-SESS-04
+      - id: GT-30
+        description: Test for CSRF
+        owasp: WSTG-SESS-05
+        mitre_attack: T1523
+      - id: GT-31
+        description: Test logout functionality
+        owasp: WSTG-SESS-06
+      - id: GT-32
+        description: Test session timeout
+        owasp: WSTG-SESS-07
+      - id: GT-33
+        description: Test for session puzzling
+        owasp: WSTG-SESS-08
+      - id: GT-34
+        description: Test for session hijacking
+        owasp: WSTG-SESS-09
+        mitre_attack: T1523
+      - id: GT-35
+        description: Test for reflected XSS
+        owasp: WSTG-INPV-01
+        mitre_attack: T1059
+      - id: GT-36
+        description: Test for stored XSS
+        owasp: WSTG-INPV-02
+        mitre_attack: T1059
+      - id: GT-37
+        description: Test for HTTP verb tampering
+        owasp: WSTG-INPV-03
+      - id: GT-38
+        description: Test for HTTP parameter pollution
+        owasp: WSTG-INPV-04
+      - id: GT-39
+        description: Test for SQL injection
+        owasp: WSTG-INPV-05
+        mitre_attack: T1190
+      - id: GT-40
+        description: 'Test for NoSQL injection — MongoDB {"$ne":null}'
+        owasp: WSTG-INPV-05
+      - id: GT-41
+        description: Test for ORM injection — username__gt=0
+        owasp: WSTG-INPV-05
+      - id: GT-42
+        description: Test for format strings — %s%s%s%s | %p %x %d
+        owasp: WSTG-INPV-05
+      - id: GT-43
+        description: Test for SSTI — ${{<%[%"}}%.\
+        owasp: WSTG-INPV-18
+        mitre_attack: T1190
+        runbook: ssti
+      - id: GT-44
+        description: Test for expression language injection — #{7*7}
+        owasp: WSTG-INPV-11
+      - id: GT-45
+        description: Test for command injection — ;id
+        owasp: WSTG-INPV-12
+        mitre_attack: T1202
+      - id: GT-46
+        description: Test for LDAP injection
+        owasp: WSTG-INPV-06
+      - id: GT-47
+        description: Test for incubated vulnerabilities (stored and later recalled)
+        owasp: WSTG-INPV-07
+      - id: GT-48
+        description: Test for HTTP splitting or smuggling
+        owasp: WSTG-INPV-15
+        mitre_attack: T1190
+        runbook: http-smuggling
+      - id: GT-49
+        description: Test for HTTP incoming requests
+        owasp: WSTG-INPV-16
+      - id: GT-50
+        description: Test for SSRF
+        owasp: WSTG-INPV-19
+        mitre_attack: T1190
+        runbook: ssrf
+      - id: GT-51
+        description: Test for improper error handling
+        owasp: WSTG-ERRH-01
+      - id: GT-52
+        description: Business logic data validation
+        owasp: WSTG-BUSL-01
+      - id: GT-53
+        description: Ability to forge requests (guessable or predictable fields)
+        owasp: WSTG-BUSL-02
+      - id: GT-54
+        description: Test integrity checks
+        owasp: WSTG-BUSL-03
+      - id: GT-55
+        description: Test process timing
+        owasp: WSTG-BUSL-04
+      - id: GT-56
+        description: Test number of times a function can be used limits
+        owasp: WSTG-BUSL-05
+      - id: GT-57
+        description: Test for circumvention of workflows
+        owasp: WSTG-BUSL-06
+      - id: GT-58
+        description: Test defenses against application misuse
+        owasp: WSTG-BUSL-07
+      - id: GT-59
+        description: Test upload of unexpected file types
+        owasp: WSTG-BUSL-08
+      - id: GT-60
+        description: Test upload of malicious files
+        owasp: WSTG-BUSL-09
+      - id: GT-61
+        description: DOM-based XSS
+        owasp: WSTG-CLNT-01
+        mitre_attack: T1059
+      - id: GT-62
+        description: Test for JavaScript execution
+        owasp: WSTG-CLNT-02
+      - id: GT-63
+        description: Test for client-side injection
+        owasp: WSTG-CLNT-03
+      - id: GT-64
+        description: Test for client-side URL redirect
+        owasp: WSTG-CLNT-04
+      - id: GT-65
+        description: Test for client-side resource manipulation
+        owasp: WSTG-CLNT-05
+      - id: GT-66
+        description: Test cross-origin resource sharing (CORS)
+        owasp: WSTG-CLNT-06
+      - id: GT-67
+        description: Test cross-site flashing
+        owasp: WSTG-CLNT-07
+      - id: GT-68
+        description: Test for clickjacking
+        owasp: WSTG-CLNT-09
+        mitre_attack: T1553
+      - id: GT-69
+        description: Test WebSockets
+        owasp: WSTG-CLNT-10
+      - id: GT-70
+        description: Test web messaging
+        owasp: WSTG-CLNT-11
+      - id: GT-71
+        description: Test browser storage
+        owasp: WSTG-CLNT-12
+      - id: GT-72
+        description: Test cross-site script inclusion
+        owasp: WSTG-CLNT-13
+      - id: GT-73
+        description: Test GraphQL
+        owasp: WSTG-CLNT-14
+        runbook: graphql-enum
+
+  - name: Crypto Tests
+    items:
+      - id: CT-1
+        description: Test for weak TLS configuration
+        owasp: WSTG-CRYP-01
+        mitre_attack: T1573
+      - id: CT-2
+        description: Test for padding oracle
+        owasp: WSTG-CRYP-02
+      - id: CT-3
+        description: Test for sensitive info sent via unencrypted channels
+        owasp: WSTG-CRYP-03
+      - id: CT-4
+        description: Weak or outdated cryptographic algorithms
+        owasp: WSTG-CRYP-04

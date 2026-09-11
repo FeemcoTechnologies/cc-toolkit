@@ -28,6 +28,7 @@ CATEGORY NAMESPACES:
   infra                          Infrastructure (vm, arsenal, profile, notify, remote)
   binary                         Binary exploitation analysis (check, analyze, vulns, gadgets, exploit, ...)
   ref                            Reference data (LDAP filters, event IDs, CVEs)
+  bb                             Bug bounty dashboard (HackerOne / Bugcrowd)
   history                        Command audit log
 
 MCP SERVER:
@@ -53,14 +54,12 @@ import datetime
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
-import threading
 import time
+import zlib
 from pathlib import Path
 from shutil import which
-from typing import List, Optional
 
 try:
     import yaml
@@ -71,10 +70,10 @@ except ImportError:
 # Import all modules
 # ---------------------------------------------------------------------------
 from modules.config import (
-    CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG, load_config, save_config,
-    CASES_DIR, PLAYBOOKS_DIR, OBSIDIAN_DIR, OBSIDIAN_OUTPUT_SUBDIR,
+    CONFIG_DIR, load_config, save_config,
+    CASES_DIR, OBSIDIAN_DIR,
     SCRIPTS_DIR, TOOLS_DIR, ARSENAL_DIR, ARSENAL_RULES_FILE,
-    ENV_PROFILES_FILE, VMS_DIR, DISKS_DIR, ISOS_DIR,
+    ENV_PROFILES_FILE,
     CAIDO_HOST, CAIDO_PORT, WORDLISTS_DIR,
 )
 
@@ -88,12 +87,11 @@ from modules.obsidian_bridge import ObsidianBridge
 from modules.doctor import Doctor
 from modules.report_generator import (
     generate_nmap_report, generate_nuclei_report,
-    generate_markdown_report, generate_case_summary_markdown,
     generate_engagement_report, generate_timeline_html,
 )
 from modules.tool_wrappers import (
     trufflehog_org, trufflehog_local,
-    mitm_start, dns_track, route_scan,
+    mitm_start, route_scan,
     yara_scan, semgrep_scan, sigma_convert,
     nuclei_scan, wireless_graph,
     bloodyad_exec, bloodyad_dump,
@@ -111,12 +109,13 @@ from modules.tool_wrappers import (
 import secrets
 import shlex
 from modules.findings_db import FindingsDB
+from modules.checklist_manager import ChecklistInstance, list_templates as list_checklist_templates
+from modules.compliance_export import export_case as export_case_results
 from modules.notifier import Notifier
 from modules.remote_runner import RemoteRunner
 from modules.history_logger import HistoryLogger
 from modules.references import (
     search_ldap, search_event_ids, search_cves,
-    LDAP_FILTERS, EVENT_IDS, CVE_LIST,
 )
 
 
@@ -316,6 +315,11 @@ def cmd_dashboard_web(args):
     debug = getattr(args, "debug", False)
     env = os.environ.copy()
     env["FLASK_APP"] = str(app_script)
+    # Forward the CLI --host/--port/--debug to the dashboard app so they are
+    # actually honored (web_dashboard/app.py reads these env overrides).
+    env["CC_LISTEN_HOST"] = host
+    env["CC_LISTEN_PORT"] = str(port)
+    env["CC_DEBUG"] = "1" if debug else "0"
     cmd = [sys.executable, str(app_script)]
     print(f"Starting CC Web Dashboard on http://{host}:{port}")
     print(f"Debug: {'on' if debug else 'off'}")
@@ -490,7 +494,7 @@ def cmd_tools(args):
 # ---------------------------------------------------------------------------
 def cmd_wifi(args):
     a = getattr(args, "wifi_action", "status") or "status"
-    iface = args.iface or _wifi_iface()
+    iface = getattr(args, "iface", None) or _wifi_iface()
 
     if a == "status":
         if not iface:
@@ -507,7 +511,7 @@ def cmd_wifi(args):
         except Exception:
             pass
     elif a == "monitor":
-        st = args.mon_state
+        st = getattr(args, "state", None)
         if not iface:
             print("No wireless interface detected")
             return
@@ -587,7 +591,7 @@ def cmd_wifi(args):
     elif a == "heatmap":
         sp = SCRIPTS_DIR / "automation-tools" / "beacon-heatmap.py"
         if not sp.exists():
-            print(f"beacon-heatmap.py not found")
+            print("beacon-heatmap.py not found")
             return
         if args.pcap:
             cmd = [sys.executable,str(sp),"--pcap",args.pcap]
@@ -785,7 +789,9 @@ def cmd_vm_create_vbox(args):
         [vbox,"modifyvm",name,"--vrde","on"],
         [vbox,"modifyvm",name,"--vrdeauthtype","null","--vrdeproperty",f"VNCPassword={vnc_pass}"],
     ]
-    port = args.rdp_port or (9000 + hash(name) % 1000)
+    # Deterministic port per VM name: builtin hash() is salted per process
+    # (PYTHONHASHSEED), so the same VM would get a different RDP port each run.
+    port = args.rdp_port or (9000 + zlib.crc32(name.encode("utf-8")) % 1000)
     cmds.append([vbox,"modifyvm",name,"--vrdemulticon","on","--vrdeport",str(port)])
     for c in cmds:
         print(f"  $ {' '.join(c)}")
@@ -825,7 +831,7 @@ def cmd_vm_create_kvm(args):
     user = wd / "user-data"
     if not img.exists():
         import urllib.request
-        print(f"Downloading cloud image...")
+        print("Downloading cloud image...")
         urllib.request.urlretrieve(url, str(img))
     rc(f"qemu-img create -b {img} -f qcow2 -F qcow2 {disk_img} {size}")
     meta.write_text(f"instance-id: {uid}\nlocal-hostname: {fqdn}\n")
@@ -972,11 +978,11 @@ def _generate_vault_arsenal():
             f"Commands extracted from {e['path']}",
             f"#cat/{cat_tag}",
             f"#target/{target_tag}",
-            f"#plateform/multiple",
+            "#plateform/multiple",
             "",
         ]
         for cmd in e["commands"][:15]:
-            lines.append(f"```")
+            lines.append("```")
             lines.append(cmd)
             lines.append("```")
             lines.append("")
@@ -1030,7 +1036,7 @@ def cmd_arsenal(args):
                 if skip:
                     os.environ["ARSENAL_SKIP"] = ",".join(skip)
         else:
-            print(f"Rules file not found")
+            print("Rules file not found")
     elif a == "run":
         tn = getattr(args, "tool_name", "")
         matches = list(ad.rglob(tn)) + list(ad.rglob(f"{tn}.py")) + list(ad.rglob(f"{tn}.sh")) + list(ad.rglob(f"{tn}.md"))
@@ -1157,12 +1163,243 @@ def cmd_scan_full(args):
 
 
 # ---------------------------------------------------------------------------
+# AppSec — SBOM / SCA / secrets / SAST / OSV / CDN / existing SBOMs
+# ---------------------------------------------------------------------------
+def cmd_appsec(args):
+    from modules.appsec import (sbom_generate, sca_grype_scan, sca_trivy_scan,
+                                secret_scan, sast_scan, osv_scan, cdn_scan,
+                                sbom_existing, appsec_scan)
+    action = getattr(args, "appsec_action", "scan") or "scan"
+    target = getattr(args, "target", "") or ""
+    if action == "sbom":
+        if not target:
+            print("Specify --target (dir or image)")
+            return
+        r = sbom_generate(target, format=getattr(args, "format", "cyclonedx-json"),
+                          tool=getattr(args, "tool", "syft"))
+        if r.get("error"):
+            print(f"Error: {r['error']}"); return
+        print(f"SBOM ({r.get('tool')}): {r.get('output_file')}")
+        s = r.get("summary", {})
+        print(f"  components: {s.get('components', '?')}")
+        return
+    if action == "grype":
+        if not target:
+            print("Specify --target"); return
+        r = sca_grype_scan(target)
+        print(_appsec_fmt_sca(r)); return
+    if action == "trivy":
+        if not target:
+            print("Specify --target"); return
+        r = sca_trivy_scan(target)
+        print(_appsec_fmt_sca(r)); return
+    if action == "secrets":
+        if not target:
+            print("Specify --target"); return
+        r = secret_scan(target)
+        if r.get("error"):
+            print(f"Error: {r['error']}"); return
+        s = r.get("summary", {})
+        print(f"Gitleaks: {s.get('leaks', 0)} leak(s) -> {r.get('report_file')}")
+        for it in (s.get("sample") or [])[:10]:
+            print(f"  {it.get('file')}:{it.get('line')} [{it.get('rule')}]")
+        return
+    if action == "sast":
+        if not target:
+            print("Specify --target"); return
+        r = sast_scan(target)
+        if r.get("error"):
+            print(f"Error: {r['error']}"); return
+        sev = r.get("by_severity") or {}
+        print(f"SAST ({r.get('engine')}): {r.get('findings', 0)} finding(s) "
+              f"(high={sev.get('high', 0)} med={sev.get('medium', 0)} "
+              f"low={sev.get('low', 0)})")
+        for f in (r.get("sample") or [])[:15]:
+            print(f"  [{f.get('severity')}] {f.get('file')}:{f.get('line')} "
+                  f"{f.get('id')} - {f.get('message')}")
+        return
+    if action == "osv":
+        if not target:
+            print("Specify --target"); return
+        r = osv_scan(target)
+        if r.get("error"):
+            print(f"Error: {r['error']}"); return
+        sev = r.get("by_severity") or {}
+        print(f"OSV ({r.get('source')}): {r.get('checked', 0)} pkg(s), "
+              f"{r.get('vulns', 0)} vuln(s) "
+              f"(high={sev.get('high', 0)} med={sev.get('medium', 0)})")
+        for v in (r.get("top_vulns") or [])[:15]:
+            fix = f"  fix: {v.get('fixed')}" if v.get("fixed") else ""
+            print(f"  [{v.get('severity','?')}] {v.get('id')} {v.get('pkg')}{fix}")
+        return
+    if action == "cdn":
+        if not target:
+            print("Specify --target"); return
+        r = cdn_scan(target)
+        if r.get("error"):
+            print(f"Error: {r['error']}"); return
+        print(f"CDN libs: {r.get('libs', 0)} found, {r.get('flagged', 0)} flagged")
+        for lib in (r.get("inventory") or [])[:15]:
+            print(f"  {lib.get('name')}@{lib.get('version')}  "
+                  f"({', '.join(lib.get('files', [])[:2])})")
+        for a in (r.get("advisories") or [])[:10]:
+            print(f"  [!] {a.get('pkg')}@{a.get('version')} [{a.get('severity')}] "
+                  f"{a.get('id')} - {a.get('summary')}")
+        return
+    if action == "sbom_existing":
+        if not target:
+            print("Specify --target"); return
+        r = sbom_existing(target)
+        if r.get("error"):
+            print(f"Error: {r['error']}"); return
+        print(f"Existing SBOMs: {r.get('sboms_found', 0)} found")
+        for s in (r.get("sboms") or []):
+            sev = s.get("by_severity") or {}
+            print(f"  {s.get('file')}: {s.get('components')} components, "
+                  f"{s.get('vulnerabilities')} vulns "
+                  f"(crit={sev.get('critical', 0)} high={sev.get('high', 0)})")
+        return
+    if not target:
+        print("Specify --target")
+        return
+    r = appsec_scan(target, do_sbom=not getattr(args, "no_sbom", False),
+                    do_sca=not getattr(args, "no_sca", False),
+                    do_secrets=not getattr(args, "no_secrets", False),
+                    sca_tool=getattr(args, "sca_tool", "grype"))
+    for stage, res in (r.get("stages") or {}).items():
+        if isinstance(res, dict) and res.get("error"):
+            print(f"[{stage}] Error: {res['error']}")
+        elif stage == "sbom":
+            print(f"[sbom] {res.get('tool')} -> {res.get('output_file')}")
+        elif stage == "sca":
+            print(_appsec_fmt_sca(res))
+        elif stage == "secrets":
+            s = res.get("summary", {})
+            print(f"[secrets] gitleaks: {s.get('leaks', 0)} leak(s) -> {res.get('report_file')}")
+        elif stage == "sast":
+            sev = res.get("by_severity") or {}
+            print(f"[sast] {res.get('engine')}: {res.get('findings', 0)} findings "
+                  f"(high={sev.get('high', 0)} med={sev.get('medium', 0)})")
+        elif stage == "osv":
+            sev = res.get("by_severity") or {}
+            print(f"[osv] {res.get('checked', 0)} pkg(s), {res.get('vulns', 0)} vulns "
+                  f"(high={sev.get('high', 0)} med={sev.get('medium', 0)})")
+        elif stage == "cdn":
+            print(f"[cdn] {res.get('libs', 0)} lib(s), {res.get('flagged', 0)} flagged")
+        elif stage == "sbom_existing":
+            print(f"[sbom_existing] {res.get('sboms_found', 0)} pre-built SBOM(s)")
+
+
+def _appsec_fmt_sca(r):
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    s = r.get("summary", {})
+    sev = s.get("by_severity") or {}
+    lines = [f"{r.get('tool')}: {s.get('total', 0)} vuln(s) "
+             f"(crit={sev.get('critical', 0)} high={sev.get('high', 0)} "
+             f"med={sev.get('medium', 0)} low={sev.get('low', 0)})"]
+    for v in (s.get("top_vulns") or [])[:15]:
+        fix = (v.get("fix") or v.get("fixed") or "")
+        lines.append(f"  [{v.get('severity','?')}] {v.get('id')} {v.get('pkg')}"
+                     f"@{v.get('version') or v.get('installed')}"
+                     f"{'  fix: ' + fix if fix else ''}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# DAST — OWASP ZAP
+# ---------------------------------------------------------------------------
+def cmd_zap(args):
+    from modules.zap_client import ZapClient
+from modules.config import load_config
+    zc = load_config().get("zap") or {}
+    client = ZapClient(api_url=zc.get("url", "http://127.0.0.1:8080"),
+                       api_key=zc.get("api_key", ""))
+    action = getattr(args, "zap_action", "health") or "health"
+    if action == "health":
+        h = client.health()
+        print(h if h.get("status") != "ok" else f"ZAP v{h.get('version')} up")
+    elif action == "start":
+        client.ensure_running(zap_bin=zc.get("bin", "zaproxy"))
+        h = client.health()
+        print(f"ZAP: {h}")
+    elif action == "scan":
+        url = getattr(args, "target", "") or ""
+        if not url:
+            print("Specify --target URL"); return
+        client.ensure_running(zap_bin=zc.get("bin", "zaproxy"))
+        mode = getattr(args, "mode", "active") or "active"
+        if mode == "spider":
+            r = client.spider_start(url)
+            print(f"Spider started scan_id={r.get('scan_id')}" if "error" not in r else f"Error: {r['error']}")
+        elif mode == "ajax":
+            r = client.ajax_spider_start(url)
+            print("AJAX spider started" if "error" not in r else f"Error: {r['error']}")
+        else:
+            r = client.active_scan_start(url)
+            print(f"Active scan started scan_id={r.get('scan_id')}" if "error" not in r else f"Error: {r['error']}")
+    elif action == "status":
+        sid = getattr(args, "scan_id", "") or ""
+        mode = getattr(args, "mode", "active") or "active"
+        if mode == "ajax":
+            print(client.ajax_spider_status())
+        elif mode == "spider":
+            print(client.spider_status(sid))
+        else:
+            print(client.active_scan_status(sid))
+    elif action == "issues":
+        risk = getattr(args, "risk", "") or ""
+        alerts = client.alerts(risk=risk)
+        if isinstance(alerts, list) and alerts and "error" in alerts[0]:
+            print(f"Error: {alerts[0]['error']}"); return
+        for a in alerts:
+            print(f"[{a.get('risk')}] {a.get('name')} - {a.get('url')}")
+
+
+# ---------------------------------------------------------------------------
+# Compiled-binary CLI-surface scan
+# ---------------------------------------------------------------------------
+def cmd_bin_surface(args):
+    from modules.bin_surface import scan_directory, scan_binary, format_report
+    from pathlib import Path
+    target = getattr(args, "target", "") or ""
+    if not target:
+        print("Specify --target (file or dir)")
+        return
+    p = Path(target)
+    if p.is_file():
+        r = {"target": str(p), "found": 1, "scanned": 1,
+             "results": [scan_binary(p)], "errors": []}
+    else:
+        r = scan_directory(p, max_depth=getattr(args, "max_depth", 3) or 3,
+                           with_strings=not getattr(args, "no_strings", False))
+    print(format_report(r))
+
+
+# ---------------------------------------------------------------------------
+# Compiled-artifact security scan
+# ---------------------------------------------------------------------------
+def cmd_compiled_scan(args):
+    from modules.compiled_scan import scan_target, format_report
+    target = getattr(args, "target", "") or ""
+    if not target:
+        print("Specify --target (file or dir)")
+        return
+    with_yara = getattr(args, "yara", False)
+    min_sev = getattr(args, "min_severity", "info") or "info"
+    max_depth = getattr(args, "max_depth", 4) or 4
+    r = scan_target(target, max_depth=max_depth, with_yara=with_yara,
+                    min_severity=min_sev)
+    print(format_report(r))
+
+
+# ---------------------------------------------------------------------------
 # Profile
 # ---------------------------------------------------------------------------
 def cmd_profile(args):
     pp = ENV_PROFILES_FILE
     if not pp.exists():
-        print(f"Profiles file not found")
+        print("Profiles file not found")
         return
     profs = json.loads(pp.read_text()).get("profiles", {})
     a = getattr(args, "profile_action", "list") or "list"
@@ -1236,7 +1473,7 @@ def cmd_case(args):
         targets_raw = getattr(args, "targets", "") or ""
         targets = [t.strip() for t in targets_raw.split(",") if t.strip()] if targets_raw else []
         try:
-            m = cm.create(cid, getattr(args, "client", "") or "",
+            cm.create(cid, getattr(args, "client", "") or "",
                           getattr(args, "case_type", "pentest") or "pentest",
                           getattr(args, "description", "") or "",
                           targets=targets,
@@ -1268,7 +1505,7 @@ def cmd_case(args):
         if rec:
             print(f"Evidence added: SHA256={rec['sha256'][:16]}...")
         else:
-            print(f"Failed to add evidence")
+            print("Failed to add evidence")
     elif a == "note":
         cid = getattr(args, "case_id", "") or ""
         body = getattr(args, "body", "") or ""
@@ -1361,7 +1598,7 @@ def cmd_case(args):
         elif sa == "add":
             text = getattr(args, "text", "") or ""
             r = cm.add_strength(cid, text)
-            if r: print(f"Strength added")
+            if r: print("Strength added")
             else: print("Failed to add strength")
         elif sa == "remove":
             idx = getattr(args, "index", -1) or -1
@@ -1377,7 +1614,7 @@ def cmd_case(args):
         elif wa == "add":
             text = getattr(args, "text", "") or ""
             r = cm.add_weakness(cid, text)
-            if r: print(f"Weakness added")
+            if r: print("Weakness added")
             else: print("Failed to add weakness")
         elif wa == "remove":
             idx = getattr(args, "index", -1) or -1
@@ -1400,6 +1637,93 @@ def cmd_case(args):
             print(f"Case '{cid}' deleted")
         else:
             print(f"Case '{cid}' not found")
+    elif a == "checklist":
+        cid = getattr(args, "case_id", "") or ""
+        ca = getattr(args, "checklist_action", "list") or "list"
+        cl = ChecklistInstance(cm._case_path(cid))
+        if ca == "init":
+            tpl = getattr(args, "template", "") or ""
+            replace = getattr(args, "replace", False)
+            if not tpl:
+                print("Available templates:")
+                for t in list_checklist_templates():
+                    print(f"  {t['id']:<40} {t['title']}")
+                return
+            r = cl.initialize(tpl, replace=replace)
+            if "error" in r:
+                print(f"Error: {r['error']}")
+            else:
+                print(f"Checklist '{tpl}' initialized (id={r.get('instance_id','')[:8]}, {len(r.get('items',{}))} items)")
+        elif ca == "list":
+            instances = cl.get()
+            if not instances:
+                print("No checklists. Use `cc case checklist init --template <name>` to create one.")
+                return
+            for idx, instance in enumerate(instances):
+                iid = instance.get("instance_id", "?")[:8]
+                title = instance.get("title", "Untitled")
+                print(f"\n{'='*60}")
+                print(f"  [{idx+1}] {title} (id: {iid}) — {len(instance.get('items',{}))} items")
+                print(f"{'='*60}")
+                for cat in instance.get("categories", []):
+                    print(f"\n  {cat['name']}:")
+                    for item in cat.get("items", []):
+                        meta = instance.get("items", {}).get(item["id"], {})
+                        status = meta.get("status", "not_started")
+                        icons = {"passed": "\u2713", "failed": "\u2717",
+                                 "in_progress": "\u25D8", "not_started": "\u25CB",
+                                 "not_applicable": "\u2014"}
+                        icon = icons.get(status, "\u25CB")
+                        finding = f" [{meta.get('finding_id','')}]" if meta.get("finding_id") else ""
+                        print(f"    {icon} {item['description']:<60} {status:<14}{finding}")
+        elif ca == "status":
+            item_id = getattr(args, "item_id", "") or ""
+            status = getattr(args, "status", "") or ""
+            instance_id = getattr(args, "instance_id", "") or ""
+            if not item_id or not status:
+                print("Usage: cc case checklist status --item-id <id> --status <value> [--instance-id <id>]")
+                return
+            r = cl.update_item(item_id, status=status, instance_id=instance_id)
+            if r:
+                print(f"  {item_id} -> {status}")
+            else:
+                print(f"Item '{item_id}' not found")
+        elif ca == "delete":
+            instance_id = getattr(args, "instance_id", "") or ""
+            if not instance_id:
+                print("Usage: cc case checklist delete --instance-id <id>")
+                return
+            ok = cl.delete_instance(instance_id)
+            print("Deleted." if ok else "Instance not found.")
+        elif ca == "from-findings":
+            title = getattr(args, "title", "") or ""
+            replace = getattr(args, "replace", False)
+            db = FindingsDB(cm._case_path(cid))
+            findings = db.list()
+            if not findings:
+                print("No findings to build a checklist from.")
+                return
+            r = cl.from_findings(findings, title=title, replace=replace)
+            if "error" in r:
+                print(f"Error: {r['error']}")
+            else:
+                print(f"Checklist built from {len(findings)} findings (id={r.get('instance_id','')[:8]})")
+    elif a == "export":
+        cid = getattr(args, "case_id", "") or ""
+        fmt = getattr(args, "format", "sarif") or "sarif"
+        output = getattr(args, "output", "") or ""
+        no_checklist = getattr(args, "no_checklist", False)
+        r = export_case_results(cid, fmt=fmt, output=output,
+                                include_checklist=not no_checklist)
+        if "error" in r:
+            print(r["error"])
+        else:
+            print(f"Exported {r.get('format','?')} -> {r.get('path','')}")
+            for k in ("findings", "checklist_items", "total_rules", "passed", "score"):
+                if k in r:
+                    print(f"  {k}: {r[k]}")
+            if r.get("validate_hint"):
+                print(f"  Validate: {r['validate_hint']}")
 
 
 # --- Playbook ---
@@ -1479,8 +1803,157 @@ def cmd_obsidian(args):
 # --- Doctor ---
 def cmd_doctor(args):
     d = Doctor()
-    results = d.run_all()
+    d.run_all()
     print(d.summary())
+
+
+# --- MCP Feature groups (lightweight MCP) ---
+def cmd_features(args):
+    from modules.feature_groups import (FEATURE_GROUPS, summarize, enable_group,
+                                        disable_group, TOOL_INDEX_PATH)
+    cfg = _load_config()
+    feats = dict(cfg.get("features") or {})
+    action = getattr(args, "features_action", "list") or "list"
+    names = [n.strip().lower() for n in (getattr(args, "names", None) or []) if n.strip()]
+
+    def _persist():
+        cfg["features"] = feats
+        _save_config(cfg)
+
+    if action == "index":
+        try:
+            import cc_mcp_server as mcpmod
+            from modules.feature_groups import save_tool_index
+            tools = [t.name for t in mcpmod.mcp._tool_manager.list_tools()]
+            save_tool_index(tools)
+            print(f"Tool index refreshed: {len(tools)} tools -> {TOOL_INDEX_PATH}")
+        except Exception as exc:
+            print(f"Could not refresh tool index: {exc}")
+        return
+
+    if action in ("on", "off"):
+        feats["enabled_groups"] = sorted(FEATURE_GROUPS) if action == "on" else []
+        _persist()
+        state = "Enabled all" if action == "on" else "Disabled all"
+        print(f"{state} feature groups ({len(feats['enabled_groups'])} on). Restart the MCP (opencode) to apply.")
+        return
+
+    if action in ("enable", "disable"):
+        if not names:
+            print(f"Usage: cc features {action} <group> [...]  | groups: {', '.join(FEATURE_GROUPS)}")
+            return
+        ok, bad = [], []
+        for n in names:
+            fn = enable_group if action == "enable" else disable_group
+            (ok if fn(feats, n) else bad).append(n)
+        _persist()
+        for n in ok:
+            print(f"  {'enabled' if action == 'enable' else 'disabled'} group '{n}'")
+        for n in bad:
+            print(f"  unknown group '{n}' (not changed)")
+        print("Restart the MCP (opencode) to apply.")
+        return
+
+    if action == "tool-add":
+        if not names:
+            print("Usage: cc features tool-add <tool-or-prefix> [...]")
+            return
+        extra = set(feats.get("enabled_tools") or []); extra.update(names)
+        feats["enabled_tools"] = sorted(extra)
+        _persist()
+        print(f"Force-enabled tools: {', '.join(sorted(extra))}. Restart the MCP (opencode) to apply.")
+        return
+
+    if action == "tool-rm":
+        if not names:
+            print("Usage: cc features tool-rm <tool-or-prefix> [...]")
+            return
+        blocked = set(feats.get("disabled_tools") or []); blocked.update(names)
+        feats["disabled_tools"] = sorted(blocked)
+        enabled = set(feats.get("enabled_tools") or [])
+        enabled -= set(names)
+        feats["enabled_tools"] = sorted(enabled)
+        _persist()
+        print(f"Force-disabled tools: {', '.join(sorted(blocked))}. Restart the MCP (opencode) to apply.")
+        return
+
+    if action == "allowlist":
+        env = __import__("os").environ.get("CC_MCP_TOOLS", "")
+        s = summarize(feats)
+        print(f"Effective allowlist (config.json features):\n  {s['allowlist'] or '(all)'}")
+        print(f"Effective denylist (force-off):\n  {s['denylist'] or '(none)'}")
+        if env:
+            print(f"  NOTE: env CC_MCP_TOOLS='{env}' overrides the config when the MCP starts.")
+        return
+
+    if action == "manifest":
+from modules.config import CC_DIR
+        env = __import__("os").environ.get("CC_MCP_TOOLS", "")
+        s = summarize(feats)
+        md = ["# CC Toolkit — MCP Feature Manifest",
+              "",
+              f"Generated: {datetime.datetime.now().isoformat(timespec='seconds')}",
+              "",
+              "This manifest reflects the tool surface the MCP server would expose",
+              "at the next start, based on `config.json` `features` (and the "
+              "`CC_MCP_TOOLS` env override if set).",
+              "",
+              f"- Feature groups: **{len(FEATURE_GROUPS)}** available, "
+              f"**{len(s['enabled_groups'])}** enabled",
+              f"- Tool index: **{s['total_tools']}** MCP tools",
+              f"- Exposed at next start: **{s['included_count']}** "
+              f"(always-on: {', '.join(s['always_on']) or 'none'})",
+              f"- Env override `CC_MCP_TOOLS`: {env or 'none (config applies)'}",
+              "",
+              "## Enabled groups",
+              ""]
+        for name in sorted(s["enabled_groups"]):
+            g = s["groups"].get(name, {})
+            md.append(f"- **{name}** — {g.get('label', '')} ({g.get('tool_count', 0)} tools)")
+        if s.get("unknown_groups"):
+            md += ["",
+                   f"> Warning: configured group(s) not defined (ignored): {', '.join(s['unknown_groups'])}",
+                   "> Fix with `cc features disable <group>` or by editing config.json `features.enabled_groups`."]
+        md += ["", "## Allowlist (prefixes)", "```", s["allowlist"] or "(all)", "```", ""]
+        md += ["## Force-disabled (denylist)", ""]
+        if s["denylist"]:
+            md += [f"- `{t}`" for t in s["denylist"].split(",")]
+        else:
+            md.append("- (none)")
+        if env:
+            md += ["", "> Note: `CC_MCP_TOOLS` overrides the config allowlist when the MCP starts."]
+        md += ["", "## Exposed tools", ""]
+        for t in s["included_tools"]:
+            md.append(f"- `{t}`")
+        out = CC_DIR / "MCP_FEATURES.md"
+        out.write_text("\n".join(md), encoding="utf-8")
+        print(f"Manifest written: {out}")
+        print(f"  {s['included_count']}/{s['total_tools']} tools would be exposed "
+              f"({len(s['enabled_groups'])} groups enabled).")
+        if env:
+            print(f"  NOTE: env CC_MCP_TOOLS='{env}' overrides config at MCP start.")
+        return
+
+    # default: list
+    s = summarize(feats)
+    print(f"{'GROUP':<14} {'STATE':<8} {'TOOLS':<6} DESCRIPTION")
+    print("-" * 90)
+    for name, g in s["groups"].items():
+        state = "ON " if g["enabled"] else "off"
+        print(f"{name:<14} {state:<8} {g['tool_count']:<6} {g['label']} — {g['desc']}")
+    print("-" * 90)
+    print(f"Enabled groups : {', '.join(s['enabled_groups']) or '(none)'}")
+    if s.get("unknown_groups"):
+        print(f"WARNING: configured groups not defined (ignored): {', '.join(s['unknown_groups'])}")
+    print(f"Enabled tools  : {', '.join(s['enabled_tools']) or '(none)'}")
+    print(f"Disabled tools : {', '.join(s['disabled_tools']) or '(none)'}")
+    print(f"Index          : {s['total_tools']} MCP tools indexed "
+          f"({'ok' if s['total_tools'] else 'run `cc features index`'})")
+    print(f"Exposed tools  : {s['included_count']} of {s['total_tools']} "
+          f"(always-on: {', '.join(s['always_on'])})")
+    if s["env_override"]:
+        print(f"NOTE: env CC_MCP_TOOLS='{s['env_override']}' overrides config at MCP start.")
+    print("Tip: `cc features disable <group>` trims the MCP surface; restart opencode to apply.")
 
 
 # --- Report ---
@@ -1574,7 +2047,7 @@ def cmd_mitm(args):
 def cmd_dns(args):
     """cc dns {resolve|monitor|list|history|remove|track}"""
     from modules.dns_wrapper import (
-        resolve, list_monitors, start_monitor, stop_monitor,
+        resolve, list_monitors, start_monitor,
         remove_monitor, get_history, start_background_monitor
     )
     start_background_monitor()
@@ -1861,7 +2334,7 @@ def cmd_papermill(args):
             status = "\u2713" if nb_path.exists() else "\u2717"
             print(f"  {status} {name:<20} {info['desc']}")
             if info.get("params"):
-                print(f"      Parameters:")
+                print("      Parameters:")
                 for p, d in info["params"].items():
                     print(f"        --{p:<20} {d}")
             print()
@@ -1878,7 +2351,7 @@ def cmd_papermill(args):
         print(f"  Desc:     {info['desc']}")
         print(f"  Exists:   {'yes' if nb_path.exists() else 'no'}")
         if info.get("params"):
-            print(f"  Parameters:")
+            print("  Parameters:")
             for p, d in info["params"].items():
                 print(f"    {p:<25} {d}")
 
@@ -1960,8 +2433,8 @@ def cmd_wordlists(args):
         print(f"  wordlist_web (config):  {cfg.get('wordlist_web', 'not set')}")
         print(f"  /usr/share/wordlists:   {'exists' if Path('/usr/share/wordlists').exists() else 'not found'}")
         print(f"  /usr/share/seclists:    {'exists' if Path('/usr/share/seclists').exists() else 'not found'}")
-        print(f"\n  Tip: set wordlists_dir in config if your path differs:")
-        print(f"    cc config wordlists_dir /path/to/your/wordlists")
+        print("\n  Tip: set wordlists_dir in config if your path differs:")
+        print("    cc config wordlists_dir /path/to/your/wordlists")
         return
 
     paths = _scan_wordlists(wl_dir)
@@ -2004,11 +2477,11 @@ def cmd_wordlists(args):
             if sz > largest_size:
                 largest_size = sz
                 largest = f
-        print(f"Wordlist statistics:\n")
+        print("Wordlist statistics:\n")
         print(f"  Total files:     {total}")
         print(f"  Total size:      {total_size/1024/1024/1024:.2f}G")
         print(f"  Base directory:  {wl_dir}")
-        print(f"  Also checked:    /usr/share/wordlists")
+        print("  Also checked:    /usr/share/wordlists")
         if largest:
             print(f"  Largest file:    {largest} ({largest_size/1024/1024/1024:.2f}G)")
 
@@ -2122,7 +2595,7 @@ def cmd_ldapnomnom(args):
     if result.get("error"):
         print(f"Error: {result['error']}")
     else:
-        print(f"LDAP enumeration complete")
+        print("LDAP enumeration complete")
         if result.get("output_file"):
             print(f"Output: {result['output_file']}")
 
@@ -2300,7 +2773,7 @@ def cmd_eaphammer(args):
     if result.get("error"):
         print(f"Error: {result['error']}")
     else:
-        print(f"EAPHammer attack complete")
+        print("EAPHammer attack complete")
         if result.get("output_dir"):
             print(f"Output: {result['output_dir']}")
 
@@ -2352,7 +2825,7 @@ def cmd_wsgidav(args):
     try:
         proc = wsgidav_serve(
             directory, host=host, port=port,
-            auth=getattr(args, "auth", False),
+            auth=getattr(args, "auth", True),
             username=getattr(args, "username", "") or "",
             password=getattr(args, "password", "") or "",
         )
@@ -2381,7 +2854,7 @@ def cmd_kape(args):
     if result.get("error"):
         print(f"Error: {result['error']}")
     else:
-        print(f"KAPE collection complete")
+        print("KAPE collection complete")
         if result.get("output_dir"):
             print(f"Output: {result['output_dir']}")
 
@@ -2539,6 +3012,56 @@ def cmd_notify_config(args):
 
 
 # --- HexStrike ---
+def _build_mcp_registrations(proj_dir: Path) -> dict:
+    """Build the "mcp" block for opencode.json from the CC toolkit scripts.
+
+    Registers cc-toolkit always (run.py mcp), plus ghidra and fuzz-guide
+    when the corresponding server files are present. Paths are relative to
+    the project dir so the block is portable across hosts/containers.
+    """
+    regs = {}
+    run_py = proj_dir / "run.py"
+    cc_entry = {"type": "local", "enabled": True}
+    if run_py.exists():
+        cc_entry.update({"command": ["python3", str(run_py)], "args": ["mcp"]})
+    else:
+        mcp_py = proj_dir / "cc_mcp_server.py"
+        cc_entry.update({"command": ["python3", str(mcp_py)]})
+    regs["cc-toolkit"] = cc_entry
+
+    fg_py = proj_dir / "fuzz_guide_mcp.py"
+    if fg_py.exists():
+        regs["fuzz-guide"] = {
+            "type": "local",
+            "command": ["python3", str(fg_py)],
+            "environment": {
+                "FUZZ_GUIDE_WORKDIR": os.environ.get(
+                    "FUZZ_GUIDE_WORKDIR", "/tmp/fuzz_guide_workdir"),
+            },
+            "enabled": True,
+        }
+
+    gh_py = proj_dir / "ghidra_mcp.py"
+    gh_svc = os.environ.get("GHIDRA_SERVICE_DIR", "")
+    if gh_py.exists() and gh_svc:
+        regs["ghidra"] = {
+            "type": "local",
+            "command": ["python3", str(gh_py)],
+            "environment": {"GHIDRA_SERVICE_DIR": gh_svc},
+            "enabled": True,
+        }
+
+    hs = which("hexstrike_server")
+    if hs:
+        regs["hexstrike"] = {
+            "type": "local",
+            "command": ["hexstrike_server"],
+            "enabled": True,
+        }
+
+    return regs
+
+
 def cmd_hexstrike(args):
     a = getattr(args, "hexstrike_action", "status") or "status"
     session = "hexstrike"
@@ -2591,7 +3114,7 @@ def cmd_hexstrike(args):
             if oc_cfg.exists():
                 print(f"  opencode MCP configured: yes ({oc_cfg})")
             else:
-                print(f"  opencode MCP configured: no")
+                print("  opencode MCP configured: no")
         else:
             print("HexStrike server: STOPPED")
     elif a == "opencode":
@@ -2685,8 +3208,8 @@ def cmd_infra_ai_setup(args):
         elif gpu_layers == 0:
             # Remove override if exists → let ollama auto-detect
             reset_cmd = (
-                f"sudo rm -f /etc/systemd/system/ollama.service.d/override.conf && "
-                f"sudo systemctl daemon-reload && sudo systemctl restart ollama 2>/dev/null"
+                "sudo rm -f /etc/systemd/system/ollama.service.d/override.conf && "
+                "sudo systemctl daemon-reload && sudo systemctl restart ollama 2>/dev/null"
             )
             subprocess.run(ssh_base + [reset_cmd], timeout=15, capture_output=True)
 
@@ -2721,12 +3244,12 @@ def cmd_infra_ai_setup(args):
                 models = r.stdout.count('"name"')
                 print(f"  ollama reachable at :{local_port} ({models} models)")
             else:
-                print(f"  Tunnel up, waiting for ollama... (no response yet)")
+                print("  Tunnel up, waiting for ollama... (no response yet)")
         except Exception:
             print("  Could not verify — check tunnel manually")
 
         # Step 4: Configure opencode
-        print("[4/4] Updating opencode MCP config for local LLM...")
+        print("[4/4] Updating opencode MCP config for local LLM + MCP servers...")
         oc_dir = Path.home() / ".config" / "opencode"
         oc_cfg = oc_dir / "opencode.json"
         provider_name = "ollama"
@@ -2747,6 +3270,7 @@ def cmd_infra_ai_setup(args):
                 }
             }
         }
+        mcp_servers = _build_mcp_registrations(Path(__file__).resolve().parent)
         if oc_cfg.exists():
             try:
                 cfg_data = json.loads(oc_cfg.read_text())
@@ -2758,19 +3282,21 @@ def cmd_infra_ai_setup(args):
             cfg_data.setdefault("provider", {})
             cfg_data["provider"].update(provider_config)
             cfg_data["model"] = model_ref
+            cfg_data["mcp"] = mcp_servers
             cfg_data["instructions"] = [
                 "You are a helpful AI assistant for penetration testing, security assessment, and system administration.",
                 "Always respond in English.",
                 "You have MCP tools available for file operations, network scanning, AD security, WiFi, forensics, and system commands. Use them when appropriate.",
             ]
             oc_cfg.write_text(json.dumps(cfg_data, indent=2, default=str))
-            print(f"  Updated {oc_cfg} with ollama provider")
+            print(f"  Updated {oc_cfg} with ollama provider + MCP servers ({', '.join(mcp_servers)})")
         else:
             oc_dir.mkdir(parents=True, exist_ok=True)
             cfg_data = {
                 "$schema": "https://opencode.ai/config.json",
                 "provider": provider_config,
                 "model": model_ref,
+                "mcp": mcp_servers,
                 "instructions": [
                     "You are a helpful AI assistant for penetration testing, security assessment, and system administration.",
                     "Always respond in English.",
@@ -2778,7 +3304,9 @@ def cmd_infra_ai_setup(args):
                 ],
             }
             oc_cfg.write_text(json.dumps(cfg_data, indent=2, default=str))
-            print(f"  Created {oc_cfg} with ollama provider")
+            print(f"  Created {oc_cfg} with ollama provider + MCP servers ({', '.join(mcp_servers)})")
+        if len(mcp_servers) < 4:
+            print("  Note: some optional MCP servers were skipped (see _build_mcp_registrations).")
 
         print()
         print("  AI infrastructure is up!")
@@ -2835,7 +3363,7 @@ def cmd_infra_ai_setup(args):
             ("Ollama process", "pgrep -a ollama 2>/dev/null | head -3 || echo 'not running'"),
             ("Ollama models loaded", "curl -s http://localhost:11434/api/tags 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get(\"models\",[])),\"models loaded\")' 2>/dev/null || echo 'ollama not responding'"),
             ("Ollama recent logs", "sudo journalctl -u ollama --since '10 min ago' --no-pager 2>/dev/null | tail -10"),
-            ("Override file", "cat /etc/systemd/system/ollama.service.d/override.conf 2>/dev/null || echo '(no override file)"),
+            ("Override file", "cat /etc/systemd/system/ollama.service.d/override.conf 2>/dev/null || echo '(no override file)'"),
         ]
         for label, cmd in checks:
             print(f"  [{label}]")
@@ -2988,8 +3516,8 @@ def cmd_nmap(args):
                 db = FindingsDB(case_path)
                 for f in sorted((case_path / "scans").glob("*.nmap")):
                     text = f.read_text(errors="ignore")
-                    import re
-                    for m in re.finditer(r"^(\d+)/(tcp|udp)\s+open\s+(\S*)\s*(.*)$", text, re.MULTILINE):
+                    import re as _re
+                    for m in _re.finditer(r"^(\d+)/(tcp|udp)\s+open\s+(\S*)\s*(.*)$", text, _re.MULTILINE):
                         port = m.group(1)
                         proto = m.group(2)
                         svc = m.group(3)
@@ -3243,7 +3771,7 @@ def cmd_linpeas(args):
     if result.get("error"):
         print(f"Error: {result['error']}")
     else:
-        print(f"linpeas complete")
+        print("linpeas complete")
         print(f"Output: {result.get('output_file', '')}")
 
 
@@ -3413,7 +3941,9 @@ def cmd_watch(args):
     while True:
         iteration += 1
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        iter_case = case_id or f"watch_{target.replace('.','_')}_{ts}"
+        # Stable per-target case dir: a timestamped default would create a new
+        # case directory every iteration, growing CASES_DIR unboundedly.
+        iter_case = case_id or f"watch_{target.replace('.','_')}"
         print(f"\n[{ts}] Watch iteration #{iteration} — running {playbook}")
         try:
             results = pe.run_file(playbook, [target], iter_case, {}, verbose)
@@ -3452,7 +3982,7 @@ def _bin_exists() -> bool:
     return os.path.isfile(_BIN_TOOL)
 
 def _run_bin(args: list[str]) -> int:
-    py = shutil.which("python3") or "python3"
+    py = which("python3") or "python3"
     return subprocess.call([py, _BIN_TOOL] + args)
 
 def cmd_binary(args):
@@ -3460,6 +3990,125 @@ def cmd_binary(args):
         print(f"Error: bin-tools.py not found at {_BIN_TOOL}")
         sys.exit(1)
     sys.exit(_run_bin(args.subargs))
+
+
+# --- Bug bounty dashboard (HackerOne / Bugcrowd) ---
+def cmd_bb(args):
+    from modules.bugbounty_clients import BugBountyManager, format_program, format_programs
+    a = getattr(args, "bb_action", "") or ""
+    mgr = BugBountyManager()
+
+    if a == "creds":
+        ca = getattr(args, "bb_creds_action", "") or ""
+        if ca == "set":
+            platform = getattr(args, "platform", "") or ""
+            try:
+                result = mgr.set_credentials(
+                    platform,
+                    identifier=getattr(args, "identifier", "") or "",
+                    token=getattr(args, "token", "") or "",
+                    client_id=getattr(args, "client_id", "") or "",
+                    client_secret=getattr(args, "client_secret", "") or "",
+                    public_only=not getattr(args, "oauth", False),
+                )
+            except ValueError as e:
+                print(f"Error: {e}")
+                return
+            print(json.dumps(result, indent=2))
+        elif ca == "list":
+            for p in mgr.configured_platforms():
+                extra = "  [customer-only API]" if p.get("customer_only") else ""
+                print(f"  {p['platform']:<10} configured={p['configured']!s:<5} "
+                      f"public={p['public']!s}{extra}")
+        elif ca == "clear":
+            mgr.clear_credentials(getattr(args, "platform", "") or "")
+            print("Credentials cleared.")
+    elif a == "list":
+        print(format_programs(mgr.list_programs(
+            getattr(args, "platform", "") or "",
+            getattr(args, "search", "") or "")))
+    elif a == "get":
+        platform = getattr(args, "platform", "") or ""
+        slug = getattr(args, "slug", "") or ""
+        if not platform or not slug:
+            print("Specify --platform and --slug")
+            return
+        prog = mgr.get_program(platform, slug, refresh=getattr(args, "refresh", False))
+        if not prog:
+            print(f"Program '{platform}:{slug}' not in cache — run `cc bb sync-program` first.")
+            return
+        print(format_program(prog))
+    elif a == "discover":
+        try:
+            found = mgr.discover("hackerone")
+        except RuntimeError as e:
+            print(f"Error: {e}")
+            return
+        limit = getattr(args, "limit", 100) or 100
+        print(f"Discovered {len(found)} programs (minimal entries cached):")
+        for p in found[:limit]:
+            print(f"  [{p.get('platform','?'):<9}] {p.get('slug','?'):<28} {p.get('name','')}")
+        if len(found) > limit:
+            print(f"  ... {len(found) - limit} more")
+    elif a == "sync":
+        result = mgr.sync_all(
+            platform=getattr(args, "platform", "") or "",
+            limit=getattr(args, "limit", 0) or 0,
+            refresh=not getattr(args, "no_refresh", False),
+        )
+        print(f"Synced {len(result.get('synced', []))} programs, "
+              f"discovered {result.get('new_discovered', 0)} new.")
+        for f in result.get("failed", []):
+            print(f"  FAILED {f.get('program')}: {f.get('error')}")
+    elif a == "sync-program":
+        platform = getattr(args, "platform", "") or ""
+        slug = getattr(args, "slug", "") or ""
+        if not platform or not slug:
+            print("Specify --platform and --slug")
+            return
+        try:
+            prog = mgr.sync_program(platform, slug, refresh=True)
+        except (RuntimeError, ValueError, PermissionError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            return
+        print(format_program(prog))
+    elif a == "import-case":
+        platform = getattr(args, "platform", "") or ""
+        slug = getattr(args, "slug", "") or ""
+        if not platform or not slug:
+            print("Specify --platform and --slug")
+            return
+        try:
+            result = mgr.import_case(
+                platform, slug,
+                case_id=getattr(args, "case_id", "") or "",
+                client=getattr(args, "client", "") or "",
+                customer_id=getattr(args, "customer_id", "") or "",
+                include_assets=not getattr(args, "no_assets", False),
+            )
+        except (RuntimeError, ValueError, PermissionError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            return
+        print(json.dumps(result, indent=2))
+    elif a == "reports":
+        platform = (getattr(args, "platform", "") or "hackerone").lower()
+        slugs = [s.strip() for s in (getattr(args, "programs", "") or "").split(",") if s.strip()]
+        try:
+            reports = mgr.get_reports(platform, limit=getattr(args, "limit", 20) or 20,
+                                      program_slugs=slugs or None)
+        except (RuntimeError, ValueError) as e:
+            print(f"Error: {e}")
+            return
+        if not reports:
+            print("No reports found.")
+            return
+        print(f"{platform} reports ({len(reports)}):")
+        for r in reports:
+            print(f"  #{r.get('id','?'):<8} [{r.get('state','?')}] "
+                  f"{r.get('severity','') or 'n/a':<8} {r.get('title','')} "
+                  f"-> {r.get('program','')}")
+    else:
+        print("Unknown bb action. Use: creds, list, get, discover, sync, sync-program, import-case, reports")
 
 
 # ===========================================================================
@@ -3546,6 +4195,58 @@ def main():
         for arg in extra:
             rsp.add_argument(*arg[:-1] if len(arg) == 3 else (arg[0],), **arg[-1])
         rsp.set_defaults(func=f)
+
+    # -- appsec: SBOM / SCA / secrets / SAST / OSV / CDN / existing SBOMs --
+    sp = sub.add_parser("appsec", help="AppSec: SBOM, SCA vuln scans, secret scanning, SAST, OSV deps, CDN libs")
+    ac2 = sp.add_subparsers(dest="appsec_action")
+    for a, h, extra in [
+        ("scan", "Full audit (SBOM+SCA+secrets+SAST+OSV+CDN+existing SBOMs)", [("--target", {"required": True}), ("--sca-tool", {"default": "grype", "choices": ["grype", "trivy"]}), ("--no-sbom", {"action": "store_true"}), ("--no-sca", {"action": "store_true"}), ("--no-secrets", {"action": "store_true"})]),
+        ("sbom", "Generate SBOM", [("--target", {"required": True}), ("--format", {"default": "cyclonedx-json"}), ("--tool", {"default": "syft", "choices": ["syft", "trivy"]})]),
+        ("grype", "Grype SCA scan", [("--target", {"required": True})]),
+        ("trivy", "Trivy SCA scan", [("--target", {"required": True})]),
+        ("secrets", "Gitleaks secret scan", [("--target", {"required": True})]),
+        ("sast", "Pattern SAST scan", [("--target", {"required": True})]),
+        ("osv", "OSV dep vuln check", [("--target", {"required": True})]),
+        ("cdn", "CDN frontend lib scan", [("--target", {"required": True})]),
+        ("sbom_existing", "Ingest pre-built SBOMs", [("--target", {"required": True})]),
+    ]:
+        asp2 = ac2.add_parser(a, help=h)
+        for arg in extra:
+            asp2.add_argument(*arg[:-1] if len(arg) == 3 else (arg[0],), **arg[-1])
+        asp2.set_defaults(func=cmd_appsec)
+
+    # -- dast: ZAP --
+    sp = sub.add_parser("dast", help="DAST: OWASP ZAP scans")
+    dc = sp.add_subparsers(dest="zap_action")
+    for a, h, extra in [
+        ("health", "Check ZAP API", []),
+        ("start", "Auto-start ZAP daemon", []),
+        ("scan", "Start scan", [("--target", {"required": True}), ("--mode", {"default": "active", "choices": ["active", "spider", "ajax"]})]),
+        ("status", "Scan progress", [("--scan-id", {"default": ""}), ("--mode", {"default": "active", "choices": ["active", "spider", "ajax"]})]),
+        ("issues", "List alerts", [("--risk", {"default": ""})]),
+    ]:
+        dsp = dc.add_parser(a, help=h)
+        for arg in extra:
+            dsp.add_argument(*arg[:-1] if len(arg) == 3 else (arg[0],), **arg[-1])
+        dsp.set_defaults(func=cmd_zap)
+
+    # -- bin-surface: compiled binary CLI mapping --
+    sp = sub.add_parser("bin-surface", help="Map CLI surface of compiled binaries")
+    sp.add_argument("--target", required=True)
+    sp.add_argument("--max-depth", type=int, default=3)
+    sp.add_argument("--no-strings", action="store_true")
+    sp.set_defaults(func=cmd_bin_surface)
+
+    # -- compiled-scan: security scan of compiled artifacts --
+    sp = sub.add_parser("compiled-scan",
+                        help="Security-scan compiled artifacts (ELF/PE/Mach-O/.NET/.class/.jar/.pyc)")
+    sp.add_argument("--target", required=True)
+    sp.add_argument("--max-depth", type=int, default=4)
+    sp.add_argument("--yara", action="store_true",
+                    help="also run bundled YARA rules over each binary")
+    sp.add_argument("--min-severity", choices=["info", "warning", "error"],
+                    default="info", help="only report findings at/above this level")
+    sp.set_defaults(func=cmd_compiled_scan)
 
     # -- web: web application testing --
     sp = sub.add_parser("web", help="Web application testing tools")
@@ -3765,7 +4466,7 @@ def main():
         if a == "connect": wsp.add_argument("--ssid", required=True); wsp.add_argument("--password")
         if a == "netscan": wsp.add_argument("--subnet")
         if a == "arp-spoof": wsp.add_argument("--target", required=True); wsp.add_argument("--gateway")
-        if a == "proxy": wsp.add_argument("--port", type=int, default=8080); wsp.add_argument("--sslstrip", type=bool, default=True)
+        if a == "proxy": wsp.add_argument("--port", type=int, default=8080); wsp.add_argument("--sslstrip", nargs="?", const=True, default=True, type=lambda s: str(s).lower() in ("1", "true", "yes", "on"))
         if a == "rogue-ap": wsp.add_argument("--essid", required=True); wsp.add_argument("--channel", default="6"); wsp.add_argument("--bssid")
         if a == "sycophant": wsp.add_argument("--target-bssid"); wsp.add_argument("--target-essid")
         if a == "mitmproxy": wsp.add_argument("--port", type=int, default=8080); wsp.add_argument("--listen-addr", default="0.0.0.0"); wsp.add_argument("--mode", default="transparent", choices=["transparent","regular"])
@@ -3795,10 +4496,12 @@ def main():
                   ("verify","Verify evidence integrity"),
                   ("scope","Manage scope"),("task","Task checklist"),("goal","Manage analysis goals"),
                   ("strength","Manage strengths"),("weakness","Manage weaknesses"),
+                  ("checklist","Checklist (init, list, status update)"),
+                  ("export","Export findings (sarif, xccdf)"),
                   ("archive","Archive case"),("unarchive","Unarchive case"),
                   ("delete","Delete case")]:
         csp = cs.add_parser(a, help=h)
-        if a != "list": csp.add_argument("--case-id", required=(a in ("info","close","evidence","note","verify","delete","goal","strength","weakness","archive","unarchive")))
+        if a != "list": csp.add_argument("--case-id", required=(a in ("info","close","evidence","note","verify","delete","goal","strength","weakness","archive","unarchive","export")))
         if a == "create":
             csp.add_argument("--client")
             csp.add_argument("--case-type", default="pentest",
@@ -3842,6 +4545,31 @@ def main():
                 if wa == "add": wsp.add_argument("--text", required=True)
                 if wa == "remove": wsp.add_argument("--index", type=int, default=-1)
                 wsp.set_defaults(func=cmd_case)
+        if a == "checklist":
+            hcs = csp.add_subparsers(dest="checklist_action")
+            for hca, hch in [("init","Initialize from template"),("list","Show checklists"),
+                             ("status","Update item status"),("delete","Delete instance"),
+                             ("from-findings","Build checklist from findings")]:
+                hsp = hcs.add_parser(hca, help=hch)
+                if hca == "init":
+                    hsp.add_argument("--template", default="")
+                    hsp.add_argument("--replace", action="store_true")
+                if hca == "status":
+                    hsp.add_argument("--item-id", required=True)
+                    hsp.add_argument("--status", required=True,
+                                     choices=["not_started","in_progress","passed","failed","not_applicable"])
+                    hsp.add_argument("--instance-id", default="")
+                if hca == "delete":
+                    hsp.add_argument("--instance-id", required=True)
+                if hca == "from-findings":
+                    hsp.add_argument("--title", default="")
+                    hsp.add_argument("--replace", action="store_true")
+                hsp.set_defaults(func=cmd_case)
+        if a == "export":
+            csp.add_argument("--format", default="sarif", choices=["sarif","xccdf"])
+            csp.add_argument("--output", default="")
+            csp.add_argument("--no-checklist", action="store_true",
+                             help="xccdf only: skip checklist controls")
         csp.set_defaults(func=cmd_case)
 
     # -- ir: incident response workflow --
@@ -3947,6 +4675,24 @@ def main():
         if a in ("info","run"): tsp.add_argument("tool_name")
         if a == "run": tsp.add_argument("tool_args", nargs=argparse.REMAINDER)
         tsp.set_defaults(func=cmd_tools)
+
+    # -- features: MCP lightweight feature-group toggles --
+    sp = sub.add_parser("features", help="MCP feature-group toggles (lightweight MCP)")
+    fs = sp.add_subparsers(dest="features_action")
+    for a, h in [("list", "Show groups & enabled state"),
+                 ("enable", "Enable one or more groups"),
+                 ("disable", "Disable one or more groups"),
+                 ("on", "Enable all groups"),
+                 ("off", "Disable all groups"),
+                 ("tool-add", "Per-tool override: force a tool prefix on"),
+                 ("tool-rm", "Per-tool override: force a tool prefix off"),
+                 ("allowlist", "Show effective MCP allowlist"),
+                 ("manifest", "Write MCP_FEATURES.md pre-startup manifest"),
+                 ("index", "Refresh tool-name index from cc_mcp_server")]:
+        fsp = fs.add_parser(a, help=h)
+        fsp.add_argument("names", nargs="*", help="Group names or tool prefixes")
+        fsp.set_defaults(func=cmd_features)
+    sp.set_defaults(func=cmd_features)
 
     # -- infra: infrastructure management --
     sp = sub.add_parser("infra", help="Infrastructure management")
@@ -4180,6 +4926,52 @@ def main():
         if a == "recent": hsp.add_argument("--limit",type=int,default=25)
         if a == "search": hsp.add_argument("query")
         hsp.set_defaults(func=cmd_history)
+
+    # -- bb: bug bounty dashboard (HackerOne / Bugcrowd) --
+    sp = sub.add_parser("bb", help="Bug bounty dashboard (HackerOne / Bugcrowd)")
+    bs = sp.add_subparsers(dest="bb_action")
+    for a, h in [("list","List cached programs"),
+                 ("get","Show a cached program with scope"),
+                 ("discover","Discover public HackerOne programs"),
+                 ("sync","Refresh all cached programs"),
+                 ("sync-program","Fetch + cache one program"),
+                 ("import-case","Import a program as a case + assets"),
+                 ("reports","List my reports (HackerOne, or YesWeHack with --programs)")]:
+        bsp = bs.add_parser(a, help=h)
+        bsp.add_argument("--platform", default="", help="hackerone/bugcrowd/yeswehack/intigriti/immunefi")
+        bsp.add_argument("--slug", default="", help="program handle/code")
+        if a == "list":
+            bsp.add_argument("--search", default="")
+        if a in ("get",):
+            bsp.add_argument("--refresh", action="store_true")
+        if a in ("discover",):
+            bsp.add_argument("--limit", type=int, default=100)
+        if a == "reports":
+            bsp.add_argument("--limit", type=int, default=20)
+            bsp.add_argument("--programs", default="",
+                             help="comma-separated program slugs (required for yeswehack)")
+        if a in ("sync",):
+            bsp.add_argument("--limit", type=int, default=0)
+            bsp.add_argument("--no-refresh", action="store_true")
+        if a == "import-case":
+            bsp.add_argument("--case-id", default="")
+            bsp.add_argument("--client", default="")
+            bsp.add_argument("--customer-id", default="")
+            bsp.add_argument("--no-assets", action="store_true")
+        bsp.set_defaults(func=cmd_bb)
+    bsc = bs.add_parser("creds", help="Manage platform API credentials")
+    bscs = bsc.add_subparsers(dest="bb_creds_action")
+    for ca, ch in [("set","Store encrypted credentials"),("list","Show credential status"),("clear","Remove credentials")]:
+        csp = bscs.add_parser(ca, help=ch)
+        csp.add_argument("--platform", default="", help="hackerone/bugcrowd/yeswehack/intigriti/immunefi")
+        if ca == "set":
+            csp.add_argument("--identifier", default="", help="HackerOne API token identifier (name)")
+            csp.add_argument("--token", default="", help="HackerOne API token value")
+            csp.add_argument("--client-id", default="", help="Bugcrowd OAuth2 client ID")
+            csp.add_argument("--client-secret", default="", help="Bugcrowd OAuth2 client secret")
+            csp.add_argument("--oauth", action="store_true",
+                             help="Store Bugcrowd OAuth2 client_id/client_secret (customer-only API)")
+        csp.set_defaults(func=cmd_bb)
 
     args = p.parse_args()
     if not getattr(args, "func", None):

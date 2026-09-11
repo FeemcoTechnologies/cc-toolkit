@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}EDR - Alert Detail{% endblock %}
+{% block head %}
+<style>
+    .sev-critical { @apply bg-red-500/20 text-red-400 border border-red-500/40; }
+    .sev-high { @apply bg-orange-500/20 text-orange-400 border border-orange-500/40; }
+    .sev-medium { @apply bg-yellow-500/20 text-yellow-400 border border-yellow-500/40; }
+    .sev-low { @apply bg-blue-500/20 text-blue-400 border border-blue-500/40; }
+    .sev-info { @apply bg-gray-500/20 text-gray-400 border border-gray-500/40; }
+    .info-row { @apply flex justify-between py-1.5 border-b border-gray-800/50 text-sm; }
+    .info-label { @apply text-gray-500; }
+    .info-value { @apply text-gray-200 font-mono text-xs; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="alert-triangle" class="w-5 h-5 text-red-400"></i> Alert Detail
+        <span id="alert-id-display" class="text-gray-400 text-base font-normal">#{{ alert_id }}</span>
+    </h1>
+    <a href="{{ url_for('edr.alerts_list') }}" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1">
+        <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> Back to Alerts
+    </a>
+</div>
+
+<div id="server-banner" class="hidden mb-4 bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 text-sm text-red-300">
+    EDR server is unreachable.
+</div>
+
+<div id="loading-spinner" class="flex items-center justify-center py-16">
+    <svg class="animate-spin h-6 w-6 text-indigo-400" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+</div>
+
+<div id="alert-content" class="hidden space-y-6">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+            <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="info" class="w-4 h-4 text-indigo-400"></i> Alert Information</h2>
+            <div id="alert-info"></div>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+            <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i> Actions</h2>
+            <div class="space-y-2" id="alert-actions"></div>
+        </div>
+    </div>
+
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="list" class="w-4 h-4 text-gray-400"></i> Matched Rows</h2>
+        <div id="matched-empty" class="text-gray-500 text-sm hidden">No matched rows recorded.</div>
+        <div id="matched-rows" class="hidden bg-gray-950 rounded p-3 font-mono text-xs text-gray-300 max-h-96 overflow-auto whitespace-pre-wrap"></div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var ALERT_ID = {{ alert_id }};
+var API_ALERT = '{{ url_for("edr.api_alert_detail", alert_id=0) }}'.replace('/0', '/');
+var URL_ALERT_ACK = '{{ url_for("edr.alert_acknowledge", alert_id=0) }}'.replace('/0', '/');
+var URL_ALERT_RESOLVE = '{{ url_for("edr.alert_resolve", alert_id=0) }}'.replace('/0', '/');
+
+function sevBadge(s) {
+    return '<span class="text-xs px-2 py-0.5 rounded-full font-medium sev-' + (s || 'info') + '">' + (s || 'info') + '</span>';
+}
+
+function renderInfo(d) {
+    var rows = [
+        ['Alert ID', d.id || ALERT_ID],
+        ['Rule', esc(d.rule_name || d.rule || '-')],
+        ['Severity', sevBadge(d.severity)],
+        ['Device', esc(d.device_hostname || d.device || '-')],
+        ['Timestamp', esc(d.timestamp || d.created_at || '-')],
+        ['Status', esc(d.status || 'open')],
+        ['Description', '<span class="text-xs text-gray-400">' + esc(d.description || '-') + '</span>'],
+    ];
+    document.getElementById('alert-info').innerHTML = rows.map(function(r) {
+        return '<div class="info-row"><span class="info-label">' + r[0] + '</span><span class="info-value">' + r[1] + '</span></div>';
+    }).join('');
+}
+
+function renderMatchedRows(d) {
+    var rows = d.matched_rows || [];
+    if (!rows.length) { document.getElementById('matched-empty').classList.remove('hidden'); return; }
+    document.getElementById('matched-rows').classList.remove('hidden');
+    document.getElementById('matched-rows').textContent = rows.map(function(r) { return JSON.stringify(r, null, 2); }).join('\n\n');
+}
+
+function renderActions(d) {
+    var html = '';
+    if (d.status !== 'resolved') {
+        html += '<button onclick="doAck()" class="bg-green-700 hover:bg-green-600 text-xs px-3 py-1.5 rounded font-medium w-full text-center">Acknowledge</button>';
+        html += '<button onclick="doResolve()" class="bg-blue-700 hover:bg-blue-600 text-xs px-3 py-1.5 rounded font-medium w-full text-center">Resolve</button>';
+    } else {
+        html += '<div class="text-gray-500 text-sm">This alert has been resolved.</div>';
+    }
+    document.getElementById('alert-actions').innerHTML = html;
+}
+
+async function loadAlert() {
+    try {
+        var r = await fetch(API_ALERT);
+        var d = await r.json();
+        if (d.error) throw new Error(d.error);
+        document.getElementById('loading-spinner').classList.add('hidden');
+        document.getElementById('alert-content').classList.remove('hidden');
+        renderInfo(d);
+        renderMatchedRows(d);
+        renderActions(d);
+    } catch(e) {
+        document.getElementById('loading-spinner').classList.add('hidden');
+        document.getElementById('server-banner').classList.remove('hidden');
+    }
+}
+
+async function doAck() {
+    var r = await fetch(URL_ALERT_ACK + ALERT_ID + '/acknowledge', {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Alert acknowledged', !d.error);
+    if (!d.error) loadAlert();
+}
+async function doResolve() {
+    var r = await fetch(URL_ALERT_RESOLVE + ALERT_ID + '/resolve', {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Alert resolved', !d.error);
+    if (!d.error) loadAlert();
+}
+
+loadAlert();
+</script>
+{% endblock %}

@@ -1,0 +1,176 @@
+id: api-docs-discovery-comprehensive
+info:
+  name: Comprehensive API Documentation Discovery
+  author: your-name
+  severity: info
+  description: Discovers API documentation across multiple common and framework-specific endpoints
+  tags:
+    - api
+    - documentation
+    - swagger
+    - openapi
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/swagger"
+      - "{{BaseURL}}/swagger-ui"
+      - "{{BaseURL}}/swagger-ui.html"
+      - "{{BaseURL}}/swagger-ui/index.html"
+      - "{{BaseURL}}/api/swagger"
+      - "{{BaseURL}}/api/swagger-ui"
+      - "{{BaseURL}}/api/swagger-ui.html"
+      - "{{BaseURL}}/docs/swagger"
+      - "{{BaseURL}}/swagger.json"
+      - "{{BaseURL}}/swagger.yaml"
+      - "{{BaseURL}}/swagger.yml"
+      - "{{BaseURL}}/openapi"
+      - "{{BaseURL}}/openapi.json"
+      - "{{BaseURL}}/openapi.yaml"
+      - "{{BaseURL}}/openapi.yml"
+      - "{{BaseURL}}/api/openapi.json"
+      - "{{BaseURL}}/api/openapi.yaml"
+      - "{{BaseURL}}/static/openapi.json"
+      - "{{BaseURL}}/redoc"
+      - "{{BaseURL}}/redoc.html"
+      - "{{BaseURL}}/api/redoc"
+      - "{{BaseURL}}/docs/redoc"
+      - "{{BaseURL}}/api"
+      - "{{BaseURL}}/api/"
+      - "{{BaseURL}}/api/docs"
+      - "{{BaseURL}}/api/documentation"
+      - "{{BaseURL}}/api/reference"
+      - "{{BaseURL}}/api/help"
+      - "{{BaseURL}}/api/info"
+      - "{{BaseURL}}/api/spec"
+      - "{{BaseURL}}/docs"
+      - "{{BaseURL}}/docs/"
+      - "{{BaseURL}}/documentation"
+      - "{{BaseURL}}/reference"
+      - "{{BaseURL}}/help"
+      - "{{BaseURL}}/spec"
+      - "{{BaseURL}}/api/v1"
+      - "{{BaseURL}}/api/v1/"
+      - "{{BaseURL}}/api/v1/docs"
+      - "{{BaseURL}}/api/v1/documentation"
+      - "{{BaseURL}}/api/v1/swagger-ui.html"
+      - "{{BaseURL}}/api/v1/openapi.json"
+      - "{{BaseURL}}/api/v2"
+      - "{{BaseURL}}/api/v2/"
+      - "{{BaseURL}}/api/v2/docs"
+      - "{{BaseURL}}/api/v2/documentation"
+      - "{{BaseURL}}/api/v2/swagger-ui.html"
+      - "{{BaseURL}}/api/v2/openapi.json"
+      - "{{BaseURL}}/api/v3"
+      - "{{BaseURL}}/api/v3/"
+      - "{{BaseURL}}/api/v3/docs"
+      - "{{BaseURL}}/api/v3/swagger-ui.html"
+      - "{{BaseURL}}/v1/docs"
+      - "{{BaseURL}}/v2/docs"
+      - "{{BaseURL}}/v3/docs"
+      - "{{BaseURL}}/v4/docs"
+      - "{{BaseURL}}/api-auth"
+      - "{{BaseURL}}/api-docs"
+      - "{{BaseURL}}/rest"
+      - "{{BaseURL}}/rest-api"
+      - "{{BaseURL}}/rest/docs"
+      - "{{BaseURL}}/docs"
+      - "{{BaseURL}}/redoc"
+      - "{{BaseURL}}/openapi.json"
+      - "{{BaseURL}}/swagger-ui.html"
+      - "{{BaseURL}}/swagger-resources"
+      - "{{BaseURL}}/v2/api-docs"
+      - "{{BaseURL}}/v3/api-docs"
+      - "{{BaseURL}}/v3/api-docs.yaml"
+      - "{{BaseURL}}/webjars/swagger-ui/index.html"
+      - "{{BaseURL}}/graphql"
+      - "{{BaseURL}}/graphql/"
+      - "{{BaseURL}}/api/graphql"
+      - "{{BaseURL}}/graphql/docs"
+      - "{{BaseURL}}/graphiql"
+      - "{{BaseURL}}/graphql-playground"
+      - "{{BaseURL}}/api/graphql-playground"
+      - "{{BaseURL}}/schema"
+      - "{{BaseURL}}/schema.json"
+      - "{{BaseURL}}/schema.yaml"
+      - "{{BaseURL}}/api/schema"
+      - "{{BaseURL}}/api/schema.json"
+      - "{{BaseURL}}/schemas"
+      - "{{BaseURL}}/api-schema"
+      - "{{BaseURL}}/swagger/v1/swagger.json"
+      - "{{BaseURL}}/swagger/index.html"
+      - "{{BaseURL}}/swagger/ui"
+      - "{{BaseURL}}/api-docs"
+      - "{{BaseURL}}/api-docs.json"
+      - "{{BaseURL}}/api-docs.yaml"
+      - "{{BaseURL}}/api/info"
+      - "{{BaseURL}}/api/metadata"
+      - "{{BaseURL}}/api/version"
+      - "{{BaseURL}}/api/status"
+      - "{{BaseURL}}/info"
+      - "{{BaseURL}}/metadata"
+      - "{{BaseURL}}/version"
+      - "{{BaseURL}}/.well-known/openapi.json"
+      - "{{BaseURL}}/.well-known/api"
+      - "{{BaseURL}}/rest-api"
+      - "{{BaseURL}}/web-api"
+      - "{{BaseURL}}/api-reference"
+      - "{{BaseURL}}/api-guide"
+      - "{{BaseURL}}/developers"
+      - "{{BaseURL}}/developer"
+      - "{{BaseURL}}/dev"
+      - "{{BaseURL}}/developer-docs"
+      - "{{BaseURL}}/dev-docs"
+      - "{{BaseURL}}/technical-docs"
+      - "{{BaseURL}}/admin/docs"
+      - "{{BaseURL}}/admin/api"
+      - "{{BaseURL}}/admin/swagger"
+      - "{{BaseURL}}/debug"
+      - "{{BaseURL}}/debug/pprof"
+      - "{{BaseURL}}/api.docs"
+      - "{{BaseURL}}/api.json"
+      - "{{BaseURL}}/api.yaml"
+      - "{{BaseURL}}/rest.json"
+      - "{{BaseURL}}/api-endpoints"
+      - "{{BaseURL}}/endpoints"
+      - "{{BaseURL}}/methods"
+      - "{{BaseURL}}/routes"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        words:
+          - "swagger"
+          - "openapi"
+          - "redoc"
+          - "api"
+          - "endpoint"
+          - "documentation"
+          - "basePath"
+          - "paths"
+          - "definitions"
+          - "components"
+          - "servers"
+        part: body
+        condition: or
+      - type: regex
+        regex:
+          - "application/json"
+          - "application/yaml"
+        part: header
+    extractors:
+      - type: regex
+        name: swagger-endpoints
+        regex:
+          - "swagger.*ui"
+          - "openapi"
+        part: body
+      - type: regex
+        name: api-paths
+        regex:
+          - "\"(/[a-zA-Z0-9/_-]+)\""
+          - "'(/[a-zA-Z0-9/_-]+)'"
+        part: body

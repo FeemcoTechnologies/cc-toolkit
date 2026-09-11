@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}EDR - Agent Detail{% endblock %}
+{% block head %}
+<style>
+    .info-row { @apply flex justify-between py-1.5 border-b border-gray-800/50 text-sm; }
+    .info-label { @apply text-gray-500; }
+    .info-value { @apply text-gray-200 font-mono text-xs; }
+    .status-active { @apply bg-green-500/20 text-green-400; }
+    .status-quarantined { @apply bg-red-500/20 text-red-400; }
+    .status-disabled { @apply bg-gray-500/20 text-gray-500; }
+    .sev-critical { @apply bg-red-500/20 text-red-400; }
+    .sev-high { @apply bg-orange-500/20 text-orange-400; }
+    .sev-medium { @apply bg-yellow-500/20 text-yellow-400; }
+    .sev-low { @apply bg-blue-500/20 text-blue-400; }
+    .sev-info { @apply bg-gray-500/20 text-gray-400; }
+    .btn-action { @apply text-xs px-3 py-1.5 rounded font-medium transition-colors; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2">
+        <i data-lucide="monitor" class="w-5 h-5 text-indigo-400"></i>
+        Agent Detail
+        <span id="hostname-display" class="text-gray-400 text-base font-normal"></span>
+    </h1>
+    <a href="{{ url_for('edr.agents_list') }}" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1">
+        <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> Back to Agents
+    </a>
+</div>
+
+<div id="server-banner" class="hidden mb-4 bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 text-sm text-red-300">
+    EDR server is unreachable.
+</div>
+
+<div id="loading-spinner" class="flex items-center justify-center py-16">
+    <svg class="animate-spin h-6 w-6 text-indigo-400" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+</div>
+
+<div id="detail-content" class="hidden space-y-6">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 space-y-6">
+            <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+                <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="info" class="w-4 h-4 text-indigo-400"></i> Device Information</h2>
+                <div id="device-info"></div>
+            </div>
+
+            <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+                <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="shield" class="w-4 h-4 text-green-400"></i> Baseline Status</h2>
+                <div id="baseline-empty" class="text-gray-500 text-sm hidden">No baselines configured.</div>
+                <div id="baseline-table" class="hidden overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-gray-800 text-gray-400 text-xs uppercase">
+                                <th class="text-left px-3 py-2">Table</th>
+                                <th class="text-left px-3 py-2">Entries</th>
+                                <th class="text-left px-3 py-2">Snapshot Hash</th>
+                                <th class="text-right px-3 py-2">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="baseline-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="space-y-6">
+            <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+                <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i> Actions</h2>
+                <div class="space-y-2" id="action-buttons"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <h2 class="text-sm font-semibold mb-3 flex items-center gap-1"><i data-lucide="alert-triangle" class="w-4 h-4 text-red-400"></i> Recent Alerts</h2>
+        <div id="alerts-empty" class="text-gray-500 text-sm hidden">No recent alerts.</div>
+        <div id="alerts-table" class="hidden overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b border-gray-800 text-gray-400 text-xs uppercase">
+                        <th class="text-left px-3 py-2">Severity</th>
+                        <th class="text-left px-3 py-2">Rule</th>
+                        <th class="text-left px-3 py-2">Timestamp</th>
+                        <th class="text-left px-3 py-2">Status</th>
+                        <th class="text-right px-3 py-2">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="alerts-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var UUID = '{{ agent_uuid }}';
+var API_AGENT = '{{ url_for("edr.api_agent_detail", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', UUID);
+var API_BASELINE = '{{ url_for("edr.api_agent_baseline", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', UUID);
+var API_AGENT_ALERTS = '{{ url_for("edr.api_agent_alerts", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', '');
+var URL_QUARANTINE = '{{ url_for("edr.agent_quarantine", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', UUID);
+var URL_UNQUARANTINE = '{{ url_for("edr.agent_unquarantine", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', UUID);
+var URL_CONFIG_PUSH = '{{ url_for("edr.agent_config_push", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', UUID);
+var URL_BASELINE_RESET = '{{ url_for("edr.agent_baseline_reset", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', UUID);
+var URL_ALERT_ACK = '{{ url_for("edr.alert_acknowledge", alert_id=0) }}'.replace('/0', '/');
+var _device = null;
+
+function statusBadge(s) {
+    var cls = s === 'active' ? 'status-active' : s === 'quarantined' ? 'status-quarantined' : 'status-disabled';
+    return '<span class="text-xs px-2 py-0.5 rounded-full font-medium ' + cls + '">' + (s || 'unknown') + '</span>';
+}
+function sevBadge(s) {
+    return '<span class="text-xs px-2 py-0.5 rounded-full sev-' + (s || 'info') + '">' + (s || 'info') + '</span>';
+}
+
+function renderDeviceInfo(d) {
+    var rows = [
+        ['Hostname', esc(d.hostname || '-')],
+        ['UUID', esc(d.uuid || '-')],
+        ['OS', esc(d.os || '-')],
+        ['Arch', esc(d.arch || '-')],
+        ['IP Address', esc(d.ip || '-')],
+        ['Status', statusBadge(d.status)],
+        ['First Seen', esc(d.first_seen || '-')],
+        ['Last Seen', esc(d.last_seen || d.last_checkin || '-')],
+    ];
+    document.getElementById('device-info').innerHTML = rows.map(function(r) {
+        return '<div class="info-row"><span class="info-label">' + r[0] + '</span><span class="info-value">' + r[1] + '</span></div>';
+    }).join('');
+    document.getElementById('hostname-display').textContent = d.hostname || UUID;
+}
+
+function renderBaseline(data) {
+    var tables = Array.isArray(data) ? data : (data.tables || data.baselines || []);
+    if (!tables.length) { document.getElementById('baseline-empty').classList.remove('hidden'); return; }
+    document.getElementById('baseline-table').classList.remove('hidden');
+    var tbody = document.getElementById('baseline-tbody');
+    tbody.innerHTML = '';
+    tables.forEach(function(t) {
+        var tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-800/50';
+        var tblName = t.table_name || t.name || '';
+        tr.innerHTML =
+            '<td class="px-3 py-2 font-mono text-xs text-gray-300">' + esc(tblName || '?') + '</td>' +
+            '<td class="px-3 py-2 text-gray-400">' + (t.entry_count || t.count || 0) + '</td>' +
+            '<td class="px-3 py-2 font-mono text-xs text-gray-500">' + esc(t.snapshot_hash || t.hash || '-') + '</td>' +
+            '<td class="px-3 py-2 text-right"><button onclick="resetBaseline(\'' + esc(tblName) + '\')" class="text-red-400 hover:text-red-300 text-xs">Reset</button></td>';
+        tbody.appendChild(tr);
+    });
+}
+
+function renderAlerts(data) {
+    var alerts = Array.isArray(data) ? data : (data.alerts || []);
+    if (!alerts.length) { document.getElementById('alerts-empty').classList.remove('hidden'); return; }
+    document.getElementById('alerts-table').classList.remove('hidden');
+    var tbody = document.getElementById('alerts-tbody');
+    tbody.innerHTML = '';
+    alerts.slice(0, 20).forEach(function(a) {
+        var tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-800/50 hover:bg-gray-800/30';
+        var ackActions = a.acknowledged ? '<span class="text-gray-600 text-xs">ack</span>' :
+            '<button onclick="ackAlert(' + a.id + ')" class="text-green-400 hover:text-green-300 text-xs">ack</button>';
+        tr.innerHTML =
+            '<td class="px-3 py-2">' + sevBadge(a.severity) + '</td>' +
+            '<td class="px-3 py-2 text-gray-300 text-xs">' + esc(a.rule_name || a.rule || a.title || '-') + '</td>' +
+            '<td class="px-3 py-2 text-gray-500 text-xs">' + esc(a.timestamp || a.created_at || '-') + '</td>' +
+            '<td class="px-3 py-2 text-xs">' + esc(a.status || '-') + '</td>' +
+            '<td class="px-3 py-2 text-right">' + ackActions + '</td>';
+        tbody.appendChild(tr);
+    });
+}
+
+function renderActions(d) {
+    var isQuarantined = d.status === 'quarantined';
+    var btns = '';
+    if (isQuarantined) {
+        btns += '<button onclick="doUnquarantine()" class="btn-action bg-green-700 hover:bg-green-600 w-full text-center">Unquarantine</button>';
+    } else {
+        btns += '<button onclick="doQuarantine()" class="btn-action bg-red-700 hover:bg-red-600 w-full text-center">Quarantine</button>';
+    }
+    btns += '<button onclick="doConfigPush()" class="btn-action bg-indigo-700 hover:bg-indigo-600 w-full text-center">Force Config Update</button>';
+    document.getElementById('action-buttons').innerHTML = btns;
+}
+
+async function loadDetail() {
+    try {
+        var r = await fetch(API_AGENT);
+        var d = await r.json();
+        if (d.error) throw new Error(d.error);
+        _device = d;
+        document.getElementById('loading-spinner').classList.add('hidden');
+        document.getElementById('detail-content').classList.remove('hidden');
+        renderDeviceInfo(d);
+        renderActions(d);
+    } catch(e) {
+        document.getElementById('loading-spinner').classList.add('hidden');
+        document.getElementById('server-banner').classList.remove('hidden');
+        return;
+    }
+    loadBaseline();
+    loadAlerts();
+}
+
+async function loadBaseline() {
+    try {
+        var r = await fetch(API_BASELINE);
+        var d = await r.json();
+        if (!d.error) renderBaseline(d);
+    } catch(e) {}
+}
+
+async function loadAlerts() {
+    try {
+        var r = await fetch(API_AGENT_ALERTS + '?limit=20');
+        var d = await r.json();
+        if (!d.error) renderAlerts(d);
+    } catch(e) {}
+}
+
+async function doQuarantine() {
+    if (!confirm('Quarantine this device?')) return;
+    var r = await fetch(URL_QUARANTINE, {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Device quarantined', !d.error);
+    if (!d.error) loadDetail();
+}
+async function doUnquarantine() {
+    var r = await fetch(URL_UNQUARANTINE, {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Device unquarantined', !d.error);
+    if (!d.error) loadDetail();
+}
+async function doConfigPush() {
+    var r = await fetch(URL_CONFIG_PUSH, {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Config update pushed', !d.error);
+}
+async function resetBaseline(table) {
+    if (!confirm('Reset baseline for ' + table + '?')) return;
+    var r = await fetch(URL_BASELINE_RESET, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({table_name: table})
+    });
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Baseline reset', !d.error);
+    loadBaseline();
+}
+async function ackAlert(id) {
+    var r = await fetch(URL_ALERT_ACK + id + '/acknowledge', {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Alert acknowledged', !d.error);
+    loadAlerts();
+}
+
+loadDetail();
+</script>
+{% endblock %}

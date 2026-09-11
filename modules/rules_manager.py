@@ -1,10 +1,13 @@
 """Unified rule management across Semgrep, Sigma, YARA, Suricata, and Nuclei formats."""
 
+import datetime
 import io
 import json
 import re
-import shutil
+import threading
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -27,6 +30,33 @@ FLAT_ROOTS = {
     "yara":   SCRIPTS_DIR / "SpecialYaraRules",
     "sigma":  SCRIPTS_DIR / "sigma rules",
 }
+
+# Curated rule dirs maintained next to this repo (ai-combined-tools/rules/<fmt>).
+# These complement RULE_ROOTS — discovery and batch scans merge them in.
+CURATED_ROOTS = {
+    "semgrep":  SCRIPTS_DIR / "ai-combined-tools" / "rules" / "semgrep",
+    "sigma":    SCRIPTS_DIR / "ai-combined-tools" / "rules" / "sigma",
+    "yara":     SCRIPTS_DIR / "ai-combined-tools" / "rules" / "yara",
+    "suricata": SCRIPTS_DIR / "ai-combined-tools" / "rules" / "suricata",
+    "nuclei":   SCRIPTS_DIR / "ai-combined-tools" / "rules" / "nuclei",
+}
+
+# Bump when the discovery layout changes so stale .rules_cache.json is ignored.
+_CACHE_VERSION = 4
+
+
+def get_scan_roots(fmt: str) -> List[Path]:
+    """All existing rule directories for a format (rule + flat + curated).
+
+    Used by batch scan entry points so curated rules are included alongside
+    the primary roots. Excludes roots that don't exist on disk.
+    """
+    roots: List[Path] = []
+    for table in (RULE_ROOTS, FLAT_ROOTS, CURATED_ROOTS):
+        p = table.get(fmt)
+        if p and p.exists():
+            roots.append(p)
+    return roots
 
 SEMGREP_LANGUAGE_MAP = {
     "c": "C", "go": "Go", "node": "JavaScript/Node",
@@ -84,6 +114,19 @@ def _heuristic_severity(text: str) -> str:
     return "info"
 
 
+def _safe_filename(name: str, default: str, suffix: str) -> str:
+    """Sanitize a rule-derived filename component to prevent traversal or odd names.
+
+    Strips any directory components and illegal characters so a rule id like
+    ``../../evil`` or ``foo/bar`` can never escape its target directory.
+    """
+    name = (name or "").replace("\\", "/").split("/")[-1].strip()
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]", "_", name).strip("._")
+    if not cleaned or cleaned in (".", "..") or cleaned.startswith(".."):
+        cleaned = default
+    return cleaned + suffix
+
+
 # ---------------------------------------------------------------------------
 # Rule discovery helpers
 # ---------------------------------------------------------------------------
@@ -102,7 +145,7 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
     """Discover all rule files organised by format."""
     result = {}
 
-    # --- Semgrep (.yml under language/category tree) ---
+    # --- Semgrep (.yml under language/category tree + curated flat dir) ---
     sem_files = []
     sem_root = RULE_ROOTS.get("semgrep")
     if sem_root and sem_root.exists():
@@ -119,6 +162,10 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
                         "language": language,
                         "category": cat_dir.name,
                     })
+    for f in sorted((CURATED_ROOTS.get("semgrep") or Path()).glob("*.yml")):
+        sem_files.append({"path": f, "language": "", "category": "curated"})
+    for f in sorted((CURATED_ROOTS.get("semgrep") or Path()).glob("*.yaml")):
+        sem_files.append({"path": f, "language": "", "category": "curated"})
     result["semgrep"] = sem_files
 
     # --- Sigma (.yml under family tree + root + flat roots) ---
@@ -136,6 +183,10 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
         if flat_root and flat_root.exists():
             for f in sorted(flat_root.glob("*.yml")):
                 sigma_files.append({"path": f, "family": ""})
+    for f in sorted((CURATED_ROOTS.get("sigma") or Path()).glob("*.yml")):
+        sigma_files.append({"path": f, "family": ""})
+    for f in sorted((CURATED_ROOTS.get("sigma") or Path()).glob("*.yaml")):
+        sigma_files.append({"path": f, "family": ""})
     result["sigma"] = sigma_files
 
     # --- YARA (.yar / .yara under family tree + root + flat roots) ---
@@ -156,6 +207,9 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
             for f in sorted(flat_root.glob("*")):
                 if f.suffix.lower() in (".yar", ".yara") and f.is_file():
                     yara_files.append({"path": f, "family": ""})
+    for f in sorted((CURATED_ROOTS.get("yara") or Path()).glob("*")):
+        if f.suffix.lower() in (".yar", ".yara") and f.is_file():
+            yara_files.append({"path": f, "family": ""})
     result["yara"] = yara_files
 
     # --- Suricata (.rules under family tree + root) ---
@@ -169,6 +223,8 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
                 continue
             for f in sorted(family_dir.glob("*.rules")):
                 suri_files.append({"path": f, "family": family_dir.name})
+    for f in sorted((CURATED_ROOTS.get("suricata") or Path()).glob("*.rules")):
+        suri_files.append({"path": f, "family": ""})
     result["suricata"] = suri_files
 
     # --- Nuclei (.yaml flat) ---
@@ -178,6 +234,8 @@ def _discover_rule_files() -> Dict[str, List[dict]]:
         for f in sorted(nuclei_root.rglob("*")):
             if f.suffix.lower() in (".yaml", ".yml") and f.is_file():
                 nuclei_files.append({"path": f, "family": ""})
+    for f in sorted((CURATED_ROOTS.get("nuclei") or Path()).glob("*.yaml")):
+        nuclei_files.append({"path": f, "family": ""})
     result["nuclei"] = nuclei_files
 
     # --- CodeQL (.ql under language subdirs) ---
@@ -409,48 +467,257 @@ class RuleManager:
     """Unified rule manager — discover, read, write rules across all formats."""
 
     def __init__(self):
-        self._dirs_by_format = _discover_rule_files()
+        self._fp = None
+        self._fp_ts = 0.0
+        self._fp_interval = 10.0
+        self._build_lock = threading.Lock()
+        self._disk_cache = Path(CC_DIR) / ".rules_cache.json"
+        self._all_cache = None
+        self._all_cache_key = None
+        self._sig = self._roots_signature()
+        self._sig_ts = time.monotonic()
+        self._sig_interval = 5.0
+        dirs = self._load_disk_dirs()
+        if dirs is None:
+            dirs = _discover_rule_files()
+        self._dirs_by_format = dirs
         self._format_meta = FORMAT_META
         self._extractors = EXTRACTORS
 
     def _refresh(self):
-        """Re-discover rule files (call after create/delete)."""
+        """Re-discover rule files (call after create/delete) and rescan."""
         self._dirs_by_format = _discover_rule_files()
+        self._all_cache = None
+        self._all_cache_key = None
+        self._fp = None
+        self._fp_ts = 0.0
+        self._sig = self._roots_signature()
+        self._sig_ts = time.monotonic()
+
+    def _sig_changed(self) -> bool:
+        """True if any scan root gained/lost files or subdirs since last check.
+
+        The recursive directory walk is throttled to _sig_interval so the common
+        no-change case only re-walks directories every few seconds.
+        """
+        now = time.monotonic()
+        if now - self._sig_ts < self._sig_interval:
+            return False
+        self._sig_ts = now
+        try:
+            return self._roots_signature() != self._sig
+        except OSError:
+            return False
+
+    def _maybe_refresh(self):
+        """Re-discover if the scan roots changed since we last looked.
+
+        The root signature keys on directory mtimes, so adding or removing rule
+        files invalidates the in-memory file list shortly after the change
+        (previously it only refreshed at construction). In-place content edits
+        are caught by the per-file fingerprint bounded by _fp_interval.
+        """
+        if self._sig_changed():
+            self._refresh()
+
+    @staticmethod
+    def _rel(p: Path) -> str:
+        try:
+            return p.relative_to(SCRIPTS_DIR).as_posix()
+        except ValueError:
+            return p.as_posix()
+
+    @staticmethod
+    def _abs(rel: str) -> Path:
+        p = Path(rel)
+        return p if p.is_absolute() else SCRIPTS_DIR / p
+
+    @staticmethod
+    def _roots_signature() -> list:
+        """Signature of the scan-root directory trees.
+
+        Captures every directory's mtime (recursively, relative to each root).
+        Adding/removing a rule file changes its parent directory's mtime, so a
+        file gained or lost anywhere under a root invalidates the disk cache —
+        not just changes at depth 1. Recomputes are throttled by _sig_interval in
+        _sig_changed so repeated requests don't re-walk the tree on every call.
+        """
+        seen = set()
+        sig = []
+        for table in (RULE_ROOTS, FLAT_ROOTS, CURATED_ROOTS):
+            for p in table.values():
+                key = str(p)
+                if key in seen or not p.is_dir():
+                    continue
+                seen.add(key)
+                dirs = []
+                try:
+                    dirs.append(("", p.stat().st_mtime_ns))
+                    for d in p.rglob("*"):
+                        if d.is_dir():
+                            try:
+                                dirs.append((d.relative_to(p).as_posix(),
+                                             d.stat().st_mtime_ns))
+                            except OSError:
+                                pass
+                except OSError:
+                    continue
+                dirs.sort()
+                sig.append([RuleManager._rel(p), dirs])
+        sig.sort(key=lambda s: s[0])
+        return sig
+
+    def _fingerprint(self):
+        """Fingerprint of discovered rule files (mtime+size) for invalidation.
+
+        Uses paths relative to SCRIPTS_DIR so the disk cache is portable across
+        machines that share the same tree (SMB mount). Recomputed at most once
+        per _fp_interval so repeated requests avoid stat()-ing every rule file.
+        """
+        now = time.monotonic()
+        if self._fp is not None and (now - self._fp_ts) < self._fp_interval:
+            return self._fp
+        fp = []
+        for entries in self._dirs_by_format.values():
+            for e in entries:
+                try:
+                    st = e["path"].stat()
+                    fp.append((self._rel(e["path"]), st.st_mtime_ns, st.st_size))
+                except OSError:
+                    pass
+        self._fp = tuple(fp)
+        self._fp_ts = now
+        return self._fp
+
+    def _load_disk_dirs(self):
+        """Try to restore the discovered file list from the disk cache (skips slow rglob)."""
+        try:
+            data = json.loads(self._disk_cache.read_text())
+        except Exception:
+            return None
+        if data.get("v") != _CACHE_VERSION:
+            return None
+        if data.get("roots") != self._roots_signature():
+            return None
+        raw = data.get("dirs")
+        if not isinstance(raw, dict):
+            return None
+        dirs = {}
+        for fmt, entries in raw.items():
+            if not isinstance(entries, list):
+                return None
+            converted = []
+            for e in entries:
+                if not isinstance(e, dict) or "path" not in e:
+                    return None
+                p = Path(e["path"])
+                if p.is_absolute():
+                    try:
+                        p = p.relative_to(SCRIPTS_DIR)
+                    except ValueError:
+                        return None
+                item = {k: v for k, v in e.items()}
+                item["path"] = SCRIPTS_DIR / p
+                converted.append(item)
+            dirs[fmt] = converted
+        return dirs
+
+    def _load_disk_cache(self, fp):
+        try:
+            data = json.loads(self._disk_cache.read_text())
+            if data.get("v") != _CACHE_VERSION:
+                return None
+            if [tuple(t) for t in data.get("fp", [])] == list(fp):
+                items = data.get("items") or []
+                return [dict(it, filepath=str(self._abs(it["filepath"])))
+                        if isinstance(it, dict) and it.get("filepath") else it
+                        for it in items]
+        except Exception:
+            pass
+        return None
+
+    def _save_disk_cache(self, fp, items):
+        try:
+            payload = {
+                "v": _CACHE_VERSION,
+                "roots": self._roots_signature(),
+                "fp": list(fp),
+                "items": [dict(it, filepath=self._rel(Path(it["filepath"])))
+                          if isinstance(it, dict) and it.get("filepath") else it
+                          for it in items],
+                "dirs": {fmt: [{k: (self._rel(v) if k == "path" else v) for k, v in e.items()}
+                               for e in entries]
+                         for fmt, entries in self._dirs_by_format.items()},
+            }
+            tmp = self._disk_cache.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, default=str))
+            tmp.replace(self._disk_cache)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _build_item(fmt, entry, extract) -> Optional[dict]:
+        path = entry["path"]
+        meta = extract(path)
+        if not meta:
+            return None
+        item = {
+            "id": meta.get("rule_id", path.stem),
+            "title": meta.get("title", path.stem),
+            "description": meta.get("description", ""),
+            "severity": meta.get("severity", "info"),
+            "format": fmt,
+            "filepath": str(path),
+            "filename": path.name,
+            "relpath": path.relative_to(SCRIPTS_DIR).as_posix()
+            if SCRIPTS_DIR in path.parents else path.as_posix(),
+            "author": meta.get("author", ""),
+            **meta,
+        }
+        # Add format-specific metadata from the discovery entry
+        for k, v in entry.items():
+            if k != "path":
+                item.setdefault(k, v)
+        return item
+
+    def _all_rules(self) -> List[dict]:
+        """Extract metadata for every discovered rule, cached until files change."""
+        self._maybe_refresh()
+        fp = self._fingerprint()
+        if self._all_cache is not None and self._all_cache_key == fp:
+            return self._all_cache
+        with self._build_lock:
+            if self._all_cache is not None and self._all_cache_key == fp:
+                return self._all_cache
+            disk = self._load_disk_cache(fp)
+            if disk is not None:
+                self._all_cache = disk
+                self._all_cache_key = fp
+                self._save_disk_cache(fp, disk)
+                return disk
+            pairs = []
+            for fmt, entries in self._dirs_by_format.items():
+                extract = self._extractors.get(fmt)
+                if not extract:
+                    continue
+                for entry in entries:
+                    pairs.append((fmt, entry, extract))
+            if not pairs:
+                results = []
+            else:
+                with ThreadPoolExecutor(max_workers=12) as ex:
+                    results = [r for r in ex.map(self._build_item, *(zip(*pairs))) if r is not None]
+            self._all_cache = results
+            self._all_cache_key = fp
+            self._save_disk_cache(fp, results)
+            return results
 
     def list_rules(self, rule_format: str = "", severity: str = "",
                    search: str = "", category: str = "") -> List[dict]:
         """List all rules with optional filters."""
-        results = []
-        formats = [rule_format] if rule_format else list(self._dirs_by_format)
-
-        for fmt in formats:
-            extract = self._extractors.get(fmt)
-            if not extract:
-                continue
-            for entry in self._dirs_by_format.get(fmt, []):
-                path = entry["path"]
-                meta = extract(path)
-                if not meta:
-                    continue
-                item = {
-                    "id": meta.get("rule_id", path.stem),
-                    "title": meta.get("title", path.stem),
-                    "description": meta.get("description", ""),
-                    "severity": meta.get("severity", "info"),
-                    "format": fmt,
-                    "filepath": str(path),
-                    "filename": path.name,
-                    "relpath": str(path.relative_to(SCRIPTS_DIR)) if SCRIPTS_DIR in path.parents else path.name,
-                    "author": meta.get("author", ""),
-                    **meta,
-                }
-                # Add format-specific metadata from the discovery entry
-                for k, v in entry.items():
-                    if k != "path":
-                        item.setdefault(k, v)
-                results.append(item)
-
-        # Apply filters
+        results = list(self._all_rules())
+        if rule_format:
+            results = [r for r in results if r.get("format") == rule_format]
         if severity:
             sev_list = [s.strip() for s in severity.split(",")]
             results = [r for r in results if r.get("severity", "info") in sev_list]
@@ -470,64 +737,90 @@ class RuleManager:
 
         return results
 
+    def _find_rule_paths(self, rule_format: str, rule_id: str) -> List[Path]:
+        """All rule files whose extracted id (or stem, as fallback) equals rule_id.
+
+        Exact-id matches take precedence; the filename-stem fallback only applies
+        when no file carries the exact id, so a shared stem can't shadow a real
+        id match or cause the wrong file to be picked on collisions.
+        """
+        extract = self._extractors.get(rule_format)
+        if not extract:
+            return []
+        entries = self._dirs_by_format.get(rule_format, [])
+        by_id = []
+        for entry in entries:
+            path = entry["path"]
+            meta = extract(path)
+            rid = meta.get("rule_id", path.stem) if meta else path.stem
+            if rid == rule_id:
+                by_id.append(path)
+        if by_id:
+            return by_id
+        return [entry["path"] for entry in entries if entry["path"].stem == rule_id]
+
     def get_rule(self, rule_format: str, rule_id: str) -> Optional[dict]:
         """Get a single rule by format and ID."""
+        self._maybe_refresh()
         extract = self._extractors.get(rule_format)
         if not extract:
             return None
-        for entry in self._dirs_by_format.get(rule_format, []):
-            path = entry["path"]
+        for path in self._find_rule_paths(rule_format, rule_id):
             meta = extract(path)
             if not meta:
                 continue
             rid = meta.get("rule_id", path.stem)
-            if rid == rule_id or path.stem == rule_id:
-                raw = path.read_text(encoding="utf-8", errors="replace")
-                return {
-                    "id": rid,
-                    "title": meta.get("title", path.stem),
-                    "description": meta.get("description", ""),
-                    "severity": meta.get("severity", "info"),
-                    "format": rule_format,
-                    "filepath": str(path),
-                    "filename": path.name,
-                    "relpath": str(path.relative_to(SCRIPTS_DIR)) if SCRIPTS_DIR in path.parents else path.name,
-                    "raw": raw,
-                    "parsed": meta,
-                    "format_meta": self._format_meta.get(rule_format, {}),
-                }
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            return {
+                "id": rid,
+                "title": meta.get("title", path.stem),
+                "description": meta.get("description", ""),
+                "severity": meta.get("severity", "info"),
+                "format": rule_format,
+                "filepath": str(path),
+                "filename": path.name,
+                "relpath": path.relative_to(SCRIPTS_DIR).as_posix()
+                if SCRIPTS_DIR in path.parents else path.as_posix(),
+                "raw": raw,
+                "parsed": meta,
+                "format_meta": self._format_meta.get(rule_format, {}),
+            }
         return None
 
     def save_rule(self, rule_format: str, rule_id: str, content: str) -> dict:
         """Save updated content to a rule file. Validates before writing."""
+        self._maybe_refresh()
         extract = self._extractors.get(rule_format)
         if not extract:
             raise ValueError(f"Unknown format: {rule_format}")
-        for entry in self._dirs_by_format.get(rule_format, []):
-            path = entry["path"]
-            meta = extract(path)
-            rid = meta.get("rule_id", path.stem) if meta else path.stem
-            if rid == rule_id or path.stem == rule_id:
-                # Validate: try parsing the new content
-                if rule_format in ("semgrep", "sigma", "nuclei"):
-                    import yaml
-                    try:
-                        yaml.safe_load(content)
-                    except Exception as e:
-                        raise ValueError(f"Invalid YAML: {e}")
-                elif rule_format == "yara":
-                    if not re.search(r"rule\s+\S+\s*{", content):
-                        raise ValueError("Invalid YARA rule — missing 'rule name {' block")
-                elif rule_format == "suricata":
-                    if not re.search(r"sid:\d+", content):
-                        raise ValueError("Invalid Suricata rule — missing sid")
-                elif rule_format == "codeql":
-                    if not re.search(r"select\s", content, re.IGNORECASE):
-                        raise ValueError("Invalid CodeQL query — missing 'select' clause")
-                path.write_text(content, encoding="utf-8")
-                self._refresh()
-                return {"status": "saved", "filepath": str(path)}
-        raise FileNotFoundError(f"Rule {rule_format}/{rule_id} not found")
+        paths = self._find_rule_paths(rule_format, rule_id)
+        if not paths:
+            raise FileNotFoundError(f"Rule {rule_format}/{rule_id} not found")
+        if len(paths) > 1:
+            raise ValueError(
+                f"Rule id {rule_format}/{rule_id} is ambiguous "
+                f"({len(paths)} files match); refine the id or edit the file "
+                f"directly: " + ", ".join(str(p) for p in paths))
+        path = paths[0]
+        # Validate: try parsing the new content
+        if rule_format in ("semgrep", "sigma", "nuclei"):
+            import yaml
+            try:
+                yaml.safe_load(content)
+            except Exception as e:
+                raise ValueError(f"Invalid YAML: {e}")
+        elif rule_format == "yara":
+            if not re.search(r"rule\s+\S+\s*{", content):
+                raise ValueError("Invalid YARA rule — missing 'rule name {' block")
+        elif rule_format == "suricata":
+            if not re.search(r"sid:\d+", content):
+                raise ValueError("Invalid Suricata rule — missing sid")
+        elif rule_format == "codeql":
+            if not re.search(r"select\s", content, re.IGNORECASE):
+                raise ValueError("Invalid CodeQL query — missing 'select' clause")
+        path.write_text(content, encoding="utf-8")
+        self._refresh()
+        return {"status": "saved", "filepath": str(path)}
 
     def create_rule(self, rule_format: str, content: str,
                     target_dir: str = "") -> dict:
@@ -550,28 +843,30 @@ class RuleManager:
                 if rule_format == "semgrep":
                     rules_list = data.get("rules", [])
                     first = rules_list[0] if rules_list else {}
-                    fname = first.get("id", "new-rule") + ".yml"
+                    fname = _safe_filename(first.get("id", "new-rule"), "new-rule", ".yml")
                 elif rule_format == "sigma":
-                    fname = (data.get("id", data.get("title", "new-rule")) or "new-rule")
-                    fname = re.sub(r"[^a-zA-Z0-9_-]", "_", fname).strip("_") + ".yml"
+                    fname = _safe_filename(
+                        data.get("id", data.get("title", "new-rule")) or "new-rule",
+                        "new-rule", ".yml")
                 elif rule_format == "nuclei":
-                    fname = (data.get("id", "new-template") or "new-template") + ".yaml"
+                    fname = _safe_filename(data.get("id", "new-template") or "new-template",
+                                           "new-template", ".yaml")
             except Exception:
                 fname = "new-rule.yml" if rule_format != "nuclei" else "new-template.yaml"
         elif rule_format == "yara":
             m = re.search(r"rule\s+(\S+)", content)
-            fname = (m.group(1) if m else "new_rule") + ".yar"
+            fname = _safe_filename(m.group(1) if m else "new_rule", "new_rule", ".yar")
         elif rule_format == "suricata":
             m = re.search(r"sid:(\d+)", content)
-            fname = f"rule_{m.group(1) if m else 'new'}.rules"
+            fname = _safe_filename(f"rule_{m.group(1) if m else 'new'}", "rule_new", ".rules")
         elif rule_format == "codeql":
             # Extract @id from metadata block, or use first @name
             id_m = re.search(r'@id\s+(\S+)', content)
             name_m = re.search(r'@name\s+(.+)', content)
             if id_m:
-                fname = id_m.group(1).replace("/", "_") + ".ql"
+                fname = _safe_filename(id_m.group(1), "new_query", ".ql")
             elif name_m:
-                fname = re.sub(r"[^a-zA-Z0-9_-]", "_", name_m.group(1)).strip("_") + ".ql"
+                fname = _safe_filename(name_m.group(1), "new_query", ".ql")
             else:
                 fname = "new_query.ql"
         else:
@@ -587,18 +882,22 @@ class RuleManager:
 
     def delete_rule(self, rule_format: str, rule_id: str) -> dict:
         """Delete a rule file."""
+        self._maybe_refresh()
         extract = self._extractors.get(rule_format)
         if not extract:
             raise ValueError(f"Unknown format: {rule_format}")
-        for entry in self._dirs_by_format.get(rule_format, []):
-            path = entry["path"]
-            meta = extract(path)
-            rid = meta.get("rule_id", path.stem) if meta else path.stem
-            if rid == rule_id or path.stem == rule_id:
-                path.unlink()
-                self._refresh()
-                return {"status": "deleted", "filepath": str(path)}
-        raise FileNotFoundError(f"Rule {rule_format}/{rule_id} not found")
+        paths = self._find_rule_paths(rule_format, rule_id)
+        if not paths:
+            raise FileNotFoundError(f"Rule {rule_format}/{rule_id} not found")
+        if len(paths) > 1:
+            raise ValueError(
+                f"Rule id {rule_format}/{rule_id} is ambiguous "
+                f"({len(paths)} files match); refine the id or remove the file "
+                f"directly: " + ", ".join(str(p) for p in paths))
+        path = paths[0]
+        path.unlink()
+        self._refresh()
+        return {"status": "deleted", "filepath": str(path)}
 
     def get_format_template(self, rule_format: str) -> str:
         """Return a starter template for creating a new rule in a given format."""
@@ -618,6 +917,7 @@ class RuleManager:
         If rule_ids is None or empty, exports all rules for the format.
         Returns raw ZIP bytes.
         """
+        self._maybe_refresh()
         extract = self._extractors.get(rule_format)
         if not extract:
             raise ValueError(f"Unknown format: {rule_format}")
@@ -717,7 +1017,7 @@ class RuleManager:
         errors = []
         for rid in rule_ids:
             try:
-                r = self.delete_rule(rule_format, rid)
+                self.delete_rule(rule_format, rid)
                 deleted.append(rid)
             except (FileNotFoundError, Exception) as e:
                 errors.append({"rule_id": rid, "error": str(e)})
@@ -729,22 +1029,23 @@ class RuleManager:
     def get_format_stats(self) -> dict:
         """Return counts and summary stats per format."""
         stats = {}
+        rules = self._all_rules()
         for fmt, name in [("semgrep", "Semgrep"), ("sigma", "Sigma"),
                           ("yara", "YARA"), ("suricata", "Suricata"),
                           ("nuclei", "Nuclei"), ("codeql", "CodeQL")]:
-            rules = self.list_rules(rule_format=fmt)
             by_sev = {}
+            total = 0
             for r in rules:
+                if r.get("format") != fmt:
+                    continue
+                total += 1
                 s = r.get("severity", "info")
                 by_sev[s] = by_sev.get(s, 0) + 1
             stats[fmt] = {
                 "label": name,
-                "total": len(rules),
+                "total": total,
                 "by_severity": by_sev,
-                "roots": [str(RULE_ROOTS.get(fmt, "")), str(FLAT_ROOTS.get(fmt, ""))],
+                "roots": [str(p) for p in get_scan_roots(fmt)],
                 "meta": self._format_meta.get(fmt, {}),
             }
         return stats
-
-
-import datetime  # noqa: needed for create_rule timestamp

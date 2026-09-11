@@ -10,11 +10,38 @@ rules:
       cwe: CWE-89
       owasp: A1
 
+  - id: java.sql-injection-jdbc-concat
+    pattern-either:
+      - pattern: |
+          $STMT.executeQuery("SELECT" + $INPUT)
+      - pattern: |
+          $STMT.executeUpdate("SELECT" + $INPUT)
+      - pattern: |
+          $CONN.createStatement().executeQuery($SQL_CONCAT)
+      - pattern: |
+          $STMT.execute($SQL_CONCAT)
+    severity: ERROR
+    languages: [java]
+    message: SQL injection — query built by string concatenation; use PreparedStatement
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
   - id: java.command-injection
     pattern: Runtime.getRuntime().exec($INPUT)
     severity: ERROR
     languages: [java]
     message: Command injection — validate/sanitize input before exec
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: java.processbuilder-injection
+    pattern: |
+      new ProcessBuilder($INPUT).start()
+    severity: ERROR
+    languages: [java]
+    message: Command injection potential — ensure ProcessBuilder arguments are not user-controlled
     metadata:
       cwe: CWE-78
       owasp: A1
@@ -60,6 +87,16 @@ rules:
       cwe: CWE-502
       owasp: A8
 
+  - id: java.deserialization-readObject
+    pattern: |
+      $IN.readObject()
+    severity: WARNING
+    languages: [java]
+    message: readObject() deserialization — only deserialize data from trusted sources
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
   - id: java.ssl-verify-false
     pattern: |
       TrustManager[] $TM = new TrustManager[] { new X509TrustManager() {
@@ -70,6 +107,16 @@ rules:
     severity: ERROR
     languages: [java]
     message: SSL/TLS verification disabled — MITM vulnerability
+    metadata:
+      cwe: CWE-295
+      owasp: A3
+
+  - id: java.hostname-verifier-allow-all
+    pattern: |
+      HostnameVerifier $HV = (hostname, session) -> true;
+    severity: WARNING
+    languages: [java]
+    message: Hostname verifier always returns true — TLS hostname validation bypass
     metadata:
       cwe: CWE-295
       owasp: A3
@@ -112,6 +159,97 @@ rules:
     metadata:
       cwe: CWE-917
 
+  - id: java.xxe-documentbuilder
+    pattern: |
+      DocumentBuilderFactory $DBF = DocumentBuilderFactory.newInstance();
+      $DBF.parse($INPUT);
+    severity: ERROR
+    languages: [java]
+    message: XXE — disable external entities on DocumentBuilderFactory
+    metadata:
+      cwe: CWE-611
+      owasp: A4
+
+  - id: java.xxe-saxparser
+    pattern: |
+      SAXParserFactory $SPF = SAXParserFactory.newInstance();
+      $SPF.parse($INPUT);
+    severity: ERROR
+    languages: [java]
+    message: XXE — disable external entities on SAXParserFactory
+    metadata:
+      cwe: CWE-611
+      owasp: A4
+
+  - id: java.spel-injection
+    pattern: |
+      ExpressionParser $P = new SpelExpressionParser();
+      $P.parseExpression($INPUT).getValue();
+    severity: ERROR
+    languages: [java]
+    message: SpEL injection — never parse expressions from user input
+    metadata:
+      cwe: CWE-917
+      owasp: A1
+
+  - id: java.ognl-injection
+    pattern: |
+      Ognl.getValue($INPUT, $CONTEXT)
+    severity: ERROR
+    languages: [java]
+    message: OGNL injection (Struts2 RCE family) — do not evaluate user input
+    metadata:
+      cwe: CWE-917
+      owasp: A1
+
+  - id: java.ssti-freemarker
+    pattern: |
+      $TEMPLATE.process($INPUT, $WRITER)
+    severity: WARNING
+    languages: [java]
+    message: SSTI potential — user input evaluated as template
+    metadata:
+      cwe: CWE-1336
+
+  - id: java.weak-crypto-md5
+    pattern: |
+      MessageDigest.getInstance("MD5")
+    severity: WARNING
+    languages: [java]
+    message: MD5 is broken — use SHA-256 or stronger for security purposes
+    metadata:
+      cwe: CWE-327
+      owasp: A3
+
+  - id: java.weak-random-random
+    pattern: |
+      new Random()
+    severity: INFO
+    languages: [java]
+    message: java.util.Random is not cryptographically secure — use SecureRandom
+    metadata:
+      cwe: CWE-338
+
+  - id: java.deserialization-jackson-default-typing
+    pattern: |
+      $OBJMAP.enableDefaultTyping()
+    severity: ERROR
+    languages: [java]
+    message: Jackson default typing enables unsafe polymorphic deserialization
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: java.shiro-deserialization
+    pattern: |
+      new Cookie("rememberMe", $INPUT)
+    severity: WARNING
+    languages: [java]
+    message: Shiro rememberMe deserialization — require strong crypto + signature validation
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
   - id: java.hardcoded-ip
     pattern: |
       $VAR = "10.$X.$Y.$Z";
@@ -120,92 +258,3 @@ rules:
     message: Hardcoded internal IP address
     metadata:
       cwe: CWE-200
----
-rules:
-  - id: go.sql-injection
-    pattern: |
-      db.Query("SELECT * FROM $TABLE WHERE " + $INPUT)
-    severity: ERROR
-    languages: [go]
-    message: SQL injection — use parameterized queries with $1 placeholders
-    metadata:
-      cwe: CWE-89
-      owasp: A1
-
-  - id: go.command-injection
-    pattern: exec.Command("bash", "-c", $INPUT)
-    severity: ERROR
-    languages: [go]
-    message: Command injection — avoid shell invocation with user input
-    metadata:
-      cwe: CWE-78
-      owasp: A1
-
-  - id: go.xss-template
-    pattern: |
-      tmpl.Execute($WRITER, $INPUT)
-    severity: WARNING
-    languages: [go]
-    message: Potential XSS if template does not escape HTML
-    metadata:
-      cwe: CWE-79
-      owasp: A7
-
-  - id: go.path-traversal
-    pattern: |
-      os.Open($INPUT)
-    severity: WARNING
-    languages: [go]
-    message: Path traversal risk — validate/sanitize file path
-    metadata:
-      cwe: CWE-22
-      owasp: A1
-
-  - id: go.insecure-deserialization
-    pattern: |
-      encoding/gob.NewDecoder($INPUT).Decode($OUT)
-    severity: WARNING
-    languages: [go]
-    message: Unsafe deserialization — gob/gob does not validate input types
-    metadata:
-      cwe: CWE-502
-      owasp: A8
-
-  - id: go.ssrf
-    pattern: |
-      http.Get($INPUT)
-    severity: WARNING
-    languages: [go]
-    message: SSRF risk — validate URLs from user input
-    metadata:
-      cwe: CWE-918
-      owasp: A1
-
-  - id: go.hardcoded-secret
-    pattern: |
-      $VAR := "$SECRET"
-    severity: ERROR
-    languages: [go]
-    message: Hardcoded credential
-    metadata:
-      cwe: CWE-798
-      owasp: A2
-
-  - id: go.insecure-crypto
-    pattern: |
-      md5.New()
-    severity: WARNING
-    languages: [go]
-    message: MD5 is not cryptographically secure — use SHA-256 or better
-    metadata:
-      cwe: CWE-327
-      owasp: A3
-
-  - id: go.race-channel
-    pattern: |
-      go func() { $VAR = $VALUE }()
-    severity: INFO
-    languages: [go]
-    message: Potential race condition on shared variable — use mutex
-    metadata:
-      cwe: CWE-362

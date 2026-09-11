@@ -4,12 +4,29 @@ import logging
 import datetime
 import json
 import os
-import sys
+import re
 from pathlib import Path
 from typing import Optional
 
 from .config import CONFIG_DIR
 logger = logging.getLogger(__name__)
+
+_SECRET_ARG_RE = re.compile(
+    r"(password|passwd|pwd|token|secret|api[_-]?key|ntlm[_-]?hash|client[_-]?secret|authorization|bearer|credential)",
+    re.I)
+
+
+def _redact_args(args: Optional[dict]) -> dict:
+    """Mask secret-valued CLI args before they hit the plaintext audit log."""
+    if not args:
+        return {}
+    out = {}
+    for k, v in args.items():
+        if isinstance(v, str) and _SECRET_ARG_RE.search(k) and v:
+            out[k] = "***"
+        else:
+            out[k] = v
+    return out
 
 
 class HistoryLogger:
@@ -27,7 +44,7 @@ class HistoryLogger:
         entry = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
             "command": command,
-            "args": args or {},
+            "args": _redact_args(args),
             "case_id": case_id,
             "target": target,
             "rc": rc,

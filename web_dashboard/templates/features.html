@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}CC / MCP Features{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="sliders" class="w-5 h-5 text-gray-400"></i> MCP Features</h1>
+    <button onclick="saveFeatures()" class="bg-indigo-700 hover:bg-indigo-600 text-sm px-4 py-2 rounded">Save</button>
+</div>
+
+<p class="text-xs text-gray-500 mb-3">
+    Choose which tool families the cc-toolkit MCP server exposes. This keeps the AI's tool surface
+    lightweight and focused on the current engagement. Changes are written to
+    <code class="text-gray-400">config.json → features</code> and applied the next time opencode starts
+    the MCP — restart opencode to take effect.
+</p>
+
+<!-- Summary bar -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-3">
+        <div class="text-xs text-gray-500">Total tools</div>
+        <div id="stat-total" class="text-lg font-semibold">–</div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-3">
+        <div class="text-xs text-gray-500">Will expose</div>
+        <div id="stat-exposed" class="text-lg font-semibold text-green-400">–</div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-3">
+        <div class="text-xs text-gray-500">Groups ON</div>
+        <div id="stat-groups" class="text-lg font-semibold">–</div>
+    </div>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-3">
+        <div class="text-xs text-gray-500">Always on</div>
+        <div id="stat-always" class="text-lg font-semibold">–</div>
+    </div>
+</div>
+
+<!-- Group toggles -->
+<div id="group-list" class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6"></div>
+
+<!-- Per-tool overrides -->
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4 mb-4">
+    <h3 class="text-sm font-semibold mb-1">Per-tool overrides</h3>
+    <p class="text-xs text-gray-500 mb-3">Any tool name or prefix. Force-on tools stay available even when
+        their group is off; force-off tools are removed even when their group is on. Comma-separated.</p>
+    <label class="block text-xs text-gray-400 mb-1">Force ENABLED (prefixes/tools)</label>
+    <input id="enabled-tools" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3"
+           placeholder="e.g. tool_caido, burp_health, binary_checksec">
+    <label class="block text-xs text-gray-400 mb-1">Force DISABLED (prefixes/tools)</label>
+    <input id="disabled-tools" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-3"
+           placeholder="e.g. tool_metasploit, wifi_evil_twin">
+</div>
+
+<!-- Effective allowlist preview -->
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+    <h3 class="text-sm font-semibold mb-1">Effective allowlist</h3>
+    <pre id="allowlist-preview" class="bg-gray-950 rounded p-3 text-xs font-mono text-gray-300 overflow-x-auto"></pre>
+    <p id="env-note" class="text-xs text-amber-400 mt-2 hidden">
+        Env override active: CC_MCP_TOOLS is set and will take precedence over this config.
+    </p>
+    <p id="save-msg" class="text-xs mt-2 hidden"></p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let state = null;
+
+function parseList(v) {
+    return (v || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+function matchesAny(name, prefixes) {
+    const low = name.toLowerCase();
+    return prefixes.some(p => low === p || low.startsWith(p));
+}
+
+function currentPrefixes() {
+    const enabled = Object.values(state.groups).filter(g => g.enabled);
+    let prefixes = enabled.flatMap(g => g.prefixes);
+    prefixes = prefixes.concat(parseList(document.getElementById('enabled-tools').value));
+    const blocked = new Set(parseList(document.getElementById('disabled-tools').value));
+    prefixes = prefixes.filter(p => !blocked.has(p));
+    const alwaysOn = (state.always_on || []).slice();
+    return [...new Set(prefixes.concat(alwaysOn))];
+}
+
+function updateStats() {
+    const groups = Object.values(state.groups).filter(g => g.enabled);
+    const prefixes = currentPrefixes();
+    const universe = state.all_tools || state.included_tools || [];
+    const exposed = universe.filter(t => matchesAny(t, prefixes)).length;
+    document.getElementById('stat-total').textContent = state.total_tools || 0;
+    document.getElementById('stat-exposed').textContent = exposed;
+    document.getElementById('stat-groups').textContent = groups.length + ' / ' + Object.keys(state.groups).length;
+    document.getElementById('stat-always').textContent = (state.always_on || []).join(', ');
+    const allow = prefixes.join(', ');
+    document.getElementById('allowlist-preview').textContent = allow || '(all tools)';
+}
+
+function renderGroups() {
+    const host = document.getElementById('group-list');
+    host.innerHTML = '';
+    Object.keys(state.groups).forEach(name => {
+        const g = state.groups[name];
+        const div = document.createElement('div');
+        div.className = 'bg-gray-900 rounded-lg border border-gray-800 p-3 flex items-start gap-3';
+        div.innerHTML = `
+            <input type="checkbox" id="grp-${name}" ${g.enabled ? 'checked' : ''}
+                   class="mt-1 accent-indigo-600" onchange="toggleGroup('${name}', this.checked)">
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium">${g.label}</span>
+                    <span class="text-xs text-gray-500">(${g.tool_count} tools)</span>
+                    <span id="badge-${name}" class="text-xs px-2 py-0.5 rounded ${g.enabled ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-500'}">${g.enabled ? 'ON' : 'off'}</span>
+                </div>
+                <p class="text-xs text-gray-500 mt-0.5">${g.desc}</p>
+                <div class="flex flex-wrap gap-1 mt-1.5">
+                    ${g.prefixes.slice(0, 8).map(p => `<span class="text-[10px] font-mono bg-gray-800 text-gray-400 rounded px-1.5 py-0.5">${p}</span>`).join('')}
+                    ${g.prefixes.length > 8 ? `<span class="text-[10px] text-gray-600">+${g.prefixes.length - 8}</span>` : ''}
+                </div>
+            </div>`;
+        host.appendChild(div);
+    });
+    updateStats();
+}
+
+function toggleGroup(name, on) {
+    state.groups[name].enabled = on;
+    document.getElementById('badge-' + name).textContent = on ? 'ON' : 'off';
+    document.getElementById('badge-' + name).className = 'text-xs px-2 py-0.5 rounded ' + (on ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-500');
+    updateStats();
+}
+
+async function saveFeatures() {
+    const body = {
+        enabled_groups: Object.keys(state.groups).filter(n => state.groups[n].enabled),
+        enabled_tools: parseList(document.getElementById('enabled-tools').value),
+        disabled_tools: parseList(document.getElementById('disabled-tools').value),
+    };
+    const r = await (await fetch('/api/features', {method:'POST', body:JSON.stringify(body)})).json();
+    const el = document.getElementById('save-msg');
+    el.textContent = r.status === 'ok' ? `Saved — ${r.included_count}/${r.total_tools} tools exposed. Restart opencode to apply.` : 'Error: ' + (r.error || 'unknown');
+    el.className = 'text-xs mt-2 ' + (r.status === 'ok' ? 'text-green-400' : 'text-red-400');
+    el.classList.remove('hidden');
+    if (r.status === 'ok') state = r;
+    updateStats();
+    setTimeout(() => el.classList.add('hidden'), 5000);
+}
+
+document.getElementById('enabled-tools').addEventListener('input', updateStats);
+document.getElementById('disabled-tools').addEventListener('input', updateStats);
+
+(async () => {
+    state = await (await fetch('/api/features')).json();
+    document.getElementById('enabled-tools').value = (state.enabled_tools || []).join(', ');
+    document.getElementById('disabled-tools').value = (state.disabled_tools || []).join(', ');
+    if (state.env_override) {
+        document.getElementById('env-note').classList.remove('hidden');
+        document.getElementById('env-note').textContent = 'Env override active: CC_MCP_TOOLS="' + state.env_override + '" takes precedence over this config.';
+    }
+    renderGroups();
+})();
+</script>
+{% endblock %}

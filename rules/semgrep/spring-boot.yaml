@@ -1,0 +1,254 @@
+rules:
+  - id: spring.spel-injection
+    pattern: |
+      StandardEvaluationContext $CTX = new StandardEvaluationContext($INPUT);
+      $PARSER.parseExpression($EXPR).getValue($CTX);
+    severity: ERROR
+    languages: [java]
+    message: SpEL injection — user input reaches parseExpression/getValue
+    metadata:
+      cwe: CWE-917
+      owasp: A1
+
+  - id: spring.spel-template
+    pattern: |
+      $PARSER.parseExpression("${" + $INPUT + "}")
+    severity: ERROR
+    languages: [java]
+    message: SpEL template injection — never interpolate user input into expressions
+    metadata:
+      cwe: CWE-917
+      owasp: A1
+
+  - id: spring.actuator-exposed
+    pattern-regex: management\.endpoints\.web\.exposure\.include\s*[:=]\s*(health,info|[A-Za-z0-9,\-]|\*)
+    severity: WARNING
+    languages: [generic]
+    message: Actuator endpoints exposed — leaks config/beans/env; restrict to health,info on authorized paths
+    metadata:
+      cwe: CWE-200
+      owasp: A5
+
+  - id: spring.actuator-exposed-nested
+    pattern: |
+      include: "*"
+    severity: WARNING
+    languages: [yaml]
+    message: Actuator endpoint exposure configured with wildcard — leaks config/beans/env
+    metadata:
+      cwe: CWE-200
+      owasp: A5
+
+  - id: spring.h2-console-enabled
+    pattern-regex: spring\.h2\.console\.enabled\s*[:=]\s*true
+    severity: WARNING
+    languages: [generic]
+    message: H2 console enabled in production — database takeover risk if exposed
+    metadata:
+      cwe: CWE-306
+      owasp: A5
+
+  - id: spring.h2-console-enabled-nested
+    pattern: |
+      console:
+        enabled: true
+    severity: WARNING
+    languages: [yaml]
+    message: H2 console enabled in production — database takeover risk if exposed
+    metadata:
+      cwe: CWE-306
+      owasp: A5
+
+  - id: spring.debug-mode
+    pattern-regex: (spring\.logging\.level\.root|logging\.level\.root|debug)\s*[:=]\s*(true|DEBUG)
+    severity: INFO
+    languages: [generic]
+    message: Debug / verbose logging enabled in production
+    metadata:
+      cwe: CWE-489
+      owasp: A5
+
+  - id: spring.datasource-plaintext-password
+    pattern-regex: spring\.datasource\.password\s*[:=]\s*\S+
+    severity: WARNING
+    languages: [generic]
+    message: Database credentials in plaintext config — use a secrets manager / env injection
+    metadata:
+      cwe: CWE-256
+      owasp: A5
+
+  - id: spring.datasource-plaintext-password-nested
+    pattern: |
+      datasource:
+        password: $PASSWORD
+    severity: WARNING
+    languages: [yaml]
+    pattern-not: |
+      password: "${$ENV}"
+    message: Database credentials in plaintext config — use a secrets manager / env injection
+    metadata:
+      cwe: CWE-256
+      owasp: A5
+
+  - id: spring.auth-anyrequest-permitall
+    pattern: |
+      http.authorizeRequests().antMatchers($PATHS).permitAll()
+    severity: WARNING
+    languages: [java]
+    message: permitAll() on matched routes — verify no sensitive endpoints are exposed unauthenticated
+    metadata:
+      cwe: CWE-306
+      owasp: A1
+
+  - id: spring.auth-permitall-admin
+    pattern: |
+      authorizeRequests().antMatchers("/admin/**").permitAll()
+    severity: ERROR
+    languages: [java]
+    message: Admin endpoints allow unauthenticated access
+    metadata:
+      cwe: CWE-306
+      owasp: A1
+
+  - id: spring.websecurity-ignore
+    pattern: |
+      WebSecurity.ignoring().antMatchers($PATHS)
+    severity: WARNING
+    languages: [java]
+    message: Security filter ignored for matched routes — this bypasses all guards
+    metadata:
+      cwe: CWE-306
+      owasp: A1
+
+  - id: spring.authorizerequests-misordering-denyall
+    pattern: |
+      authorizeRequests().anyRequest().permitAll()
+    severity: ERROR
+    languages: [java]
+    message: anyRequest().permitAll() — the whole app is open; almost always a misconfiguration
+    metadata:
+      cwe: CWE-306
+      owasp: A1
+
+  - id: spring.sql-injection-jdbctemplate
+    pattern: |
+      jdbcTemplate.query("SELECT * FROM $TABLE WHERE " + $INPUT, $ARGS)
+    severity: ERROR
+    languages: [java]
+    message: SQL injection in JdbcTemplate — concatenating input into SQL
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: spring.sql-injection-hibernate
+    pattern: |
+      createQuery("SELECT $COL FROM $TABLE WHERE " + $INPUT)
+    severity: ERROR
+    languages: [java]
+    message: HQL injection — build HQL with parameters, never string concatenation
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: spring.nosql-spring-data
+    pattern: |
+      new Criteria("$FIELD").is($INPUT)
+    severity: WARNING
+    languages: [java]
+    message: NoSQL injection potential in Spring Data MongoDB criteria
+    metadata:
+      cwe: CWE-943
+
+  - id: spring.xxe-validator
+    pattern: |
+      new DOMSource($INPUT)
+    severity: WARNING
+    languages: [java]
+    message: XML parsing without entity protection — use a hardened DocumentBuilderFactory
+    metadata:
+      cwe: CWE-611
+      owasp: A4
+
+  - id: spring.ssrf-resttemplate
+    pattern: |
+      restTemplate.getForObject($URL, $TYPE)
+    severity: WARNING
+    languages: [java]
+    message: SSRF risk — ensure URLs passed to RestTemplate are not user-controlled
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: spring.cors-any-origin
+    pattern-either:
+      - pattern: |
+          @CrossOrigin(origins = "*")
+      - pattern: |
+          allowedOrigins("*")
+      - pattern: |
+          allowedOriginPatterns("*")
+    severity: WARNING
+    languages: [java]
+    message: CORS allows any origin — credentials sharing risk
+    metadata:
+      cwe: CWE-942
+
+  - id: spring.cors-exposed-http
+    pattern: |
+      setAllowCredentials(true)
+    severity: INFO
+    languages: [java]
+    message: Allowing credentials with CORS — must be paired with tight origin allowlist
+    metadata:
+      cwe: CWE-942
+
+  - id: spring.insecure-deserialization-jackson-gadget
+    pattern: |
+      ObjectMapper $MAPPER = new ObjectMapper();
+      $MAPPER.enableDefaultTyping();
+    severity: ERROR
+    languages: [java]
+    message: Jackson default typing enables unsafe polymorphic deserialization (RCE gadgets)
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: spring.ssti-thymeleaf-fragments
+    pattern: |
+      $ENGINE.process($VIEW_NAME, $CONTEXT)
+    severity: WARNING
+    languages: [java]
+    message: SSTI — if $VIEW_NAME is user-controlled, Thymeleaf evaluates it (CVE-2023-49070 style)
+    metadata:
+      cwe: CWE-1336
+
+  - id: spring.mvc-integer-id
+    pattern: |
+      @GetMapping($PATH)
+      public $RET getById(@PathVariable $PTYPE $ID) {
+        return $SERVICE.getById($ID);
+      }
+    severity: WARNING
+    languages: [java]
+    message: Simple IDOR pattern — returning object by PathVariable without ownership check
+    metadata:
+      cwe: CWE-639
+      owasp: A1
+
+  - id: spring.jwt-insecure-secret
+    pattern: |
+      Jwts.parserBuilder().setSigningKey("$SECRET").build()
+    severity: WARNING
+    languages: [java]
+    message: JWT signing key hardcoded — use a strong per-environment secret
+    metadata:
+      cwe: CWE-345
+
+  - id: spring.log-logger-multiple
+    pattern: |
+      private static final Logger $LOGGER = LoggerFactory.getLogger($CLASS.class);
+    severity: INFO
+    languages: [java]
+    message: Multiple loggers per class — potential log forging; keep a single static logger
+    metadata:
+      cwe: CWE-117

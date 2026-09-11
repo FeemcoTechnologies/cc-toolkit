@@ -1,19 +1,11 @@
 """Doctor — health checks for tools, wordlists, services, and dependencies."""
 
-import json
-import shutil
 import subprocess
 from pathlib import Path
 from shutil import which
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from .config import CONFIG_DIR, OBSIDIAN_DIR, YARA_RULES_DIR, SIGMA_RULES_DIR, SEMGREP_RULES_DIR, NUCLEI_TEMPLATES_DIR
-from .tool_wrappers import (
-    nuclei_scan,
-    semgrep_scan,
-    trufflehog_org,
-    yara_scan,
-)
 
 
 class Doctor:
@@ -21,6 +13,8 @@ class Doctor:
 
     ALT_BIN_DIRS = [
         Path("/share/tools"),
+        Path.home() / ".pdtm" / "go" / "bin",
+        Path("/root/.pdtm/go/bin"),
     ]
 
     CRITICAL_TOOLS = [
@@ -44,6 +38,10 @@ class Doctor:
     AD_TOOLS = [
         "bloodyad", "certipy", "ldapnomnom",
         "kerbrute", "impacket-secretsdump", "netexec",
+    ]
+
+    PD_TOOLS = [
+        "subfinder", "httpx", "naabu", "dnsx", "katana",
     ]
 
     API_TOOLS = [
@@ -77,15 +75,21 @@ class Doctor:
         }
 
     def _check_tool(self, name: str) -> Tuple[bool, str]:
+        # ProjectDiscovery tools are installed by pdtm into ~/.pdtm/go/bin which
+        # is often not on PATH; and /usr/bin/httpx is the unrelated python3-httpx
+        # CLI. For those names prefer the pdtm install dir over PATH.
+        search_dirs = list(self.ALT_BIN_DIRS)
+        if name in self.PD_TOOLS:
+            search_dirs = [Path("/root/.pdtm/go/bin"),
+                           Path.home() / ".pdtm" / "go" / "bin"] + search_dirs
         fp = which(name)
-        if not fp:
-            for d in self.ALT_BIN_DIRS:
-                for candidate in [d / name, d / name / name, d / name / f"{name}.py"]:
-                    if candidate.is_file():
-                        fp = str(candidate)
-                        break
-                if fp:
+        for d in search_dirs:
+            for candidate in [d / name, d / name / name, d / name / f"{name}.py"]:
+                if candidate.is_file():
+                    fp = str(candidate)
                     break
+            if fp:
+                break
         if fp:
             try:
                 r = subprocess.run([fp, "--version"], capture_output=True,
@@ -104,6 +108,7 @@ class Doctor:
                 "forensics": self.FORENSIC_TOOLS,
                 "wifi": self.WIFI_TOOLS,
                 "active_directory": self.AD_TOOLS,
+                "projectdiscovery": self.PD_TOOLS,
                 "api_testing": self.API_TOOLS,
                 "forensics_windows": self.FORENSIC_WIN_TOOLS,
                 "misc": self.MISC_TOOLS,

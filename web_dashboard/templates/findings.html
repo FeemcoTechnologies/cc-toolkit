@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if case %}{{ case.case_id }} / Findings{% else %}Findings{% endif %} — CC Dashboard{% endblock %}
 {% block head %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
 <style>
     .stat-card { transition: all 0.2s ease; cursor: pointer; }
     .stat-card:hover { border-color: #6366f1; transform: translateY(-1px); }
@@ -50,9 +50,12 @@
                 <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="inline-export-btn flex items-center gap-1">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i> Export
                 </button>
-                <div class="hidden absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[130px]">
+                <div class="hidden absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[160px]">
                     <button onclick="exportFindings('csv')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">Download CSV</button>
                     <button onclick="exportFindings('json')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">Download JSON</button>
+                    <div class="border-t border-gray-700 my-1"></div>
+                    <button onclick="exportCompliance('sarif')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">SARIF 2.1.0</button>
+                    <button onclick="exportCompliance('xccdf')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">XCCDF 1.2 (+ checklist)</button>
                 </div>
             </div>
             <span class="text-sm text-gray-400">
@@ -784,6 +787,24 @@
             var json = JSON.stringify(filtered, null, 2);
             downloadBlob(json, 'findings-export.json', 'application/json');
         }
+    };
+
+    // === Compliance export (SARIF / XCCDF) — per case ===
+    window.exportCompliance = function(fmt) {
+        var filtered = getFiltered();
+        if (!filtered.length) { alert('No findings to export.'); return; }
+        var cases = [];
+        filtered.forEach(function(f) { if (f._case_id && cases.indexOf(f._case_id) === -1) cases.push(f._case_id); });
+        if (cases.length > 1) {
+            var pick = prompt('Findings span multiple cases. Enter a case id to export:\n' + cases.join(', '), cases[0]);
+            if (!pick) return;
+            if (cases.indexOf(pick) === -1) { alert('Unknown case id: ' + pick); return; }
+            cases = [pick];
+        }
+        var a = document.createElement('a');
+        a.href = '/api/case/' + encodeURIComponent(cases[0]) + '/export/download?format=' + fmt;
+        a.download = '';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
     };
 
     function downloadBlob(content, filename, mime) {

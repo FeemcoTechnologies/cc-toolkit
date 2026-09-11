@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Project Board{% endblock %}
 {% block head %}
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.7/Sortable.min.js"></script>
 <style>
     .board-col { min-height: 300px; }
     .case-card { transition: all 0.15s ease; cursor: pointer; }
@@ -64,8 +64,47 @@
         closed_other: { bg: '#1f2937', text: '#6b7280' },
     };
 
+    var BOARD_LIMIT = 20;
+    var colOffset = {};   // column key -> loaded offset
+    var colLoading = {};  // column key -> fetch in-flight
+    var colObserver = null;
+
+    function renderColumn(key, col) {
+        var html = '<div class="bg-gray-900 border border-gray-800 rounded-lg flex flex-col" data-col="' + key + '">' +
+            '<div class="col-header bg-gray-800/80 rounded-t-lg px-3 py-2 flex items-center justify-between border-b border-gray-700">' +
+            '<span class="text-xs font-semibold" style="color:' + col.color + '">' + col.title + '</span>' +
+            '<span class="text-xs text-gray-500" data-col-count="' + key + '">' + (col.total != null ? col.total : col.items.length) + '</span>' +
+            '</div>' +
+            '<div class="board-col flex-1 p-2 space-y-2 sortable-col" data-status="' + key + '">';
+        col.items.forEach(function(c) {
+            html += renderCaseCard(c);
+        });
+        html += '</div>';
+        if (col.total != null && col.items.length < col.total) {
+            html += '<div class="load-sentinel p-2 text-center text-xs text-gray-600" data-col="' + key + '">' +
+                '<span class="sentinel-label">Scroll to load more</span></div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    function setupObserver() {
+        if (colObserver) colObserver.disconnect();
+        colObserver = new IntersectionObserver(function(entries) {
+            entries.forEach(function(entry) {
+                if (!entry.isIntersecting) return;
+                var key = entry.target.getAttribute('data-col');
+                if (!key || colLoading[key]) return;
+                loadMoreColumn(key);
+            });
+        }, { root: null, rootMargin: '200px 0px', threshold: 0 });
+        document.querySelectorAll('.load-sentinel').forEach(function(el) {
+            colObserver.observe(el);
+        });
+    }
+
     function loadBoard() {
-        fetch('/api/projects/board/data')
+        fetch('/api/projects/board/data?limit=' + BOARD_LIMIT + '&offset=0')
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var container = document.getElementById('board-container');
@@ -73,41 +112,75 @@
                 var colOrder = Object.keys(data.columns);
                 colOrder.forEach(function(key) {
                     var col = data.columns[key];
-                    html += '<div class="bg-gray-900 border border-gray-800 rounded-lg flex flex-col" data-col="' + key + '">' +
-                        '<div class="col-header bg-gray-800/80 rounded-t-lg px-3 py-2 flex items-center justify-between border-b border-gray-700">' +
-                        '<span class="text-xs font-semibold" style="color:' + col.color + '">' + col.title + '</span>' +
-                        '<span class="text-xs text-gray-500">' + col.items.length + '</span>' +
-                        '</div>' +
-                        '<div class="board-col flex-1 p-2 space-y-2 sortable-col" data-status="' + key + '">';
-                    col.items.forEach(function(c) {
-                        html += renderCaseCard(c);
-                    });
-                    html += '</div></div>';
+                    colOffset[key] = 0;
+                    colLoading[key] = false;
+                    html += renderColumn(key, col);
                 });
                 container.innerHTML = html;
-
-                document.querySelectorAll('.sortable-col').forEach(function(el) {
-                    new Sortable(el, {
-                        group: 'cases',
-                        animation: 150,
-                        ghostClass: 'sortable-ghost',
-                        dragClass: 'dragging',
-                        onEnd: function(evt) {
-                            var caseId = evt.item.dataset.caseId;
-                            var newStatus = evt.to.dataset.status;
-                            if (!caseId || !newStatus) return;
-                            fetch('/api/projects/board/update', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({case_id: caseId, status: newStatus}),
-                            }).catch(function() {});
-                        },
-                    });
-                });
+                initSortable();
+                setupObserver();
                 lucide.createIcons();
             }).catch(function(e) {
                 document.getElementById('board-container').innerHTML = '<div class="text-red-400 col-span-4 text-center py-12">Failed to load board: ' + e.message + '</div>';
             });
+    }
+
+    function loadMoreColumn(key) {
+        var nextOffset = (colOffset[key] || 0) + BOARD_LIMIT;
+        var colEl = document.querySelector('[data-col="' + key + '"]');
+        if (!colEl) return;
+        var listEl = colEl.querySelector('.board-col');
+        var sentinel = colEl.querySelector('.load-sentinel');
+        var label = sentinel ? sentinel.querySelector('.sentinel-label') : null;
+        colLoading[key] = true;
+        if (label) label.textContent = 'Loading...';
+        fetch('/api/projects/board/data?column=' + encodeURIComponent(key) + '&limit=' + BOARD_LIMIT + '&offset=' + nextOffset)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                colOffset[key] = data.offset;
+                data.items.forEach(function(c) {
+                    var div = document.createElement('div');
+                    div.innerHTML = renderCaseCard(c).trim();
+                    listEl.appendChild(div.firstChild);
+                });
+                var countEl = colEl.querySelector('[data-col-count="' + key + '"]');
+                if (countEl) countEl.textContent = data.total;
+                colLoading[key] = false;
+                if (data.offset + data.items.length >= data.total) {
+                    if (sentinel) {
+                        if (colObserver) colObserver.unobserve(sentinel);
+                        sentinel.remove();
+                    }
+                } else if (label) {
+                    label.textContent = 'Scroll to load more';
+                }
+                lucide.createIcons();
+            }).catch(function() {
+                colLoading[key] = false;
+                if (label) label.textContent = 'Scroll to load more (retry)';
+            });
+    }
+
+    function initSortable() {
+        document.querySelectorAll('.sortable-col').forEach(function(el) {
+            if (el._sortable) el._sortable.destroy();
+            el._sortable = new Sortable(el, {
+                group: 'cases',
+                animation: 150,
+                ghostClass: 'sortable-ghost',
+                dragClass: 'dragging',
+                onEnd: function(evt) {
+                    var caseId = evt.item.dataset.caseId;
+                    var newStatus = evt.to.dataset.status;
+                    if (!caseId || !newStatus) return;
+                    fetch('/api/projects/board/update', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({case_id: caseId, status: newStatus}),
+                    }).catch(function() {});
+                },
+            });
+        });
     }
 
     function renderCaseCard(c) {
@@ -136,6 +209,10 @@
                     '</div>';
             });
             findingsHtml += '</div>';
+            var hiddenCount = totalFindings - c.findings.length;
+            if (hiddenCount > 0) {
+                findingsHtml += '<div class="mt-1 text-[10px] text-gray-500">+' + hiddenCount + ' more finding' + (hiddenCount === 1 ? '' : 's') + '</div>';
+            }
         } else {
             findingsHtml += '<div class="mt-1 text-xs text-gray-600">No findings</div>';
         }

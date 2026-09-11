@@ -94,6 +94,7 @@ function renderWidgetContent(w) {
         case 'status-chart': renderStatusChart(); break;
         case 'top-cves': renderCveChart(); break;
         case 'recent-loot': renderRecentLoot(); break;
+        case 'case-overview': renderCaseOverview(); break;
     }
 }
 
@@ -153,10 +154,14 @@ function buildRecentFindings() {
 }
 
 function buildCaseOverview() {
-    var casesList = dashboardState.stats.cases.list;
-    if (!casesList || casesList.length === 0) {
-        return '<p class="text-gray-500 text-sm text-center py-4">No cases yet</p>';
-    }
+    return '<div id="case-overview-wrap">' +
+        '<div class="text-gray-500 text-sm text-center py-4">' +
+        '<i data-lucide="loader" class="w-5 h-5 mx-auto mb-2 animate-spin"></i><p>Loading cases...</p></div></div>';
+}
+
+var caseOverviewState = { offset: 0, limit: 20, total: 0 };
+
+function buildCaseOverviewTable(casesList) {
     var html = '<div class="overflow-x-auto max-h-72 overflow-y-auto"><table class="w-full text-sm">' +
         '<thead><tr class="text-gray-500 text-xs uppercase sticky top-0 bg-gray-900">' +
         '<th class="text-left pb-2 font-medium">Case</th>' +
@@ -181,6 +186,40 @@ function buildCaseOverview() {
     });
     html += '</tbody></table></div>';
     return html;
+}
+
+function renderCaseOverview() {
+    var container = document.getElementById('case-overview-wrap');
+    if (!container) return;
+    var limit = caseOverviewState.limit;
+    var offset = caseOverviewState.offset;
+    fetch('/api/dashboard/cases?limit=' + limit + '&offset=' + offset)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            caseOverviewState.total = data.total;
+            var casesList = data.items || [];
+            var html = '';
+            if (casesList.length === 0) {
+                html = '<p class="text-gray-500 text-sm text-center py-4">No cases yet</p>';
+            } else {
+                html = buildCaseOverviewTable(casesList);
+            }
+            var pageCount = Math.max(1, Math.ceil(data.total / limit));
+            var pageIdx = Math.floor(offset / limit) + 1;
+            html += '<div class="flex items-center justify-between px-1 pt-2 border-t border-gray-800 mt-2">' +
+                '<button class="co-prev text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded disabled:opacity-40"' +
+                ' ' + (offset <= 0 ? 'disabled' : '') + ' onclick="caseOverviewState.offset=Math.max(0,caseOverviewState.offset-' + limit + ');renderCaseOverview();">' +
+                '<i data-lucide="chevron-left" class="w-3 h-3 inline"></i> Prev</button>' +
+                '<span class="text-xs text-gray-500">Page ' + pageIdx + ' of ' + pageCount + ' (' + data.total + ' cases)</span>' +
+                '<button class="co-next text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded disabled:opacity-40"' +
+                ' ' + (offset + limit >= data.total ? 'disabled' : '') + ' onclick="caseOverviewState.offset=caseOverviewState.offset+' + limit + ';renderCaseOverview();">' +
+                'Next <i data-lucide="chevron-right" class="w-3 h-3 inline"></i></button>' +
+                '</div>';
+            container.innerHTML = html;
+            if (window.lucide) lucide.createIcons();
+        }).catch(function() {
+            container.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">Failed to load cases</p>';
+        });
 }
 
 function buildFindingTrend() {

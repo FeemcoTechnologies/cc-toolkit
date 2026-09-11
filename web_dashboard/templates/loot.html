@@ -174,9 +174,10 @@ function renderCred(c) {
     const hid = 'cred-'+c.id;
     const pid = 'pw-'+c.id;
     const hasPass = !!c.password;
+    window._copyRefs[pid] = c.password || '';
     const passStr = hasPass
         ? `<span class="mono text-gray-400" id="${pid}">${esc(c.password)}</span>
-           <button onclick="copyText('${esc(c.password)}')" class="copy-btn text-gray-500 hover:text-gray-300" title="Copy"><i data-lucide="copy" class="w-3.5 h-3.5 inline"></i></button>
+           <button data-copy-ref="${pid}" class="copy-btn text-gray-500 hover:text-gray-300" title="Copy"><i data-lucide="copy" class="w-3.5 h-3.5 inline"></i></button>
            <button onclick="revealToggle('${pid}')" class="text-gray-500 hover:text-gray-300" title="Toggle visibility"><i data-lucide="eye" class="w-3.5 h-3.5 inline"></i></button>`
         : '<span class="text-gray-600">—</span>';
     const hashStr = c.hash ? `<div class="mono text-gray-500 truncate max-w-[300px]" title="${esc(c.hash)}">${esc(c.hash.substring(0, 48))}${c.hash.length>48?'…':''}</div>` : '';
@@ -278,6 +279,8 @@ function loadTokens() {
 
 function renderToken(t) {
     const tv = t.token_value || '';
+    const tid = 'tok-'+(t.id);
+    window._copyRefs[tid] = tv;
     const truncated = tv.length > 80 ? tv.substring(0, 80) + '…' : tv;
     return `<div class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex items-start justify-between hover:border-gray-700 transition-colors">
         <div class="flex-1 min-w-0">
@@ -285,7 +288,7 @@ function renderToken(t) {
                 <span class="text-xs bg-gray-800 text-indigo-400 rounded px-1.5 py-0.5">${esc(t.token_type)}</span>
                 <span class="text-sm text-gray-200 font-medium">${esc(t.source)}</span>
                 ${t.target ? `<span class="text-xs text-gray-500">→ ${esc(t.target)}</span>` : ''}
-                <button onclick="copyText('${esc(tv)}')" class="copy-btn text-gray-500 hover:text-gray-300 ml-1" title="Copy token value"><i data-lucide="copy" class="w-3.5 h-3.5 inline"></i></button>
+                <button data-copy-ref="${tid}" class="copy-btn text-gray-500 hover:text-gray-300 ml-1" title="Copy token value"><i data-lucide="copy" class="w-3.5 h-3.5 inline"></i></button>
             </div>
             <div class="mono text-gray-400 truncate max-w-full" title="${esc(tv)}">${esc(truncated)}</div>
             <div class="flex items-center gap-3 text-xs text-gray-500 mt-1">
@@ -416,6 +419,14 @@ function getVal(id) {
 
 // Init
 document.addEventListener('DOMContentLoaded', () => {
+    window._copyRefs = {};
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('[data-copy-ref]');
+        if (!btn) return;
+        const ref = btn.getAttribute('data-copy-ref');
+        const val = window._copyRefs && window._copyRefs[ref];
+        if (val !== undefined) copyText(String(val));
+    });
     loadCredentials();
 });
 </script>

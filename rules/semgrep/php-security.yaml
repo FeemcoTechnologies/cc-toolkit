@@ -1,0 +1,153 @@
+rules:
+  - id: php.sql-injection-mysqli
+    pattern-either:
+      - pattern: |
+          mysqli_query($CONN, "SELECT * FROM $TABLE WHERE " . $INPUT)
+      - pattern: |
+          $CONN->query("SELECT * FROM $TABLE WHERE " . $INPUT)
+      - pattern: |
+          $CONN->prepare("SELECT * FROM $TABLE WHERE " . $INPUT)
+    severity: ERROR
+    languages: [php]
+    message: SQL injection — use prepared statements with bound parameters
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: php.command-injection
+    pattern-either:
+      - pattern: |
+          shell_exec($INPUT)
+      - pattern: |
+          exec($INPUT)
+      - pattern: |
+          system($INPUT)
+      - pattern: |
+          passthru($INPUT)
+      - pattern: |
+          `$INPUT`
+    severity: ERROR
+    languages: [php]
+    message: Command injection — validate/sanitize input before shell execution
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: php.xss-echo-input
+    pattern: |
+      echo $INPUT;
+    severity: WARNING
+    languages: [php]
+    message: Potential XSS — escape output with htmlspecialchars/htmlentities
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: php.ssti-smarty
+    pattern: |
+      $SMARTY->fetch($INPUT)
+    severity: WARNING
+    languages: [php]
+    message: SSTI — if the template name is user-controlled it is evaluated
+    metadata:
+      cwe: CWE-1336
+
+  - id: php.rfi-include
+    pattern-either:
+      - pattern: |
+          include($INPUT)
+      - pattern: |
+          include_once($INPUT)
+      - pattern: |
+          require($INPUT)
+      - pattern: |
+          require_once($INPUT)
+    severity: ERROR
+    languages: [php]
+    message: RFI/LFI — never include/require user-controlled paths
+    metadata:
+      cwe: CWE-98
+      owasp: A6
+
+  - id: php.file-read-path
+    pattern-either:
+      - pattern: |
+          file_get_contents($INPUT)
+      - pattern: |
+          file($INPUT)
+      - pattern: |
+          readfile($INPUT)
+    severity: WARNING
+    languages: [php]
+    message: Path traversal / arbitrary file read — validate and allowlist the path
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: php.unserialize-unsafe
+    pattern: |
+      unserialize($INPUT)
+    severity: ERROR
+    languages: [php]
+    message: PHP object injection — never unserialize untrusted data; use json (and allowlist classes)
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: php.eval-input
+    pattern: |
+      eval($INPUT)
+    severity: ERROR
+    languages: [php]
+    message: Code injection via eval() — never evaluate user input
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: php.curl-ssrf
+    pattern: |
+      curl_exec($CH)
+    severity: WARNING
+    languages: [php]
+    message: SSRF risk — verify CURLOPT_URL is not user-controlled
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: php.open-redirect-header
+    pattern: |
+      header("Location: " . $INPUT)
+    severity: WARNING
+    languages: [php]
+    message: Open redirect — ensure the header target is allowlisted
+    metadata:
+      cwe: CWE-601
+
+  - id: php.weak-crypto-md5
+    pattern: |
+      md5($INPUT)
+    severity: WARNING
+    languages: [php]
+    message: MD5 for security hashing — use password_hash/password_verify
+    metadata:
+      cwe: CWE-327
+      owasp: A3
+
+  - id: php.mass-assignment-extract
+    pattern: |
+      extract($INPUT)
+    severity: WARNING
+    languages: [php]
+    message: Variable injection — extract() of request data can overwrite variables; use explicit keys
+    metadata:
+      cwe: CWE-915
+
+  - id: php.store-file-upload
+    pattern: |
+      move_uploaded_file($TMP, $DEST)
+    severity: WARNING
+    languages: [php]
+    message: Unrestricted file upload — validate extension/mime and randomize storage name
+    metadata:
+      cwe: CWE-434
+      owasp: A1

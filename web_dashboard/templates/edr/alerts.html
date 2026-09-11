@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}EDR - Alerts{% endblock %}
+{% block head %}
+<style>
+    .sev-critical { @apply bg-red-500/20 text-red-400 border border-red-500/40; }
+    .sev-high { @apply bg-orange-500/20 text-orange-400 border border-orange-500/40; }
+    .sev-medium { @apply bg-yellow-500/20 text-yellow-400 border border-yellow-500/40; }
+    .sev-low { @apply bg-blue-500/20 text-blue-400 border border-blue-500/40; }
+    .sev-info { @apply bg-gray-500/20 text-gray-400 border border-gray-500/40; }
+    .alert-expanded { @apply bg-gray-800/50; }
+    .page-btn { @apply bg-gray-800 hover:bg-gray-700 text-xs px-2 py-1 rounded transition-colors; }
+    .page-btn.active { @apply bg-indigo-600 text-white; }
+    .page-btn:disabled { @apply opacity-40 cursor-not-allowed; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="alert-triangle" class="w-5 h-5 text-red-400"></i> EDR Alerts</h1>
+    <div class="flex gap-2 items-center">
+        <button onclick="refreshAlerts()" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh
+        </button>
+    </div>
+</div>
+
+<div class="flex flex-wrap gap-3 mb-4">
+    <select id="filter-severity" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+        <option value="">All Severity</option>
+        <option value="critical">Critical</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+        <option value="info">Info</option>
+    </select>
+    <select id="filter-device" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+        <option value="">All Devices</option>
+    </select>
+    <select id="filter-status" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+        <option value="">All Status</option>
+        <option value="open">Open</option>
+        <option value="acknowledged">Acknowledged</option>
+        <option value="resolved">Resolved</option>
+    </select>
+    <input id="filter-start" type="date" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200" title="Start date">
+    <input id="filter-end" type="date" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200" title="End date">
+</div>
+
+<div id="server-banner" class="hidden mb-4 bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 text-sm text-red-300">
+    EDR server is unreachable.
+</div>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+    <div id="loading-spinner" class="flex items-center justify-center py-12">
+        <svg class="animate-spin h-6 w-6 text-indigo-400" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+    </div>
+    <div id="alerts-table-wrap" class="hidden overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wide">
+                    <th class="text-left px-4 py-3">Severity</th>
+                    <th class="text-left px-4 py-3">Rule</th>
+                    <th class="text-left px-4 py-3">Device</th>
+                    <th class="text-left px-4 py-3">Timestamp</th>
+                    <th class="text-left px-4 py-3">Status</th>
+                    <th class="text-right px-4 py-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="alerts-tbody"></tbody>
+        </table>
+    </div>
+    <div id="alerts-empty" class="hidden text-center py-12 text-gray-500 text-sm">No alerts found.</div>
+    <div id="expanded-row" class="hidden px-4 py-4 border-t border-gray-800 bg-gray-900/50"></div>
+</div>
+
+<div id="pagination" class="flex items-center justify-between mt-3">
+    <span id="page-info" class="text-xs text-gray-500"></span>
+    <div id="page-buttons" class="flex gap-1"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var API_ALERTS = '{{ url_for("edr.api_alerts_list") }}';
+var ALERT_DETAIL_PREFIX = '{{ url_for("edr.alert_detail", alert_id=0) }}'.replace('/0', '/');
+var URL_ALERT_ACK = '{{ url_for("edr.alert_acknowledge", alert_id=0) }}'.replace('/0', '/');
+var URL_ALERT_RESOLVE = '{{ url_for("edr.alert_resolve", alert_id=0) }}'.replace('/0', '/');
+var _alerts = [];
+var _total = 0;
+var _page = 0;
+var _pageSize = 25;
+var _expandedId = null;
+
+function sevBadge(s) {
+    return '<span class="text-xs px-2 py-0.5 rounded-full font-medium sev-' + (s || 'info') + '">' + (s || 'info') + '</span>';
+}
+function statusText(s) {
+    var cls = s === 'resolved' ? 'text-green-400' : s === 'acknowledged' ? 'text-yellow-400' : 'text-gray-400';
+    return '<span class="text-xs ' + cls + '">' + (s || 'open') + '</span>';
+}
+
+function renderAlerts() {
+    var tbody = document.getElementById('alerts-tbody');
+    tbody.innerHTML = '';
+    _alerts.forEach(function(a) {
+        var tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-800/50 hover:bg-gray-800/30 cursor-pointer' + (_expandedId === a.id ? ' alert-expanded' : '');
+        tr.onclick = function() { toggleDetail(a.id); };
+        var ackBtn = '';
+        if (!a.acknowledged && a.status !== 'resolved') {
+            ackBtn = '<button onclick="event.stopPropagation();ackAlert(' + a.id + ')" class="text-green-400 hover:text-green-300 text-xs mr-2">ack</button>';
+        }
+        var resolveBtn = '';
+        if (a.status !== 'resolved') {
+            resolveBtn = '<button onclick="event.stopPropagation();resolveAlert(' + a.id + ')" class="text-blue-400 hover:text-blue-300 text-xs">resolve</button>';
+        }
+        tr.innerHTML =
+            '<td class="px-4 py-3">' + sevBadge(a.severity) + '</td>' +
+            '<td class="px-4 py-3 text-gray-300 text-xs">' + esc(a.rule_name || a.rule || a.title || '-') + '</td>' +
+            '<td class="px-4 py-3 text-gray-400 text-xs">' + esc(a.device_hostname || a.device || '-') + '</td>' +
+            '<td class="px-4 py-3 text-gray-500 text-xs">' + esc(a.timestamp || a.created_at || '-') + '</td>' +
+            '<td class="px-4 py-3">' + statusText(a.status) + '</td>' +
+            '<td class="px-4 py-3 text-right">' + ackBtn + resolveBtn + '</td>';
+        tbody.appendChild(tr);
+    });
+    document.getElementById('alerts-empty').classList.toggle('hidden', _alerts.length > 0);
+    document.getElementById('alerts-table-wrap').classList.toggle('hidden', _alerts.length === 0);
+    renderPagination();
+}
+
+function renderPagination() {
+    var pages = Math.ceil(_total / _pageSize);
+    var info = document.getElementById('page-info');
+    var btns = document.getElementById('page-buttons');
+    info.textContent = _total + ' alert' + (_total !== 1 ? 's' : '') + ' total';
+    btns.innerHTML = '';
+    if (pages <= 1) return;
+    var prev = document.createElement('button');
+    prev.className = 'page-btn'; prev.textContent = 'Prev'; prev.disabled = _page === 0;
+    prev.onclick = function() { _page--; refreshAlerts(); };
+    btns.appendChild(prev);
+    for (var i = 0; i < Math.min(pages, 7); i++) {
+        var b = document.createElement('button');
+        b.className = 'page-btn' + (i === _page ? ' active' : '');
+        b.textContent = i + 1;
+        b.onclick = (function(p) { return function() { _page = p; refreshAlerts(); }; })(i);
+        btns.appendChild(b);
+    }
+    var next = document.createElement('button');
+    next.className = 'page-btn'; next.textContent = 'Next'; next.disabled = _page >= pages - 1;
+    next.onclick = function() { _page++; refreshAlerts(); };
+    btns.appendChild(next);
+}
+
+async function toggleDetail(id) {
+    var row = document.getElementById('expanded-row');
+    if (_expandedId === id) { row.classList.add('hidden'); _expandedId = null; return; }
+    _expandedId = id;
+    row.innerHTML = '<div class="text-gray-400 text-xs">Loading...</div>';
+    row.classList.remove('hidden');
+    try {
+        var r = await fetch(ALERT_DETAIL_PREFIX + id);
+        var d = await r.json();
+        if (d.error) throw new Error(d.error);
+        var html = '<div class="text-sm">';
+        html += '<div class="font-semibold text-gray-200 mb-2">' + esc(d.rule_name || d.rule || d.title || 'Alert') + '</div>';
+        html += '<div class="text-gray-400 text-xs mb-2">' + esc(d.description || d.details || '') + '</div>';
+        if (d.matched_rows && d.matched_rows.length) {
+            html += '<div class="text-xs text-gray-500 mb-1">Matched Rows (' + d.matched_rows.length + '):</div>';
+            html += '<div class="bg-gray-950 rounded p-2 font-mono text-xs text-gray-300 max-h-60 overflow-auto">';
+            d.matched_rows.forEach(function(row) { html += esc(JSON.stringify(row)) + '\n'; });
+            html += '</div>';
+        }
+        html += '</div>';
+        row.innerHTML = html;
+    } catch(e) {
+        row.innerHTML = '<div class="text-red-400 text-xs">' + esc(e.message) + '</div>';
+    }
+}
+
+async function refreshAlerts() {
+    document.getElementById('loading-spinner').classList.remove('hidden');
+    document.getElementById('alerts-table-wrap').classList.add('hidden');
+    document.getElementById('alerts-empty').classList.add('hidden');
+    document.getElementById('server-banner').classList.add('hidden');
+    var params = new URLSearchParams();
+    var sev = document.getElementById('filter-severity').value;
+    var dev = document.getElementById('filter-device').value;
+    var st = document.getElementById('filter-status').value;
+    var start = document.getElementById('filter-start').value;
+    var end = document.getElementById('filter-end').value;
+    if (sev) params.set('severity', sev);
+    if (dev) params.set('device', dev);
+    if (st) params.set('status', st);
+    if (start) params.set('start_date', start);
+    if (end) params.set('end_date', end);
+    params.set('limit', _pageSize);
+    params.set('offset', _page * _pageSize);
+    try {
+        var r = await fetch(API_ALERTS + '?' + params.toString());
+        var d = await r.json();
+        if (d.error) throw new Error(d.error);
+        _alerts = Array.isArray(d) ? d : (d.alerts || []);
+        _total = d.total || _alerts.length;
+        renderAlerts();
+    } catch(e) {
+        document.getElementById('server-banner').classList.remove('hidden');
+        document.getElementById('alerts-empty').classList.remove('hidden');
+        document.getElementById('alerts-empty').textContent = 'Failed to load alerts: ' + esc(e.message);
+    } finally {
+        document.getElementById('loading-spinner').classList.add('hidden');
+    }
+}
+
+async function ackAlert(id) {
+    var r = await fetch(URL_ALERT_ACK + id + '/acknowledge', {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Alert acknowledged', !d.error);
+    refreshAlerts();
+}
+async function resolveAlert(id) {
+    var r = await fetch(URL_ALERT_RESOLVE + id + '/resolve', {method:'POST'});
+    var d = await r.json();
+    toast(d.error ? 'Error: ' + d.error : 'Alert resolved', !d.error);
+    refreshAlerts();
+}
+
+document.getElementById('filter-severity').addEventListener('change', function() { _page = 0; refreshAlerts(); });
+document.getElementById('filter-device').addEventListener('change', function() { _page = 0; refreshAlerts(); });
+document.getElementById('filter-status').addEventListener('change', function() { _page = 0; refreshAlerts(); });
+document.getElementById('filter-start').addEventListener('change', function() { _page = 0; refreshAlerts(); });
+document.getElementById('filter-end').addEventListener('change', function() { _page = 0; refreshAlerts(); });
+refreshAlerts();
+</script>
+{% endblock %}

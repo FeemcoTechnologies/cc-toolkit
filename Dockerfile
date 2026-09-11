@@ -41,13 +41,8 @@ WORKDIR /opt/cc-toolkit
 COPY --from=builder /usr/local/lib/python3.11/site-packages/ /usr/local/lib/python3.11/site-packages/
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
-# Copy application code
-COPY modules/ modules/
-COPY web_dashboard/ web_dashboard/
-COPY playbooks/ playbooks/
-COPY tools/ tools/
-COPY cli.py cc_mcp_server.py run.py ./
-COPY requirements.txt .env.example ./
+# Copy application code (everything not in .dockerignore)
+COPY . ./
 
 # Create workspace directories
 VOLUME /workspace

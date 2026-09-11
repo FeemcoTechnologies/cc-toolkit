@@ -3,7 +3,6 @@ import logging
 
 import csv
 import datetime
-import io
 import json
 import os
 import re
@@ -12,7 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from .config import CC_DIR
 logger = logging.getLogger(__name__)
@@ -41,8 +40,8 @@ class AirodumpCSVParser:
                 sep_idx = i
                 break
 
-        ap_rows = rows[:sep_idx] if sep_idx else rows
-        client_rows = rows[sep_idx + 1:] if sep_idx else []
+        ap_rows = rows[:sep_idx] if sep_idx is not None else rows
+        client_rows = rows[sep_idx + 1:] if sep_idx is not None else []
 
         # Parse AP rows (skip header)
         for row in ap_rows[1:]:
@@ -815,7 +814,7 @@ class WifiMonitorSession:
             self.captures["pmkids"].extend(new_pm)
             self.captures["eap_identities"].extend(new_eap)
             self.captures["packet_strings"].extend(new_pstr)
-            self._save_data()
+        self._save_data()
         return {
             "handshakes": len(handshakes),
             "pmkids": len(pmkids),

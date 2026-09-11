@@ -9,7 +9,6 @@ Supports live Chromium profiles or exported .ldb/.log directories.
 """
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -33,7 +32,7 @@ _SESSION_RE = re.compile(r"(?i)(session|sid|auth|csrf|x?srft?oken)[=:]\s*(\S+)")
 _BASE64_PADDED = re.compile(r"^[A-Za-z0-9+/]{20,}={0,2}$")
 _BASE64_URL_PADDED = re.compile(r"^[A-Za-z0-9_-]{20,}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{32,}$", re.I)
-_PROTO_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]{4,}")
+_PROTO_RE = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]{4,}")
 
 
 def _classify_value(key: str, value: bytes) -> Dict[str, any]:
@@ -255,9 +254,9 @@ def analyze_leveldb(path: str) -> Dict:
                 entries = _parse_ldb_file(f)
                 all_entries.extend(entries)
                 files_scanned += 1
-            except e:
+            except Exception as e:
 
-                logger.debug("e in browser_db.py", exc_info=True)
+                logger.debug("Failed to parse %s: %s", f, e, exc_info=True)
 
     if not all_entries:
         return {
@@ -324,7 +323,6 @@ def analyze_leveldb(path: str) -> Dict:
 
 def _detect_store_type(entries: List[Tuple[str, bytes, Dict]]) -> str:
     """Heuristically determine what browser data this LevelDB contains."""
-    keys_set = {e[0][:16] for e in entries[:200]}  # key hex prefixes
     all_text = " ".join(
         _safe_decode(e[1])[:200] for e in entries[:100] if _safe_decode(e[1])
     ).lower()

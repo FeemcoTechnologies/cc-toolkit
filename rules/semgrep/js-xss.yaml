@@ -18,11 +18,66 @@ rules:
       cwe: CWE-79
       owasp: A7
 
+  - id: js.xss-dangerously-set-react
+    pattern-regex: dangerouslySetInnerHTML=\{\{.*__html\s*:.*\}\}
+    severity: ERROR
+    languages: [generic]
+    message: React dangerouslySetInnerHTML with non-constant input — XSS risk
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: js.xss-jquery-html
+    pattern: |
+      $().html($INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: jQuery .html() with dynamic input — XSS risk; use .text()
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: js.dom-xss-location-href
+    pattern-either:
+      - pattern: |
+          location.href = $INPUT
+      - pattern: |
+          window.location = $INPUT
+      - pattern: |
+          window.location.href = $INPUT
+      - pattern: |
+          location.assign($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: DOM XSS / open redirect — sanitize input before assigning to location
+    metadata:
+      cwe: CWE-79
+      owasp: A7
+
+  - id: js.open-redirect-window
+    pattern: |
+      window.open($INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Open redirect — validate URLs before passing to window.open
+    metadata:
+      cwe: CWE-601
+
   - id: js.eval-user-input
     pattern: eval($INPUT)
     severity: ERROR
     languages: [javascript, typescript]
     message: Code injection — avoid eval with user input
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
+  - id: js.new-function-dynamic
+    pattern: |
+      new Function($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: Code injection — new Function() with dynamic input is like eval
     metadata:
       cwe: CWE-95
       owasp: A1
@@ -35,6 +90,121 @@ rules:
     message: JWT none algorithm accepted — authentication bypass
     metadata:
       cwe: CWE-345
+
+  - id: js.jwt-decode-no-verify
+    pattern: |
+      jwt.decode($TOKEN, { verify: false })
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: JWT decoding without signature verification — authentication bypass
+    metadata:
+      cwe: CWE-345
+
+  - id: js.node-command-injection-exec
+    pattern-either:
+      - pattern: |
+          child_process.exec($INPUT)
+      - pattern: |
+          exec($INPUT)
+      - pattern: |
+          execSync($INPUT)
+      - pattern: |
+          child_process.execSync($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: Command injection — use execFile with an argument array, never interpolate user input
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: js.node-spawn-shell
+    pattern: |
+      child_process.spawn($CMD, $ARGS, { shell: true })
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: shell:true enables command injection when arguments contain user input
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: js.sql-injection-template
+    pattern: |
+      $DB.query(`SELECT * FROM $TABLE WHERE $CLAUSE`)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: SQL injection — template literal query; use parameterized queries
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: js.nosql-injection-mongo
+    pattern-either:
+      - pattern: |
+          $COLLECTION.find({ $WHERE: { $OP } })
+      - pattern: |
+          $COLLECTION.findOne({ $WHERE: { $OP } })
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: NoSQL injection — avoid operator syntax ($where, $gt, $regex) driven by input
+    metadata:
+      cwe: CWE-943
+
+  - id: js.prototype-pollution-object-assign
+    pattern-either:
+      - pattern: |
+          Object.assign($OBJ, $INPUT)
+      - pattern: |
+          Object.assign({}, $OBJ, $INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Prototype pollution — never merge user input into objects without key allowlists
+    metadata:
+      cwe: CWE-1321
+
+  - id: js.prototype-pollution-merge
+    pattern-either:
+      - pattern: |
+          _.merge($OBJ, $INPUT)
+      - pattern: |
+          _.merge({}, $OBJ, $INPUT)
+      - pattern: |
+          $.extend(true, $OBJ, $INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Prototype pollution via deep merge of user input
+    metadata:
+      cwe: CWE-1321
+
+  - id: js.ssrf-fetch
+    patterns:
+      - pattern: |
+          fetch($INPUT)
+      - pattern-not: fetch("$CONST")
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: SSRF risk — validate URLs before fetching when input is user-controlled
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: js.electron-node-integration
+    pattern: |
+      webPreferences: { nodeIntegration: true }
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Electron with nodeIntegration enabled — RCE risk if content is untrusted
+    metadata:
+      cwe: CWE-749
+
+  - id: js.weak-crypto-md5
+    pattern: |
+      crypto.createHash("md5")
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: MD5 is not cryptographically secure for hashing secrets/passwords
+    metadata:
+      cwe: CWE-327
+      owasp: A3
 
   - id: js.insecure-random
     pattern: Math.random()

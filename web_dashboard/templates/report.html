@@ -33,6 +33,11 @@
 <div class="flex items-center gap-2 mb-3 flex-wrap">
   <button id="load-report-btn" onclick="loadReport()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Load Report</button>
   <span class="text-gray-600">|</span>
+  <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+    <input type="checkbox" id="show-retest" class="accent-indigo-500">
+    Include retest section
+  </label>
+  <span class="text-gray-600">|</span>
   <button onclick="exportReport('md')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-md">Export MD</button>
   <button onclick="exportReport('html')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-html">Export HTML</button>
   <button onclick="exportReport('docx')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-docx">Export DOCX</button>
@@ -62,9 +67,9 @@
 
 {% block scripts %}
 <script src="https://cdn.quilljs.com/2.0.3/quill.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/turndown@7.2.4/dist/turndown.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@18.0.9/lib/marked.umd.js"></script>
 <script>
 const quill = new Quill('#editor-container', {
   theme: 'snow',
@@ -226,7 +231,7 @@ async function loadReport() {
     const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({format: 'md'})
+      body: JSON.stringify({format: 'md', show_retest: document.getElementById('show-retest').checked})
     });
     const result = await r.json();
     if (result.error) { showStatus('Error: ' + result.error, true); return; }
@@ -245,8 +250,16 @@ async function loadReport() {
 
     // Cache the clean markdown for exports (bypasses Quill round-trip which mangles tables)
     window._cachedMd = md;
-    // Convert markdown to HTML
-    const html = marked.parse(md);
+    // Convert markdown to HTML (sanitized: report content is engagement data)
+    function sanitizeReportHtml(html) {
+        return html
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+            .replace(/<object[\s\S]*?<\/object>/gi, '')
+            .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+            .replace(/\s(javascript|vbscript)\s*:/gi, ' ');
+    }
+    const html = sanitizeReportHtml(marked.parse(md));
     // Store original table HTMLs for preview repair (Quill's table module mangles tables)
     window._originalTables = [];
     const temp = document.createElement('div');

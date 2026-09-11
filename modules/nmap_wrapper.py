@@ -1,7 +1,5 @@
 """Nmap pipeline — structured port scanning leveraging your nmaptest.sh workflow."""
 
-import json
-import os
 import re
 import subprocess
 import time

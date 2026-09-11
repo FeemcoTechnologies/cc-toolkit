@@ -2,8 +2,6 @@
 """Interactive TUI dashboard — keyboard-driven menu wrapping CLI commands."""
 
 import sys, os, datetime, yaml, shlex, subprocess
-from pathlib import Path
-from typing import Optional
 
 from prompt_toolkit import Application
 from prompt_toolkit.layout import Layout, HSplit, Window
@@ -13,7 +11,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.shortcuts import input_dialog, message_dialog, yes_no_dialog
 
 try:
-    from modules.constants import load_config, CASES_DIR, CC_DIR, PLAYBOOKS_DIR
+from modules.config import load_config, CASES_DIR, CC_DIR, PLAYBOOKS_DIR
 except ImportError:
     from modules.config import WORKSPACE as CC_DIR, PENTEST_DIR as CASES_DIR, load_config_file as load_config
     PLAYBOOKS_DIR = CC_DIR / "playbooks"
@@ -21,7 +19,7 @@ from modules.case_manager import CaseManager
 from modules.findings_db import FindingsDB
 from modules.playbook_engine import RunbookEngine
 from modules.wifi_monitor import get_monitor_manager
-from modules.dns_wrapper import resolve, list_monitors, start_monitor, stop_monitor, get_history, start_background_monitor
+from modules.dns_wrapper import list_monitors, get_history, start_background_monitor
 
 STYLE = Style([
     ("status", "bg:#3730a3 fg:white"),
@@ -178,6 +176,7 @@ class TUIApp:
                 col = {"critical": "class:err", "high": "class:warn", "medium": "class:help", "low": "class:dim"}.get(sev, "class:dim")
                 frags.append((col, f"  [{sev[0].upper()}] {f_item.get('title','')[:50]}\n"))
         frags.append(("class:help", "\n  Esc back · f findings · g report"))
+        return frags
 
     def _screen_findings(self):
         case_id = self.data.get("_findings_case_id", "")
@@ -198,7 +197,6 @@ class TUIApp:
         frags = [("bold", f"\n  Findings — {case_id}\n"), ("class:sep", f"  {'─'*56}\n\n")]
         for i, f_item in enumerate(items[:30]):
             sev = f_item.get("severity", "info")
-            col = {"critical": "class:err", "high": "class:warn", "medium": "class:help", "low": "class:dim"}.get(sev, "class:dim")
             prefix = "▸" if i == self.cursor else " "
             frags.append(("class:cursor" if i == self.cursor else "", f"  {prefix} [{sev[0].upper()}] {str(f_item.get('title',''))[:50]:<50} {f_item.get('status','open')}\n"))
         frags.append(("class:help", "\n  ↑↓ · e edit severity/status · Esc back"))
@@ -210,7 +208,6 @@ class TUIApp:
             return [("bold", "\n  Prompts\n"), ("class:sep", "  ───────\n\n"), ("class:dim", "  No prompts found\n"), ("class:help", "\n  c create · Esc back")]
         max_idx = len(prompts) - 1
         idx = max(0, min(self.cursor, max_idx))
-        p = prompts[idx]
         frags = [("bold", "\n  Prompts\n"), ("class:sep", f"  {'─'*56}\n\n")]
         for i, p_item in enumerate(prompts):
             frags.append(("class:cursor" if i == idx else "", f"  {'▸' if i == idx else ' '} {p_item.get('title', p_item['id'])}\n"))
@@ -247,7 +244,7 @@ class TUIApp:
         frags = [("bold", "\n  WiFi Monitor\n"), ("class:sep", f"  {'─'*56}\n\n")]
         if active:
             s = active.status_info()
-            frags.append(("class:ok", f"  Active: {s.get('session_id','?')}  Uptime: {s.get('uptime','')}  APs: {s.get('ap_count',0)}  Clients: {s.get('client_count',0)}\n"))
+            frags.append(("class:ok", f"  Active: {s.get('session_id','?')}  Uptime: {s.get('uptime','')}  APs: {s.get('aps_count',0)}  Clients: {s.get('clients_count',0)}\n"))
         else:
             frags.append(("class:dim", "  No active session\n"))
         if sessions:
@@ -326,7 +323,7 @@ class TUIApp:
         return frags
 
     def _screen_infra(self):
-        import urllib.request, json
+        import urllib.request
         cfg = self.config if isinstance(self.config, dict) else {}
         jupyter_url = str(cfg.get("jupyter_url", "http://localhost:8888"))
         caido_url = str(cfg.get("caido_url", "http://localhost:8080"))
@@ -355,6 +352,7 @@ class TUIApp:
             frags.append((status, f"  {name:<14} {url:<40} {text}\n"))
         frags.append(("class:sep", "\n"))
         frags.append(("class:help", "  Esc back"))
+        return frags
 
     # ------------------------------------------------------------------
     # Key bindings
@@ -700,7 +698,10 @@ class TUIApp:
     def _shell(self):
         self._msg("Shell", "exit/Ctrl+D to return.\n")
         try:
-            subprocess.run(os.environ.get("SHELL", "cmd.exe" if sys.platform == "win32" else "bash"), shell=True)
+            # Run the shell binary directly (no `shell=True`, which would
+            # re-interpret the SHELL env value through /bin/sh).
+            shell_path = os.environ.get("SHELL", "cmd.exe" if sys.platform == "win32" else "bash")
+            subprocess.run([shell_path])
         except KeyboardInterrupt:
             pass
         self.app.invalidate()

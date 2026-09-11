@@ -34,7 +34,7 @@ rule blackcat_ransomware
     $rust_crate = "cargo:" ascii
     $cli = "clap" ascii
   condition:
-    2 of ($note*, $ext, $rust*) or ($rust_panic and $ransom_note)
+    2 of ($note*, $ext, $rust*, $cli) or ($rust_panic and $ransom_note)
 }
 
 rule ryuk_ransomware
@@ -54,7 +54,7 @@ rule ryuk_ransomware
     $wmic_del = "wmic" ascii
     $scheduled = "schtasks" ascii
   condition:
-    2 of ($note*, $ext) or ($shadow and $wmic_del)
+    2 of ($note*, $ext, $bcdedit, $scheduled) or ($shadow and $wmic_del)
 }
 
 rule apt29_nobellium
@@ -76,7 +76,7 @@ rule apt29_nobellium
     $dll_sideload = "DLL load from" ascii
   condition:
     any of ($solarwinds, $teardrop, $goldmax, $sibot) or
-    2 of ($envy, $boom, $vapor, $native)
+    2 of ($envy, $boom, $vapor, $native, $dll_sideload)
 }
 
 rule apt28_fancybear
@@ -117,7 +117,8 @@ rule lazarus_ransomware
     $trojan = "TROJAN" ascii
     $mimikatz = "mimikatz" ascii nocase
   condition:
-    2 of ($wanna, $hoplight, $bankshot, $manuscrypt, $dtrack, $free_lot, $apple)
+    2 of ($wanna, $hoplight, $bankshot, $manuscrypt, $dtrack, $free_lot,
+          $apple, $trojan, $mimikatz)
 }
 
 rule conti_ransomware
@@ -154,7 +155,7 @@ rule revil_ransomware
     $note_file = "readme" ascii nocase
     $tor_site = ".onion" ascii
   condition:
-    2 of ($note*, $ext, $ext2, $tor_site)
+    2 of ($note*, $ext, $ext2, $tor_site, $note_file)
 }
 
 rule apt41_group

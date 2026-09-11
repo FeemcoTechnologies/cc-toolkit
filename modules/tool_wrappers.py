@@ -17,8 +17,65 @@ from pathlib import Path
 from shutil import which
 from typing import Dict, List, Optional
 
-from .config import SCRIPTS_DIR
+from .config import DEFAULT_EXCLUDE_DIRS, SCRIPTS_DIR
 logger = logging.getLogger(__name__)
+
+
+def _walk_files(root: Path, exclude=None) -> List[Path]:
+    """Recursively list files, skipping excluded directory names."""
+    ex = set(exclude) if exclude is not None else set(DEFAULT_EXCLUDE_DIRS)
+    out: List[Path] = []
+    stack = [Path(root)]
+    while stack:
+        d = stack.pop()
+        try:
+            for p in d.iterdir():
+                if p.is_dir():
+                    if p.name not in ex:
+                        stack.append(p)
+                else:
+                    out.append(p)
+        except OSError:
+            continue
+    return out
+
+
+_out_dir_lock = threading.Lock()
+_out_dir_seq = 0
+
+
+def _safe_stem(stem: str) -> str:
+    """Sanitize a string for use as an output filename stem.
+
+    Targets/URLs contain chars that break on some filesystems the shared
+    server mounts (e.g. vboxsf errors with 'protocol error' on ':'). Keep
+    only [A-Za-z0-9._-] and clamp length.
+    """
+    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in stem)
+    return safe[:120] or "out"
+
+
+def _default_out_dir(name: str, output_dir: Optional[Path] = None) -> Path:
+    """Return output_dir if given, else a fresh unique dir under cwd.
+
+    Repeated runs of a tool from the same working directory (e.g. under the
+    long-running MCP server) used to all write into one fixed dir like
+    ./hashcat_output, colliding on files like cracked.txt / lsass_*.json. A
+    timestamped + sequence-numbered subdir keeps each run's artifacts apart
+    even for calls made within the same second. An explicit output_dir is
+    used verbatim so callers keep full control.
+    """
+    global _out_dir_seq
+    if output_dir:
+        d = Path(output_dir)
+    else:
+        with _out_dir_lock:
+            _out_dir_seq += 1
+            seq = _out_dir_seq
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        d = Path.cwd() / f"{name}_{stamp}_{seq:04d}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -26,8 +83,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 def trufflehog_org(org: str, output_dir: Optional[Path] = None) -> dict:
     """Scan a GitHub org for secrets via TruffleHog Docker image."""
-    out_dir = Path(output_dir or Path.cwd() / "trufflehog-results")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _default_out_dir("trufflehog_results", output_dir)
     raw_file = out_dir / "raw_output.txt"
 
     print(f"Scanning GitHub org: {org}")
@@ -103,8 +159,7 @@ def trufflehog_org(org: str, output_dir: Optional[Path] = None) -> dict:
 
 def trufflehog_local(path: str, output_dir: Optional[Path] = None) -> dict:
     """Run TruffleHog on a local directory."""
-    out_dir = Path(output_dir or Path.cwd() / "trufflehog-results")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _default_out_dir("trufflehog_results", output_dir)
     result_path = out_dir / "results.json"
 
     cmd = [
@@ -148,30 +203,40 @@ def mitm_start(port: int = 8080, upstream: str = "") -> subprocess.Popen:
 # DNS monitor (from dns-monitor.py)
 # ---------------------------------------------------------------------------
 def dns_track(domain: str, interval: int = 300, duration: int = 0) -> Dict[str, list]:
-    """Track DNS resolutions for a domain over time."""
-    import dns.resolver
-    resolver = dns.resolver.Resolver()
-    resolver.nameservers = ["208.67.222.222", "208.67.220.220"]
+    """Track DNS resolutions for a domain over time.
 
+    Thin wrapper over modules.dns_wrapper (the canonical resolver/monitor
+    engine with persistence + change detection) so there is a single
+    implementation instead of a duplicate blocking loop here.
+    """
+    from . import dns_wrapper
+    dns_wrapper.start_monitor(domain, types=["A"], interval=interval,
+                              duration=duration)
+    dns_wrapper.start_background_monitor()
     history: Dict[str, list] = {}
     start = time.time()
     count = 0
-
     print(f"Tracking DNS for {domain} every {interval}s...")
     try:
         while True:
             if duration and (time.time() - start) > duration:
                 break
             try:
-                answers = resolver.resolve(domain, "A", lifetime=5)
-                ips = sorted({str(r) for r in answers})
-                ts = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-                history.setdefault(domain, []).append({"ts": ts, "ips": ips})
+                answers = dns_wrapper.get_history(domain, limit=100)
+                if answers:
+                    ips = sorted({a["value"] for a in answers
+                                  if a.get("type") == "A" and a.get("value")})
+                    ts = answers[0]["ts"]
+                    history.setdefault(domain, []).append({"ts": ts, "ips": ips})
+                else:
+                    ips = []
+                    ts = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+                    history.setdefault(domain, []).append({"ts": ts, "ips": ips})
                 count += 1
                 print(f"  [{count}] {ts} \u2192 {', '.join(ips)}")
             except Exception as e:
                 print(f"  [{count}] Resolve failed: {e}")
-            time.sleep(interval)
+            time.sleep(max(interval, 1))
     except KeyboardInterrupt:
         print("\nTracking stopped.")
     return history
@@ -237,22 +302,30 @@ def route_scan(target_range: str = "172.16.0.0/12",
 # YARA scan
 # ---------------------------------------------------------------------------
 def yara_scan(rule_path: str, target: str) -> Dict[str, list]:
-    """Scan a file or directory with YARA rules (batch mode)."""
+    """Scan a file or directory with YARA rules (batch mode).
+
+    rule_path may be a single rule file/dir or a list of rule files/dirs
+    (all compiled and applied to the targets).
+    """
     yara_path = which("yara") or which("yara64")
     if not yara_path:
         return {"error": "yara not found in PATH"}
-    rules = Path(rule_path)
-    if not rules.exists():
-        return {"error": f"Rule file not found: {rule_path}"}
+    if isinstance(rule_path, (list, tuple)):
+        rule_paths = [str(p) for p in rule_path]
+    else:
+        rule_paths = [str(rule_path)]
+    missing = [p for p in rule_paths if not Path(p).exists()]
+    if missing:
+        return {"error": f"Rule file not found: {missing[0]}"}
 
     target_p = Path(target)
     if target_p.is_dir():
-        targets = [str(f) for f in target_p.rglob("*") if f.is_file()]
+        targets = [str(f) for f in _walk_files(target_p)]
     else:
         targets = [target]
 
     if not targets:
-        return {"matches": [], "rule_file": str(rules), "total": 0}
+        return {"matches": [], "rule_file": ", ".join(rule_paths), "total": 0}
 
     # Batch all targets into a single subprocess call
     results = []
@@ -260,7 +333,7 @@ def yara_scan(rule_path: str, target: str) -> Dict[str, list]:
     batch_size = 500
     for i in range(0, len(targets), batch_size):
         batch = targets[i:i + batch_size]
-        cmd = [yara_path, str(rules)] + batch
+        cmd = [yara_path] + rule_paths + batch
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             for line in r.stdout.strip().splitlines():
@@ -276,19 +349,32 @@ def yara_scan(rule_path: str, target: str) -> Dict[str, list]:
             for t in batch:
                 results.append({"rule": "ERROR", "file": t, "error": str(e)})
 
-    return {"matches": results, "rule_file": str(rules), "total": len(results)}
+    return {"matches": results, "rule_file": ", ".join(rule_paths), "total": len(results)}
 
 
 # ---------------------------------------------------------------------------
 # Semgrep scan
 # ---------------------------------------------------------------------------
-def semgrep_scan(config: str, target: str) -> Dict:
-    """Run Semgrep with a given config against a target."""
+def semgrep_scan(config, target: str) -> Dict:
+    """Run Semgrep with a given config against a target.
+
+    config may be a single path/rule-id or a list of configs (each becomes
+    its own --config flag, so multiple rule dirs can be merged).
+    """
     sg = which("semgrep")
     if not sg:
         return {"error": "semgrep not found in PATH"}
+    if isinstance(config, (list, tuple)):
+        configs = [str(c) for c in config]
+    else:
+        configs = [str(config)]
     out_file = Path.cwd() / f"semgrep_{Path(target).stem}.json"
-    cmd = [sg, "--config", config, "--json", "--output", str(out_file), target]
+    cmd = [sg]
+    for c in configs:
+        cmd += ["--config", c]
+    cmd += ["--json", "--output", str(out_file)]
+    cmd += [f"--exclude={d}" for d in DEFAULT_EXCLUDE_DIRS]
+    cmd += [target]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         results = {"rc": r.returncode, "output_file": str(out_file)}
@@ -412,8 +498,12 @@ def codeql_scan(rule_path: str, target: str, language: str = "") -> Dict:
 # ---------------------------------------------------------------------------
 def nuclei_scan(target: str, template: str = "",
                 output_dir: Optional[Path] = None,
-                templates_dir: Optional[str] = None) -> Dict:
-    """Run Nuclei with template selection and structured output."""
+                templates_dir=None) -> Dict:
+    """Run Nuclei with template selection and structured output.
+
+    templates_dir may be a single directory or a list of directories (each
+    becomes its own -t/-nt pair so primary + curated templates are scanned).
+    """
     n = which("nuclei")
     if not n:
         return {"error": "nuclei not found in PATH"}
@@ -426,7 +516,11 @@ def nuclei_scan(target: str, template: str = "",
     if template:
         cmd.extend(["-t", template])
     if templates_dir:
-        cmd.extend(["-t", templates_dir, "-nt"])
+        if isinstance(templates_dir, (list, tuple)):
+            for d in templates_dir:
+                cmd.extend(["-t", str(d), "-nt"])
+        else:
+            cmd.extend(["-t", str(templates_dir), "-nt"])
 
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -669,8 +763,7 @@ def eaphammer_attack(bssid: str, essid: str, iface: str, *,
     eh = which("eaphammer")
     if not eh:
         return {"error": "eaphammer not found in PATH"}
-    out_dir = Path(handshake_dir or Path.cwd() / "eaphammer_results")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _default_out_dir("eaphammer_results", handshake_dir)
     cmd = ["sudo", eh, "--bssid", bssid, "--essid", essid,
            "--interface", iface, "--auth-type", auth_type,
            "--output-dir", str(out_dir)]
@@ -747,17 +840,23 @@ def graphw00f_scan(target: str, output_dir: Optional[Path] = None) -> Dict:
 # WSGIDAV — WebDAV server for file transfer / hosting
 # ---------------------------------------------------------------------------
 def wsgidav_serve(directory: str, host: str = "0.0.0.0", port: int = 8080,
-                  auth: bool = False, username: str = "",
+                  auth: bool = True, username: str = "",
                   password: str = "") -> subprocess.Popen:
-    """Start a WebDAV server for file sharing (useful for transferring tools)."""
+    """Start a WebDAV server for file sharing (useful for transferring tools).
+
+    auth defaults to True: without credentials the server refuses to start
+    rather than exposing an anonymous read-write share on the network.
+    """
     wd = which("wsgidav")
     if not wd:
         raise FileNotFoundError("wsgidav not found in PATH (pip install wsgidav)")
     cmd = [wd, "--host", host, "--port", str(port), "--root", directory]
     if not auth:
         cmd.append("--auth=anonymous")
-    if username and password:
-        cmd.extend(["--user", f"{username}:{password}"])
+    else:
+        if not username or not password:
+            raise ValueError("wsgidav_serve requires username and password when auth=True")
+        cmd.extend(["--auth=basic", "--user", f"{username}:{password}"])
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)
     return proc
@@ -773,8 +872,7 @@ def kape_collect(target: str, output_dir: Optional[Path] = None,
     kp = which(binary_path)
     if not kp:
         return {"error": "kape not found — ensure binary_path is correct"}
-    out_dir = Path(output_dir or Path.cwd() / "kape_output")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _default_out_dir("kape_output", output_dir)
     cmd = [kp, "--tsource", target, "--tdest", str(out_dir),
            "--target", targets, "--gui", "0"]
     if module:
@@ -862,29 +960,55 @@ def responder_analyze(interface: str = "eth0", *,
     r = which("responder") or which("Responder")
     if not r:
         return {"error": "responder not found in PATH"}
-    out_dir = Path(log_dir or Path.cwd() / "responder_logs")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = ["sudo", r, "-I", interface, "-w", "-r", "-f", "on"]
+    out_dir = _default_out_dir("responder_logs", log_dir)
+    cmd = [r, "-I", interface]
     if analyze_mode:
         cmd.append("-A")
     if verbose:
         cmd.append("-v")
+    # Only wrap in sudo when we are not already root: sudo on a password-less
+    # box adds a pointless subprocess, and on a password box it stalls without
+    # a tty. We never pass invalid legacy flags (-r, -f on) — current
+    # Responder builds reject them outright.
+    if os.geteuid() != 0:
+        cmd.insert(0, "sudo")
     try:
+        import select
+        # Binary mode + select() so the capture loop honors `timeout` even
+        # when Responder is silent (blocking readline() used to hang the loop
+        # far past the requested duration).
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True)
-        time.sleep(2)
+                                stdin=subprocess.DEVNULL)
+        buf = bytearray()
         output_buf = []
         start = time.time()
-        while time.time() - start < timeout:
-            try:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                output_buf.append(line.rstrip())
-            except Exception:
+        deadline = start + timeout
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
                 break
+            try:
+                rlist, _, _ = select.select([proc.stdout], [], [], min(remaining, 0.5))
+            except (OSError, ValueError):
+                break
+            if not rlist:
+                continue
+            try:
+                chunk = os.read(proc.stdout.fileno(), 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf.extend(chunk)
+            while b"\n" in buf:
+                line, _, buf = buf.partition(b"\n")
+                output_buf.append(line.decode("utf-8", "replace").rstrip())
         proc.terminate()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
         return {
             "rc": proc.returncode,
             "mode": "analyze" if analyze_mode else "poison",
@@ -929,7 +1053,8 @@ def evil_winrm_connect(ip: str, *, username: str = "",
         cmd.extend(["-c", certificate])
     out_file = out_dir / f"evil_winrm_{ip}_{username or 'anon'}.log"
     if command:
-        cmd.extend(["-s", command])
+        # evil-winrm: -c runs a PS command and exits; -s is a scripts DIR
+        cmd.extend(["-c", command])
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         result = {"rc": r.returncode, "ip": ip}
@@ -1042,7 +1167,7 @@ def impacket_secretsdump(target: str, username: str = "", password: str = "",
         imp = which("secretsdump.py")
     if not imp:
         return {"error": "impacket-secretsdump not found in PATH"}
-    out_dir = Path(output_dir or Path.cwd() / "impacket_output")
+    out_dir = _default_out_dir("impacket_output", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"secretsdump_{target}.txt"
     target_str = target
@@ -1135,7 +1260,7 @@ def impacket_ticketer(domain: str, username: str, ntlm_hash: str = "",
     imp = which("impacket-ticketer") or which("ticketer")
     if not imp:
         return {"error": "impacket-ticketer not found in PATH"}
-    out_dir = Path(output_dir or Path.cwd() / "impacket_output")
+    out_dir = _default_out_dir("impacket_output", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [imp, "-nthash", ntlm_hash, "-domain-sid", domain_sid,
            "-domain", domain, "-duration", str(duration_hours),
@@ -1168,7 +1293,7 @@ def ffuf_fuzz(url: str, wordlist: str, *, mode: str = "dir",
         return {"error": "ffuf not found in PATH"}
     if not Path(wordlist).exists():
         return {"error": f"Wordlist not found: {wordlist}"}
-    out_dir = Path(output_dir or Path.cwd() / "ffuf_output")
+    out_dir = _default_out_dir("ffuf_output", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"ffuf_{Path(url).stem}.json"
     cmd = [ff, "-u", url, "-w", wordlist, "-o", str(out_file), "-of", "json"]
@@ -1177,7 +1302,9 @@ def ffuf_fuzz(url: str, wordlist: str, *, mode: str = "dir",
     elif mode == "params":
         cmd.extend(["-mode", "pb"])
     elif mode == "vhost":
-        cmd.extend(["-H", f"Host: FUZZ.{url}"])
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc or url.strip("/")
+        cmd.extend(["-H", f"Host: FUZZ.{host}"])
     if extensions:
         cmd.extend(["-e", extensions])
     if filter_size:
@@ -1210,7 +1337,7 @@ def gobuster_dir(url: str, wordlist: str, *, extensions: str = "",
     gb = which("gobuster")
     if not gb:
         return {"error": "gobuster not found in PATH"}
-    out_dir = Path(output_dir or Path.cwd() / "gobuster_output")
+    out_dir = _default_out_dir("gobuster_output", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"gobuster_{Path(url).stem}.txt"
     cmd = [gb, "dir", "-u", url, "-w", wordlist, "-o", str(out_file)]
@@ -1233,21 +1360,30 @@ def gobuster_dir(url: str, wordlist: str, *, extensions: str = "",
 # ---------------------------------------------------------------------------
 # hashcat — GPU-accelerated hash cracking
 # ---------------------------------------------------------------------------
-def hashcat_crack(hash_file: str, wordlist: str = "",
+def hashcat_crack(hash_file: str, wordlist: str = "", mask: str = "",
                   hash_mode: int = 0, rules: str = "",
                   output_dir: Optional[Path] = None,
                   show: bool = False, username: bool = False,
                   extra_args: str = "", device: str = "",
                   timeout: int = 7200) -> Dict:
-    """Crack hashes with hashcat (GPU-accelerated)."""
+    """Crack hashes with hashcat (GPU-accelerated).
+
+    Pass `wordlist` for an -a 0 dictionary attack, or `mask` (e.g.
+    "?d?d?d?d") for an -a 3 mask attack. One of them is required: silently
+    inventing a default 8-char brute-force mask is how expensive surprises
+    happen.
+    """
     hc = which("hashcat")
     if not hc:
         return {"error": "hashcat not found in PATH"}
     hf = Path(hash_file)
     if not hf.exists():
         return {"error": f"Hash file not found: {hash_file}"}
-    out_dir = Path(output_dir or Path.cwd() / "hashcat_output")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if wordlist and mask:
+        return {"error": "Provide either wordlist (-a 0) or mask (-a 3), not both"}
+    if not wordlist and not mask:
+        return {"error": "No attack specified: pass wordlist for -a 0 or mask for -a 3"}
+    out_dir = _default_out_dir("hashcat_output", output_dir)
     pot_file = out_dir / "hashcat.potfile"
     out_file = out_dir / "cracked.txt"
     cmd = [hc, "-m", str(hash_mode), "--potfile-path", str(pot_file),
@@ -1257,7 +1393,7 @@ def hashcat_crack(hash_file: str, wordlist: str = "",
     if wordlist:
         cmd.extend(["-a", "0", str(hf), wordlist])
     else:
-        cmd.extend(["-a", "3", str(hf)])
+        cmd.extend(["-a", "3", str(hf), mask])
     if rules:
         cmd.extend(["-r", rules])
     if show:
@@ -1290,7 +1426,7 @@ def burp_import_xml(xml_file: str, case_id: str = "",
     xml_p = Path(xml_file)
     if not xml_p.exists():
         return {"error": f"XML file not found: {xml_file}"}
-    out_dir = Path(output_dir or Path.cwd() / "burp_imports")
+    out_dir = _default_out_dir("burp_imports", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         import xml.etree.ElementTree as ET
@@ -1324,7 +1460,7 @@ def caido_import_json(json_file: str, case_id: str = "",
     jp = Path(json_file)
     if not jp.exists():
         return {"error": f"File not found: {json_file}"}
-    out_dir = Path(output_dir or Path.cwd() / "caido_imports")
+    out_dir = _default_out_dir("caido_imports", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         data = json.loads(jp.read_text())
@@ -1393,7 +1529,6 @@ def winpeas_run(target_host: str = "", target_user: str = "",
         return {"error": "winPEAS not found. Provide --local-path or install."}
     out_dir = Path.cwd() / "peas_output"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"winpeas_{target_host or 'remote'}.txt"
 
     if target_host and target_user:
         # Upload via SMB and execute via wmiexec/evil-winrm
@@ -1486,7 +1621,7 @@ def enum4linux_ng(target: str, *, username: str = "", password: str = "",
     e4l = which("enum4linux-ng")
     if not e4l:
         return {"error": "enum4linux-ng not found in PATH"}
-    out_dir = Path(output_dir or Path.cwd() / "enum4linux_output")
+    out_dir = _default_out_dir("enum4linux_output", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"enum4linux_{target}.json"
     cmd = [e4l, "-oA", str(out_file.with_suffix("")), "-t", target]
@@ -1513,6 +1648,334 @@ def enum4linux_ng(target: str, *, username: str = "", password: str = "",
         return result
     except subprocess.TimeoutExpired:
         return {"error": "Timed out"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# ProjectDiscovery recon stack (subfinder / httpx / naabu / dnsx / katana)
+# ---------------------------------------------------------------------------
+_PDTM_BIN_DIR = Path(os.environ.get("PDTM_BIN_DIR",
+                                    str(Path.home() / ".pdtm" / "go" / "bin")))
+
+
+def _find_pd_bin(name: str) -> Optional[str]:
+    """Locate a ProjectDiscovery binary, preferring the pdtm install dir.
+
+    pdtm installs tools into ~/.pdtm/go/bin which is usually NOT on PATH, so
+    the plain ``which()`` lookup would miss them. Worse, on this host
+    ``/usr/bin/httpx`` is the unrelated ``python3-httpx`` package CLI, so
+    checking PATH first would select the WRONG binary for httpx. We therefore
+    check the pdtm dir first and only then fall back to PATH.
+    """
+    candidates = [_PDTM_BIN_DIR / name]
+    fp = which(name)
+    if fp:
+        candidates.append(Path(fp))
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
+def _load_jsonl(path: Path) -> List[dict]:
+    """Read a JSON-lines file into a list of dicts (tolerant of bad lines)."""
+    rows = []
+    if not path.exists():
+        return rows
+    with path.open() as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except Exception:
+                logger.debug("Exception in tool_wrappers.py", exc_info=True)
+                continue
+            if isinstance(data, dict):
+                rows.append(data)
+    return rows
+
+
+def subfinder_enum(domain: str, *, recursive: bool = False,
+                   all_sources: bool = False, resolvers: str = "",
+                   threads: int = 0, output_dir: Optional[Path] = None,
+                   timeout: int = 600) -> Dict:
+    """Enumerate subdomains with ProjectDiscovery subfinder.
+
+    Passive subdomain discovery backed by many OSINT sources; add -all to pull
+    every source including active brute-force based providers.
+    """
+    sf = _find_pd_bin("subfinder")
+    if not sf:
+        return {"error": "subfinder not found (checked PATH and ~/.pdtm/go/bin)"}
+    out_dir = _default_out_dir("subfinder_output", output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"subfinder_{_safe_stem(domain)}.json"
+    cmd = [sf, "-d", domain, "-silent", "-oJ", "-o", str(out_file)]
+    if recursive:
+        cmd.append("-recursive")
+    if all_sources:
+        cmd.append("-all")
+    if resolvers:
+        cmd.extend(["-r", resolvers])
+    if threads > 0:
+        cmd.extend(["-t", str(threads)])
+    try:
+        # stdin must be closed (DEVNULL): subfinder reads stdin and will block
+        # forever otherwise when run from a daemon with inherited stdin.
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=timeout)
+        rows = _load_jsonl(out_file)
+        hosts = sorted({row.get("host", "") for row in rows if row.get("host")})
+        result = {"rc": r.returncode, "output_file": str(out_file),
+                  "total": len(hosts), "subdomains": hosts}
+        if r.stderr.strip():
+            result["stderr"] = r.stderr[:1000]
+        return result
+    except subprocess.TimeoutExpired:
+        # subfinder is source-rate-limited and often outlives the timeout while
+        # still making progress; return whatever was already written to disk.
+        rows = _load_jsonl(out_file)
+        hosts = sorted({row.get("host", "") for row in rows if row.get("host")})
+        return {"rc": -1, "output_file": str(out_file), "total": len(hosts),
+                "subdomains": hosts,
+                "stderr": f"Timed out after {timeout}s; returning partial results"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def httpx_probe(target: str = "", list_file: str = "",
+                status_codes: str = "", include_title: bool = True,
+                tech_detect: bool = True, follow_redirects: bool = False,
+                threads: int = 0, output_dir: Optional[Path] = None,
+                timeout: int = 600) -> Dict:
+    """Probe hosts/URLs with ProjectDiscovery httpx.
+
+    Take a single URL or a file of hosts and report live ones with status
+    code, title, detected tech, and webserver. When neither target nor
+    list_file is given, reads hosts from stdin (allows chaining subfinder).
+    """
+    hx = _find_pd_bin("httpx")
+    if not hx:
+        return {"error": "httpx not found (checked PATH and ~/.pdtm/go/bin)"}
+    if not target and not list_file:
+        return {"error": "Provide target (URL/host) or list_file of hosts"}
+    out_dir = _default_out_dir("httpx_output", output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(list_file).stem if list_file else (target or "probe").replace("/", "_")
+    out_file = out_dir / f"httpx_{_safe_stem(stem)}.json"
+    cmd = [hx, "-silent", "-json", "-o", str(out_file)]
+    # PD httpx 2.x hangs when the target is passed via -u; piping hosts over
+    # stdin is the reliable path. -l is used for a file of hosts.
+    stdin_data = None
+    if list_file:
+        if not Path(list_file).exists():
+            return {"error": f"Input file not found: {list_file}"}
+        cmd.extend(["-l", list_file])
+    elif target:
+        stdin_data = "\n".join(
+            h.strip() for h in target.replace(",", "\n").splitlines() if h.strip())
+    if status_codes:
+        cmd.extend(["-mc", status_codes])
+    if include_title:
+        cmd.append("-title")
+    if tech_detect:
+        cmd.append("-td")
+    if follow_redirects:
+        cmd.append("-follow-redirects")
+    if threads > 0:
+        cmd.extend(["-threads", str(threads)])
+    try:
+        r = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True,
+                           timeout=timeout)
+        rows = _load_jsonl(out_file)
+        hosts = []
+        for row in rows:
+            hosts.append({
+                "url": row.get("url") or f"{row.get('scheme','http')}://{row.get('host','')}",
+                "host": row.get("host", ""),
+                "status_code": row.get("status_code"),
+                "title": row.get("title", ""),
+                "webserver": row.get("webserver", ""),
+                "tech": row.get("tech") or [],
+                "cdn": row.get("cdn_name", ""),
+            })
+        result = {"rc": r.returncode, "output_file": str(out_file),
+                  "total": len(hosts), "hosts": hosts}
+        if r.stderr.strip():
+            result["stderr"] = r.stderr[:1000]
+        return result
+    except subprocess.TimeoutExpired:
+        return {"error": f"Timed out after {timeout}s"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def naabu_scan(target: str, *, ports: str = "", top_ports: int = 0,
+               rate: int = 0, service_detect: bool = False,
+               output_dir: Optional[Path] = None, timeout: int = 900) -> Dict:
+    """Fast port scan with ProjectDiscovery naabu.
+
+    Scans a single host (or comma-separated hosts). Use ports like
+    '80,443,8080' or '1-1000'; top_ports=1000 is a sane default when neither
+    is given. service_detect (-sV) adds nmap-based version detection.
+    """
+    nb = _find_pd_bin("naabu")
+    if not nb:
+        return {"error": "naabu not found (checked PATH and ~/.pdtm/go/bin)"}
+    out_dir = _default_out_dir("naabu_output", output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"naabu_{_safe_stem(target)}.json"
+    # naabu 2.6.x hangs when hosts are passed via -host/-l; piping them over
+    # stdin is the reliable path for raw targets and -list mode alike.
+    cmd = [nb, "-silent", "-json", "-o", str(out_file)]
+    if ports:
+        cmd.extend(["-p", ports])
+    elif top_ports > 0:
+        cmd.extend(["-top-ports", str(top_ports)])
+    if rate > 0:
+        cmd.extend(["-rate", str(rate)])
+    if service_detect:
+        cmd.append("-sV")
+    stdin_hosts = "\n".join(
+        h.strip() for h in target.replace(",", "\n").splitlines() if h.strip())
+    try:
+        r = subprocess.run(cmd, input=stdin_hosts, capture_output=True, text=True,
+                           timeout=timeout)
+        rows = _load_jsonl(out_file)
+        ports_found = sorted({row.get("port") for row in rows if row.get("port")})
+        hosts = {}
+        for row in rows:
+            h = row.get("host", "")
+            p = row.get("port")
+            hosts.setdefault(h, []).append({"port": p, "protocol": row.get("protocol", "tcp")})
+        result = {"rc": r.returncode, "output_file": str(out_file),
+                  "hosts_scanned": target, "ports": ports_found,
+                  "total_open": len(ports_found), "detail": hosts}
+        if r.stderr.strip():
+            result["stderr"] = r.stderr[:1000]
+        return result
+    except subprocess.TimeoutExpired:
+        return {"error": f"Timed out after {timeout}s"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def dnsx_probe(domain: str = "", list_file: str = "",
+               record_types: str = "a,aaaa,cname,mx,ns,txt,soa",
+               resp_only: bool = False, output_dir: Optional[Path] = None,
+               timeout: int = 600) -> Dict:
+    """Run DNS lookups with ProjectDiscovery dnsx.
+
+    Supports multiple record types in one pass. Provide a domain (-d) or a
+    list_file of domains (-l); a blank domain reads from stdin (chaining
+    subfinder output).
+    """
+    dx = _find_pd_bin("dnsx")
+    if not dx:
+        return {"error": "dnsx not found (checked PATH and ~/.pdtm/go/bin)"}
+    if not domain and not list_file:
+        return {"error": "Provide domain or list_file of domains"}
+    out_dir = _default_out_dir("dnsx_output", output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(list_file).stem if list_file else (domain or "dns")
+    out_file = out_dir / f"dnsx_{_safe_stem(stem)}.json"
+    cmd = [dx, "-silent", "-json", "-o", str(out_file)]
+    # dnsx 2.x requires -w wordlist with -d, so a single domain is piped via
+    # stdin; -l is used for a file of domains. Blank input chains subfinder.
+    stdin_data = None
+    if list_file:
+        if not Path(list_file).exists():
+            return {"error": f"Input file not found: {list_file}"}
+        cmd.extend(["-l", list_file])
+    elif domain:
+        stdin_data = "\n".join(
+            h.strip() for h in domain.replace(",", "\n").splitlines() if h.strip())
+    type_flags = {
+        "a": "-a", "aaaa": "-aaaa", "cname": "-cname", "mx": "-mx",
+        "ns": "-ns", "txt": "-txt", "soa": "-soa", "srv": "-srv",
+        "ptr": "-ptr", "caa": "-caa",
+    }
+    for t in [x.strip() for x in record_types.split(",") if x.strip()]:
+        flag = type_flags.get(t.lower())
+        if flag:
+            cmd.append(flag)
+    if resp_only:
+        cmd.append("-resp")
+    try:
+        r = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True,
+                           timeout=timeout)
+        rows = _load_jsonl(out_file)
+        records = []
+        for row in rows:
+            for key in ("a", "aaaa", "cname", "mx", "ns", "txt", "soa", "srv", "ptr", "caa"):
+                val = row.get(key)
+                if val:
+                    records.append({"host": row.get("host", ""), "type": key.upper(), "value": val})
+        result = {"rc": r.returncode, "output_file": str(out_file),
+                  "total": len(records), "records": records}
+        if r.stderr.strip():
+            result["stderr"] = r.stderr[:1000]
+        return result
+    except subprocess.TimeoutExpired:
+        return {"error": f"Timed out after {timeout}s"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def katana_crawl(url: str = "", list_file: str = "", *, depth: int = 2,
+                 js_crawl: bool = False, known_files: bool = False,
+                 output_dir: Optional[Path] = None, timeout: int = 900) -> Dict:
+    """Crawl a web app with ProjectDiscovery katana.
+
+    Discovers endpoints, JS files, and hidden paths. js_crawl (-jc) parses JS
+    files for further endpoints; known_files (-kf) requests common files.
+    """
+    kt = _find_pd_bin("katana")
+    if not kt:
+        return {"error": "katana not found (checked PATH and ~/.pdtm/go/bin)"}
+    if not url and not list_file:
+        return {"error": "Provide url or list_file of URLs"}
+    out_dir = _default_out_dir("katana_output", output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(list_file).stem if list_file else (url or "crawl").split("://")[-1].replace("/", "_")
+    out_file = out_dir / f"katana_{_safe_stem(stem)}.txt"
+    cmd = [kt, "-silent", "-o", str(out_file), "-d", str(depth)]
+    # PD katana 2.x hangs when the seed URL is passed via -u; pipe it via stdin.
+    stdin_data = None
+    if list_file:
+        if not Path(list_file).exists():
+            return {"error": f"Input file not found: {list_file}"}
+        cmd.extend(["-l", list_file])
+    elif url:
+        stdin_data = "\n".join(
+            u.strip() for u in url.replace(",", "\n").splitlines() if u.strip())
+    if js_crawl:
+        cmd.append("-jc")
+    if known_files:
+        cmd.append("-kf")
+    try:
+        r = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True,
+                           timeout=timeout)
+        urls = []
+        if out_file.exists():
+            urls = [ln.strip() for ln in out_file.read_text().splitlines()
+                    if ln.strip() and not ln.startswith("[")][:5000]
+        result = {"rc": r.returncode, "output_file": str(out_file),
+                  "total": len(urls), "urls": urls[:1000]}
+        if r.stderr.strip():
+            result["stderr"] = r.stderr[:1000]
+        return result
+    except subprocess.TimeoutExpired:
+        urls = []
+        if out_file.exists():
+            urls = [ln.strip() for ln in out_file.read_text().splitlines()
+                    if ln.strip() and not ln.startswith("[")][:5000]
+        return {"rc": -1, "output_file": str(out_file), "total": len(urls),
+                "urls": urls[:1000],
+                "stderr": f"Timed out after {timeout}s; returning partial results"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1564,7 +2027,7 @@ def auto_recon(target: str, wordlist_dir: Optional[str] = None,
         results["phases"]["ffuf"] = "skipped"
 
     # Phase 4: Nuclei
-    print(f"[autorecon] Phase 3: Nuclei")
+    print("[autorecon] Phase 3: Nuclei")
     nuc = which("nuclei")
     if nuc:
         nuc_out = out_dir / f"nuclei_{target}.json"
@@ -1741,10 +2204,11 @@ def pypykatz_parse(dump_file: str, output_dir: Optional[Path] = None) -> Dict:
     dp = Path(dump_file)
     if not dp.exists():
         return {"error": f"Dump file not found: {dump_file}"}
-    out_dir = Path(output_dir or Path.cwd() / "pypykatz_output")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _default_out_dir("pypykatz_output", output_dir)
     out_file = out_dir / f"lsass_{dp.stem}.json"
-    cmd = [ppk, "live", "lsass", "--dump", str(dp), "--json", str(out_file)]
+    # --json is required for a machine-readable outfile: without it pypykatz
+    # writes human text and the json.loads() below would always fail.
+    cmd = [ppk, "lsa", "minidump", str(dp), "-o", str(out_file), "--json"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         result = {"rc": r.returncode}
@@ -1805,7 +2269,7 @@ def bloodhound_ingest(domain: str, username: str, password: str,
     if not bh_script:
         return {"error": "BloodHound.py not found. pip install bloodhound, or clone to /share/tools/BloodHound.py/"}
 
-    out_dir = Path(output_dir or Path.cwd() / "bloodhound_output")
+    out_dir = _default_out_dir("bloodhound_output", output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if str(bh_script) == "_pip_module_":

@@ -57,7 +57,7 @@ def _set_winsize(fd: int, rows: int, cols: int):
         logger.debug("Exception in ws_terminal.py", exc_info=True)
 
 
-async def _bridge(websocket, cmd: list[str], target_desc: str):
+async def _bridge(websocket, cmd: list[str], target_desc: str, env=None):
     """Bridge a subprocess (PTY-attached) to a WebSocket."""
     if not HAS_PTY:
         await websocket.send(json.dumps({"type": "error", "message": "PTY not available on this platform"}))
@@ -74,6 +74,7 @@ async def _bridge(websocket, cmd: list[str], target_desc: str):
             stderr=slave_fd,
             preexec_fn=os.setsid,
             close_fds=True,
+            env=env,
         )
     except Exception:
         os.close(slave_fd)
@@ -178,6 +179,9 @@ async def _ws_handler(websocket):
     if cfg.get("local"):
         cmd = [os.environ.get("SHELL", "/bin/bash")]
         target_desc = "local shell"
+    elif cfg.get("tmux"):
+        cmd = ["tmux", "attach-session", "-t", str(cfg.get("tmux"))]
+        target_desc = f"tmux:{cfg.get('tmux')}"
     else:
         target = cfg.get("target", "")
         port = cfg.get("port", 22)
@@ -188,12 +192,14 @@ async def _ws_handler(websocket):
         cmd = SSH_BASE + ["-p", str(port), f"{username}@{host}"]
         target_desc = f"{username}@{host}:{port}"
 
+    env = {**os.environ, "TERM": os.environ.get("TERM") or "xterm-256color"}
+
     logger.info("WS terminal: %s → %s", sid, target_desc)
     try:
         await websocket.send(json.dumps({"type": "connected", "target": target_desc}))
     except Exception:
         return
-    await _bridge(websocket, cmd, target_desc)
+    await _bridge(websocket, cmd, target_desc, env=env)
     logger.info("WS terminal: %s disconnected from %s", sid, target_desc)
 
 

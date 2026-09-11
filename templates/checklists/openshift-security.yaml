@@ -1,0 +1,174 @@
+checklist_id: openshift-security
+title: OpenShift / Kubernetes Security Checklist - Whitebox
+description: 'Security assessment checklist for OpenShift and Kubernetes clusters.
+  Covers cluster hardening, RBAC, pod security, network policies, secrets management,
+  audit logging, and container runtime security.
+
+  '
+version: '1.0'
+categories:
+- name: Cluster Hardening & Configuration
+  items:
+  - id: OCP-CF-1
+    description: OpenShift version is current and supported
+    runbook: quick-recon
+  - id: OCP-CF-2
+    description: API server audit logging enabled and shipped to SIEM
+    mitre_attack: T1562
+  - id: OCP-CF-3
+    description: etcd encryption at rest enabled
+  - id: OCP-CF-4
+    description: etcd network access restricted to control plane only
+  - id: OCP-CF-5
+    description: OAuth identity provider configured (no default kubeadmin)
+  - id: OCP-CF-6
+    description: kubeadmin user removed or disabled after cluster install
+  - id: OCP-CF-7
+    description: Cluster API endpoints not exposed to public internet
+  - id: OCP-CF-8
+    description: kubelet anonymous authentication disabled
+    mitre_attack: T1526
+- name: RBAC & Access Control
+  items:
+  - id: OCP-RB-1
+    description: Cluster-admin role assigned only to essential service accounts
+    mitre_attack: T1078
+  - id: OCP-RB-2
+    description: No users bound to cluster-admin via ClusterRoleBinding
+    mitre_attack: T1098
+  - id: OCP-RB-3
+    description: Custom roles follow least privilege — no wildcard verbs/resources
+    mitre_attack: T1078
+  - id: OCP-RB-4
+    description: Service account tokens not automounted for pods that don't need API
+      access
+  - id: OCP-RB-5
+    description: Regular audit of RoleBindings and ClusterRoleBindings performed
+  - id: OCP-RB-6
+    description: No anonymous or unauthenticated API access to cluster resources
+    mitre_attack: T1526
+  - id: OCP-RB-7
+    description: Impersonation Headers (Impersonate-User/Group) restricted
+    mitre_attack: T1098
+- name: Pod Security & Workload Hardening
+  items:
+  - id: OCP-PS-1
+    description: Pod Security Admission (PSA) enforced at namespace level
+  - id: OCP-PS-2
+    description: 'Containers not running as root (securityContext.runAsNonRoot: true)'
+    mitre_attack: T1611
+  - id: OCP-PS-3
+    description: 'Privileged containers not allowed (securityContext.privileged: false)'
+    mitre_attack: T1611
+  - id: OCP-PS-4
+    description: 'Container filesystem mounted read-only (readOnlyRootFilesystem:
+      true)'
+  - id: OCP-PS-5
+    description: Linux capabilities dropped (CAP_SYS_ADMIN, CAP_NET_ADMIN, etc.)
+    mitre_attack: T1611
+  - id: OCP-PS-6
+    description: hostNetwork access not granted to workloads
+  - id: OCP-PS-7
+    description: hostPID / hostIPC sharing not enabled
+  - id: OCP-PS-8
+    description: Pod resource limits (CPU/memory) defined to prevent DoS
+  - id: OCP-PS-9
+    description: PodDisruptionBudget configured for critical workloads
+  - id: OCP-PS-10
+    description: Seccomp profile applied (RuntimeDefault or custom)
+  - id: OCP-PS-11
+    description: AppArmor / SELinux profile applied to pods
+  - id: OCP-PS-12
+    description: Network policies restrict ingress/egress for all namespaces
+    runbook: web-pentest-v2
+- name: Secrets Management
+  items:
+  - id: OCP-SM-1
+    description: Secrets not stored in environment variables (use volumes or CSI)
+  - id: OCP-SM-2
+    description: SealedSecrets or External Secrets Operator used for GitOps
+  - id: OCP-SM-3
+    description: Secrets encrypted in etcd at rest
+  - id: OCP-SM-4
+    description: Secrets not checked into Git repositories
+    mitre_attack: T1552
+  - id: OCP-SM-5
+    description: HashiCorp Vault / Azure Key Vault CSI driver for secret rotation
+  - id: OCP-SM-6
+    description: Service account tokens not used as secrets for external auth
+- name: Network Security
+  items:
+  - id: OCP-NW-1
+    description: NetworkPolicy objects exist for each namespace with default deny
+    mitre_attack: T1049
+  - id: OCP-NW-2
+    description: Ingress/egress explicitly allowed, nothing implicit
+  - id: OCP-NW-3
+    description: No LoadBalancer services exposing internal workloads to internet
+  - id: OCP-NW-4
+    description: NodePort services not used or restricted
+  - id: OCP-NW-5
+    description: Cluster network CIDR boundaries not overlapping with other networks
+  - id: OCP-NW-6
+    description: Egress router / proxy configured for outbound traffic control
+  - id: OCP-NW-7
+    description: mTLS between services (Service Mesh / Istio / NetworkPolicy)
+  - id: OCP-NW-8
+    description: DNS spoofing protection — cluster domain restricted
+- name: Container Registry & Image Security
+  items:
+  - id: OCP-IR-1
+    description: ImageSignatures / cosign verification enforced via Admission webhook
+    mitre_attack: T1195
+  - id: OCP-IR-2
+    description: Image vulnerability scanning integrated (Quay, Clair, Trivy)
+  - id: OCP-IR-3
+    description: No images tagged latest in production — pinned digests only
+  - id: OCP-IR-4
+    description: ImagePullSecrets not shared across namespaces unnecessarily
+  - id: OCP-IR-5
+    description: Base images from trusted, minimal registries (Red Hat registry, not
+      Docker Hub)
+  - id: OCP-IR-6
+    description: ImageStreamTags have import policies restricting insecure sources
+- name: Admission Control & Policy
+  items:
+  - id: OCP-AC-1
+    description: OpenShift built-in admission plugins all enabled (SecurityContextConstraint,
+      etc.)
+  - id: OCP-AC-2
+    description: OPA / Gatekeeper enforced for policy-as-code
+  - id: OCP-AC-3
+    description: Kyverno policies applied for pod security, labels, and annotations
+  - id: OCP-AC-4
+    description: MutatingAdmissionWebhooks audited for unwanted side effects
+  - id: OCP-AC-5
+    description: ValidatingAdmissionWebhooks prevent dangerous configurations
+- name: Monitoring, Logging & Forensics
+  items:
+  - id: OCP-ML-1
+    description: Cluster audit logs shipped to external SIEM (Splunk, ELK, Loki)
+    mitre_attack: T1562
+  - id: OCP-ML-2
+    description: Falco / Tracee for runtime threat detection
+  - id: OCP-ML-3
+    description: Pod security event alerts (kube-bench, kube-hunter scheduled scans)
+  - id: OCP-ML-4
+    description: Kubernetes API access audit logged with user, action, and response
+  - id: OCP-ML-5
+    description: Cluster metrics and alerts for suspicious API call patterns
+  - id: OCP-ML-6
+    description: etcd snapshot backups encrypted and stored off-cluster
+- name: Supply Chain & CI/CD
+  items:
+  - id: OCP-SC-1
+    description: Pipeline service account has least-privilege RBAC
+    mitre_attack: T1078
+  - id: OCP-SC-2
+    description: Image builds run in isolated namespaces with resource limits
+  - id: OCP-SC-3
+    description: GitOps tool (ArgoCD) has tamper-proof webhook source verification
+  - id: OCP-SC-4
+    description: SBOM generated for all production images
+  - id: OCP-SC-5
+    description: CI/CD secrets not exposed in build logs or env vars

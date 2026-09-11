@@ -3,7 +3,7 @@
 API structure:  http://<host>:<port>/<API-KEY>/v0.1/<endpoint>
 """
 
-import json, logging, re
+import logging
 from typing import Any, Optional
 
 import requests

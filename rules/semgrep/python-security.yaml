@@ -19,6 +19,16 @@ rules:
       cwe: CWE-89
       owasp: A1
 
+  - id: python.sql-injection-fstring
+    pattern: |
+      execute(f"SELECT * FROM $TABLE WHERE $INPUT")
+    severity: ERROR
+    languages: [python]
+    message: SQL injection in f-string — use parameterized queries
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
   - id: python.command-injection
     pattern: |
       os.system($INPUT)
@@ -29,9 +39,45 @@ rules:
       cwe: CWE-78
       owasp: A1
 
+  - id: python.command-injection-popen
+    pattern: |
+      os.popen($INPUT)
+    severity: ERROR
+    languages: [python]
+    message: Command injection via os.popen — avoid shell invocation with user input
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
+  - id: python.subprocess-shell-true
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run($CMD, shell=True)
+          - pattern: subprocess.call($CMD, shell=True)
+          - pattern: subprocess.Popen($CMD, shell=True)
+          - pattern: subprocess.check_output($CMD, shell=True)
+    severity: WARNING
+    languages: [python]
+    message: Shell=True enables command injection — pass an argument list instead
+    metadata:
+      cwe: CWE-78
+      owasp: A1
+
   - id: python.path-traversal
     pattern: |
       open("uploads/" + $INPUT)
+    severity: WARNING
+    languages: [python]
+    message: Path traversal risk — validate/sanitize input before file operations
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: python.path-traversal-open
+    patterns:
+      - pattern: |
+          open($INPUT)
+      - pattern-not: open("$CONST")
     severity: WARNING
     languages: [python]
     message: Path traversal risk — validate/sanitize input before file operations
@@ -49,12 +95,32 @@ rules:
       cwe: CWE-95
       owasp: A1
 
+  - id: python.exec-input-dynamic
+    pattern: |
+      exec($INPUT)
+    severity: ERROR
+    languages: [python]
+    message: exec() with dynamic input — arbitrary code execution risk
+    metadata:
+      cwe: CWE-95
+      owasp: A1
+
   - id: python.pickle-unsafe
     pattern: |
       pickle.load($INPUT)
     severity: WARNING
     languages: [python]
     message: Unsafe deserialization — prefer pickle.loads with trusted data only
+    metadata:
+      cwe: CWE-502
+      owasp: A8
+
+  - id: python.pickle-loads-unsafe
+    pattern: |
+      pickle.loads($INPUT)
+    severity: WARNING
+    languages: [python]
+    message: Unsafe deserialization — only load pickles from trusted sources
     metadata:
       cwe: CWE-502
       owasp: A8
@@ -78,6 +144,19 @@ rules:
       cwe: CWE-79
       owasp: A7
 
+  - id: python.ssti-flask
+    pattern-either:
+      - pattern: |
+          render_template_string($INPUT)
+      - pattern: |
+          Template($INPUT).render(...)
+    severity: ERROR
+    languages: [python]
+    message: Server-side template injection — never render user-controlled templates
+    metadata:
+      cwe: CWE-1336
+      owasp: A3
+
   - id: python.requests-verify-false
     pattern: |
       requests.$REQ(..., verify=False)
@@ -87,6 +166,165 @@ rules:
     metadata:
       cwe: CWE-295
       owasp: A3
+
+  - id: python.ssrf-requests
+    patterns:
+      - pattern: |
+          requests.$METHOD($URL)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(get|post|put|patch|delete|options)$
+      - pattern-not: requests.get("$CONST")
+      - pattern-not: requests.post("$CONST")
+      - pattern-not: requests.put("$CONST")
+      - pattern-not: requests.patch("$CONST")
+      - pattern-not: requests.delete("$CONST")
+    severity: WARNING
+    languages: [python]
+    message: SSRF risk — validate URLs derived from user input before requesting
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: python.ssrf-urlopen
+    pattern-either:
+      - pattern: |
+          urllib.request.urlopen($URL)
+      - pattern: |
+          urllib.urlopen($URL)
+    severity: WARNING
+    languages: [python]
+    message: SSRF risk — validate the destination URL when it can be user-influenced
+    metadata:
+      cwe: CWE-918
+      owasp: A1
+
+  - id: python.open-redirect-flask
+    pattern: |
+      redirect($INPUT)
+    severity: WARNING
+    languages: [python]
+    message: Open redirect — validate that redirect targets are local/allowlisted
+    metadata:
+      cwe: CWE-601
+
+  - id: python.auth-bypass-flask-view
+    patterns:
+      - pattern-inside: |
+          @app.route($ROUTE, ...)
+          def $HANDLER($ARGS): $BODY
+      - pattern-not-inside: |
+          @login_required
+          def $HANDLER($ARGS): $BODY
+    severity: WARNING
+    languages: [python]
+    message: Route handler without @login_required — possible missing authorization check
+    metadata:
+      cwe: CWE-306
+      owasp: A1
+
+  - id: python.auth-bypass-csrf-exempt
+    pattern: |
+      @csrf_exempt
+      def $HANDLER($ARGS): $BODY
+    severity: WARNING
+    languages: [python]
+    message: CSRF protection explicitly disabled for this endpoint
+    metadata:
+      cwe: CWE-352
+      owasp: A1
+
+  - id: python.mass-assignment-django
+    pattern-either:
+      - pattern: |
+          $MODEL.objects.create(**request.$DICT)
+      - pattern: |
+          $OBJ.update(**request.$DICT)
+      - pattern: |
+          $MODEL(**request.$DICT)
+      - pattern: |
+          User(**request.$DICT)
+    severity: WARNING
+    languages: [python]
+    message: Mass assignment — binding request data directly into a model can overwrite sensitive fields
+    metadata:
+      cwe: CWE-915
+      owasp: A1
+
+  - id: python.idor-object-get
+    patterns:
+      - pattern: |
+          $MODEL.objects.get($FIELD=$EXPR)
+      - metavariable-regex:
+          metavariable: $EXPR
+          regex: ^(request\.|kwargs|args|body)
+    severity: WARNING
+    languages: [python]
+    message: Object fetched directly from request data — verify ownership/authorization (IDOR)
+    metadata:
+      cwe: CWE-639
+      owasp: A1
+
+  - id: python.weak-crypto-md5
+    pattern: |
+      hashlib.md5($DATA).hexdigest()
+    severity: WARNING
+    languages: [python]
+    message: MD5 is not cryptographically secure for hashing secrets/passwords
+    metadata:
+      cwe: CWE-327
+      owasp: A3
+
+  - id: python.jwt-verify-disabled
+    pattern: |
+      jwt.decode($TOKEN, $KEY, options={"verify_signature": False})
+    severity: ERROR
+    languages: [python]
+    message: Signature verification disabled — authentication bypass
+    metadata:
+      cwe: CWE-345
+
+  - id: python.session-cookie-not-httponly
+    pattern: |
+      app.config["SESSION_COOKIE_HTTPONLY"] = False
+    severity: WARNING
+    languages: [python]
+    message: Session cookie not marked HttpOnly — allows theft via XSS
+    metadata:
+      cwe: CWE-1004
+      owasp: A7
+
+  - id: python.flask-debug-mode
+    pattern: |
+      app.run(debug=True)
+    severity: INFO
+    languages: [python]
+    message: Flask debug mode on — exposes stack traces and interactive debugger
+    metadata:
+      cwe: CWE-489
+      owasp: A5
+
+  - id: python.xxe-raw-xml-parse
+    pattern-either:
+      - pattern: |
+          xml.etree.ElementTree.fromstring($INPUT)
+      - pattern: |
+          xml.sax.parseString($INPUT, ...)
+    severity: WARNING
+    languages: [python]
+    message: Parsing XML without XXE protection — use defusedxml
+    metadata:
+      cwe: CWE-611
+      owasp: A4
+
+  - id: python.nosql-injection-pymongo
+    pattern: |
+      $COLLECTION.find({"$FIELD": $INPUT})
+    severity: WARNING
+    languages: [python]
+    message: NoSQL injection potential — validate input before using in MongoDB queries
+    metadata:
+      cwe: CWE-943
 
   - id: python.debug-endpoint
     pattern: |

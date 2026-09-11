@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}EDR - Agents{% endblock %}
+{% block head %}
+<style>
+    .sev-critical { @apply bg-red-500/20 text-red-400 border border-red-500/40; }
+    .sev-high { @apply bg-orange-500/20 text-orange-400 border border-orange-500/40; }
+    .sev-medium { @apply bg-yellow-500/20 text-yellow-400 border border-yellow-500/40; }
+    .sev-low { @apply bg-blue-500/20 text-blue-400 border border-blue-500/40; }
+    .sev-info { @apply bg-gray-500/20 text-gray-400 border border-gray-500/40; }
+    .status-active { @apply bg-green-500/20 text-green-400; }
+    .status-quarantined { @apply bg-red-500/20 text-red-400; }
+    .status-disabled { @apply bg-gray-500/20 text-gray-500; }
+    .sort-header { cursor: pointer; user-select: none; }
+    .sort-header:hover { color: #818cf8; }
+    .sort-header .sort-arrow { opacity: 0; transition: opacity 0.15s; }
+    .sort-header:hover .sort-arrow { opacity: 0.6; }
+    .sort-header.sorted .sort-arrow { opacity: 1; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="monitor" class="w-5 h-5 text-indigo-400"></i> EDR Agents</h1>
+    <div class="flex gap-2 items-center">
+        <select id="filter-status" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="quarantined">Quarantined</option>
+            <option value="disabled">Disabled</option>
+        </select>
+        <select id="filter-os" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200">
+            <option value="">All OS</option>
+        </select>
+        <button onclick="refreshAgents()" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1" title="Refresh">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh
+        </button>
+    </div>
+</div>
+
+<div id="server-banner" class="hidden mb-4 bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 text-sm text-red-300">
+    EDR server is unreachable. Check that the server is running at <span id="server-url" class="font-mono text-xs"></span>.
+</div>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+    <div id="loading-spinner" class="flex items-center justify-center py-12">
+        <svg class="animate-spin h-6 w-6 text-indigo-400" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+    </div>
+    <div id="agents-table-wrap" class="hidden overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wide">
+                    <th class="sort-header px-4 py-3 text-left" data-sort="hostname">Hostname <span class="sort-arrow">&#9650;</span></th>
+                    <th class="sort-header px-4 py-3 text-left" data-sort="os">OS <span class="sort-arrow">&#9650;</span></th>
+                    <th class="sort-header px-4 py-3 text-left" data-sort="arch">Arch <span class="sort-arrow">&#9650;</span></th>
+                    <th class="sort-header px-4 py-3 text-left" data-sort="status">Status <span class="sort-arrow">&#9650;</span></th>
+                    <th class="sort-header px-4 py-3 text-left" data-sort="last_checkin">Last Checkin <span class="sort-arrow">&#9650;</span></th>
+                    <th class="sort-header px-4 py-3 text-left" data-sort="alert_count">Alerts <span class="sort-arrow">&#9650;</span></th>
+                    <th class="px-4 py-3"></th>
+                </tr>
+            </thead>
+            <tbody id="agents-tbody"></tbody>
+        </table>
+    </div>
+    <div id="agents-empty" class="hidden text-center py-12 text-gray-500 text-sm">No agents found.</div>
+</div>
+
+<div id="agent-count" class="text-xs text-gray-500 mt-3"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var API_AGENTS = '{{ url_for("edr.api_agents_list") }}';
+var AGENT_DETAIL_PREFIX = '{{ url_for("edr.agent_detail", uuid="PLACEHOLDER") }}'.replace('PLACEHOLDER', '');
+var _agents = [];
+var _sortKey = 'hostname';
+var _sortAsc = true;
+var _osOptions = new Set();
+
+function statusBadge(s) {
+    var cls = s === 'active' ? 'status-active' : s === 'quarantined' ? 'status-quarantined' : 'status-disabled';
+    return '<span class="text-xs px-2 py-0.5 rounded-full font-medium ' + cls + '">' + (s || 'unknown') + '</span>';
+}
+function alertBadge(n) {
+    if (!n) return '<span class="text-gray-600 text-xs">0</span>';
+    var cls = n >= 10 ? 'sev-critical' : n >= 5 ? 'sev-high' : n >= 1 ? 'sev-medium' : '';
+    return '<span class="text-xs px-2 py-0.5 rounded-full font-medium ' + cls + '">' + n + '</span>';
+}
+function timeAgo(ts) {
+    if (!ts) return '<span class="text-gray-600">never</span>';
+    var d = new Date(ts);
+    var diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60) return Math.floor(diff) + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+}
+
+function renderAgents() {
+    var tbody = document.getElementById('agents-tbody');
+    var list = _agents.slice();
+    var sf = _sortKey;
+    list.sort(function(a, b) {
+        var va = a[sf] || '', vb = b[sf] || '';
+        if (sf === 'alert_count') { va = parseInt(va) || 0; vb = parseInt(vb) || 0; }
+        if (va < vb) return _sortAsc ? -1 : 1;
+        if (va > vb) return _sortAsc ? 1 : -1;
+        return 0;
+    });
+    tbody.innerHTML = '';
+    list.forEach(function(a) {
+        var tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors';
+        tr.innerHTML =
+            '<td class="px-4 py-3 font-medium text-gray-100">' + esc(a.hostname || a.uuid || '?') + '</td>' +
+            '<td class="px-4 py-3 text-gray-300">' + esc(a.os || '-') + '</td>' +
+            '<td class="px-4 py-3 text-gray-400">' + esc(a.arch || '-') + '</td>' +
+            '<td class="px-4 py-3">' + statusBadge(a.status) + '</td>' +
+            '<td class="px-4 py-3 text-gray-400 text-xs">' + timeAgo(a.last_checkin) + '</td>' +
+            '<td class="px-4 py-3">' + alertBadge(a.alert_count) + '</td>' +
+            '<td class="px-4 py-3"><a href="' + AGENT_DETAIL_PREFIX + esc(a.uuid || '') + '" class="text-indigo-400 hover:text-indigo-300 text-xs">Details</a></td>';
+        tbody.appendChild(tr);
+    });
+    document.getElementById('agent-count').textContent = list.length + ' agent' + (list.length !== 1 ? 's' : '');
+    document.getElementById('agents-empty').classList.toggle('hidden', list.length > 0);
+    document.getElementById('agents-table-wrap').classList.toggle('hidden', list.length === 0);
+}
+
+function populateOsFilter() {
+    _osOptions.clear();
+    _agents.forEach(function(a) { if (a.os) _osOptions.add(a.os); });
+    var sel = document.getElementById('filter-os');
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">All OS</option>';
+    Array.from(_osOptions).sort().forEach(function(os) {
+        var opt = document.createElement('option');
+        opt.value = os; opt.textContent = os;
+        sel.appendChild(opt);
+    });
+    sel.value = cur;
+}
+
+async function refreshAgents() {
+    document.getElementById('loading-spinner').classList.remove('hidden');
+    document.getElementById('agents-table-wrap').classList.add('hidden');
+    document.getElementById('agents-empty').classList.add('hidden');
+    document.getElementById('server-banner').classList.add('hidden');
+    try {
+        var status = document.getElementById('filter-status').value;
+        var osf = document.getElementById('filter-os').value;
+        var params = new URLSearchParams();
+        if (status) params.set('status', status);
+        if (osf) params.set('os', osf);
+        var r = await fetch(API_AGENTS + '?' + params.toString());
+        var d = await r.json();
+        if (d.error) throw new Error(d.error);
+        _agents = Array.isArray(d) ? d : (d.agents || []);
+        populateOsFilter();
+        renderAgents();
+    } catch(e) {
+        document.getElementById('server-banner').classList.remove('hidden');
+        document.getElementById('server-url').textContent = {{ url_for("edr.agents_list")|tojson }};
+        document.getElementById('agents-empty').classList.remove('hidden');
+        document.getElementById('agents-empty').textContent = 'Failed to load agents: ' + e.message;
+    } finally {
+        document.getElementById('loading-spinner').classList.add('hidden');
+    }
+}
+
+document.querySelectorAll('.sort-header').forEach(function(th) {
+    th.addEventListener('click', function() {
+        var key = th.getAttribute('data-sort');
+        if (_sortKey === key) _sortAsc = !_sortAsc; else { _sortKey = key; _sortAsc = true; }
+        document.querySelectorAll('.sort-header').forEach(function(h) { h.classList.remove('sorted'); });
+        th.classList.add('sorted');
+        renderAgents();
+    });
+});
+
+document.getElementById('filter-status').addEventListener('change', refreshAgents);
+document.getElementById('filter-os').addEventListener('change', refreshAgents);
+refreshAgents();
+</script>
+{% endblock %}

@@ -1,0 +1,390 @@
+title: SecurityX Advanced 2
+description: Advanced SecurityX (CAS-005) flashcards — deep-dive architecture, IAM, Zero Trust, cloud security, cryptography, threat detection, and GRC. Focused on high-difficulty exam topics and weak areas.
+
+cards:
+
+  # ============================
+  # ADVANCED IAM & ACCESS CONTROL
+  # ============================
+
+  - question: Explain IAM deny precedence in AWS and how wildcard expansion can unintentionally bypass deny rules.
+    answer: Explicit deny overrides allow, but wildcard patterns may fail to match resources with unexpected characters, enabling unintended access.
+
+  - question: Why can IAM resource ARNs fail to match deny rules even when names appear similar?
+    answer: ARN formats differ for buckets vs objects; deny rules may target bucket ARNs while actions operate on object ARNs.
+
+  - question: How can iam:PassRole with wildcards enable privilege escalation?
+    answer: Users can pass privileged roles to EC2/Lambda, gaining elevated permissions indirectly.
+
+  - question: What is an IAM boundary policy?
+    answer: A maximum permission guardrail that restricts what identity policies can grant.
+
+  - question: What is an SCP (Service Control Policy)?
+    answer: Organization-wide guardrails restricting account permissions; cannot grant permissions.
+
+  - question: Explain the difference between identity-based policies and resource-based policies.
+    answer: Identity policies attach to users/roles; resource policies attach to resources and control who can access them.
+
+  - question: What is an IAM condition key?
+    answer: A constraint applied to policy evaluation, such as IP, MFA status, or VPC endpoint.
+
+  - question: What is an API token confusion attack?
+    answer: Using a valid token for one service to access another due to missing audience validation.
+
+  - question: What is OAuth token substitution?
+    answer: Replacing a legitimate token with another token type to bypass authorization.
+
+  - question: What is a privilege escalation path via AssumeRole?
+    answer: Misconfigured trust policies allow unintended principals to assume roles.
+
+  - question: What is a session policy in AWS?
+    answer: A policy applied at role assumption time that further restricts permissions.
+
+  - question: What is a conditional IAM deny?
+    answer: A deny rule triggered only when conditions match, such as missing MFA.
+
+  - question: What is ABAC and how does it differ from RBAC?
+    answer: ABAC uses attributes for decisions; RBAC uses static roles.
+
+  - question: What is a PEP vs PDP in XACML?
+    answer: PEP enforces decisions; PDP evaluates policies.
+
+  - question: What is a Just-In-Time (JIT) access model?
+    answer: Temporary privilege elevation granted only when needed.
+
+  - question: What is identity federation drift?
+    answer: Misalignment between IdP and SP configurations causing unintended access.
+
+  - question: What is a trust boundary in identity systems?
+    answer: A point where identity assertions must be revalidated.
+
+  - question: What is a SAML replay attack?
+    answer: Reusing a valid SAML assertion to authenticate again.
+
+  - question: What is a SAML signature wrapping attack?
+    answer: Injecting malicious elements into a signed SAML document to bypass validation.
+
+  - question: What is a JWT kid header attack?
+    answer: Manipulating the key identifier to trick servers into using attacker-controlled keys.
+
+  - question: What is a JWT none algorithm attack?
+    answer: Exploiting servers that accept unsigned tokens.
+
+  - question: What is a delegated authorization chain?
+    answer: A sequence of tokens granting access across multiple services.
+
+  - question: What is a Zero Trust identity plane?
+    answer: The layer responsible for authentication, authorization, and continuous verification.
+
+  # ============================
+  # ADVANCED ZERO TRUST & ARCHITECTURE
+  # ============================
+
+  - question: What is Zero Trust drift?
+    answer: Gradual reintroduction of implicit trust such as IP allowlists or bypass paths.
+
+  - question: Why is IP-based trust incompatible with Zero Trust?
+    answer: IP does not represent identity; attackers can spoof or pivot inside trusted ranges.
+
+  - question: What is micro-segmentation at the workload level?
+    answer: Enforcing per-workload firewall rules via SDN or hypervisor.
+
+  - question: What is a Zero Trust policy decision point?
+    answer: Component evaluating identity, device posture, and context before granting access.
+
+  - question: What is continuous authorization?
+    answer: Re-evaluating access throughout a session based on changing risk signals.
+
+  - question: What is device posture verification?
+    answer: Checking device health, patch level, and security configuration before granting access.
+
+  - question: What is service identity (SPIFFE/SPIRE)?
+    answer: Cryptographic workload identity used for mTLS between microservices.
+
+  - question: What is a Zero Trust data plane?
+    answer: The encrypted communication layer between workloads.
+
+  - question: What is a Zero Trust control plane?
+    answer: The orchestration layer managing identity, policy, and enforcement.
+
+  - question: What is a policy enforcement point (PEP)?
+    answer: Component enforcing access decisions at runtime.
+
+  - question: What is a trust broker?
+    answer: Central service issuing identity tokens and evaluating posture.
+
+  - question: What is a Zero Trust segmentation gateway?
+    answer: A gateway enforcing identity-based access between network segments.
+
+  - question: What is a workload identity certificate?
+    answer: Short-lived certificate proving workload identity for mTLS.
+
+  - question: What is a service mesh?
+    answer: Infrastructure layer providing mTLS, routing, and policy enforcement between microservices.
+
+  - question: What is lateral movement prevention in Zero Trust?
+    answer: Blocking unauthorized east-west traffic using identity-based rules.
+
+  - question: What is a Zero Trust maturity model?
+    answer: Framework assessing adoption across identity, device, network, and application layers.
+
+  # ============================
+  # ADVANCED CLOUD SECURITY
+  # ============================
+
+  - question: What is cloud hypervisor isolation failure?
+    answer: A vulnerability allowing VM escape or cross-tenant access.
+
+  - question: What is a cloud metadata service attack?
+    answer: Exploiting SSRF to access instance metadata and steal credentials.
+
+  - question: What is a cloud control plane compromise?
+    answer: Unauthorized access to cloud APIs enabling full environment takeover.
+
+  - question: What is a VPC endpoint policy?
+    answer: Policy restricting which services can be accessed through the endpoint.
+
+  - question: What is a cloud KMS key policy?
+    answer: Resource policy controlling who can use or manage encryption keys.
+
+  - question: What is envelope encryption?
+    answer: Encrypting data keys with master keys stored in KMS/HSM.
+
+  - question: What is a cloud access analyzer?
+    answer: Tool identifying unintended public or cross-account access.
+
+  - question: What is a cloud workload identity?
+    answer: Identity assigned to compute resources for accessing cloud APIs.
+
+  - question: What is a cloud shared VPC?
+    answer: Multiple projects/accounts sharing a single VPC for centralized control.
+
+  - question: What is a cloud IAM impersonation attack?
+    answer: Using service account impersonation to escalate privileges.
+
+  - question: What is a cloud organization root compromise?
+    answer: Full administrative takeover of all accounts.
+
+  - question: What is a cloud resource hierarchy?
+    answer: Organizational structure of folders, projects, and resources.
+
+  - question: What is a cloud firewall hierarchy?
+    answer: Layered firewall rules applied at organization, folder, and project levels.
+
+  - question: What is a cloud workload attestation?
+    answer: Verifying VM/container integrity using TPM/vTPM measurements.
+
+  - question: What is confidential computing?
+    answer: Encrypting data in use using TEEs such as AMD SEV or Intel SGX.
+
+  - question: What is a cloud CASB inline mode?
+    answer: Proxying traffic to enforce policies on cloud applications.
+
+  - question: What is a cloud CASB API mode?
+    answer: Using cloud provider APIs to enforce policies on stored data.
+
+  # ============================
+  # ADVANCED CRYPTOGRAPHY
+  # ============================
+
+  - question: What is a side-channel attack?
+    answer: Exploiting timing, power, or electromagnetic leakage to recover keys.
+
+  - question: What is differential power analysis?
+    answer: Measuring power consumption variations to extract cryptographic keys.
+
+  - question: What is lattice-based cryptography?
+    answer: Quantum-resistant algorithms based on hard lattice problems.
+
+  - question: What is a KEM (Key Encapsulation Mechanism)?
+    answer: Method for securely exchanging symmetric keys using asymmetric cryptography.
+
+  - question: What is a digital envelope?
+    answer: Symmetric key encrypted with recipient’s public key.
+
+  - question: What is a MAC vs HMAC?
+    answer: MAC uses symmetric keys; HMAC uses hash functions with keys.
+
+  - question: What is a padding oracle attack?
+    answer: Exploiting padding error messages to decrypt ciphertext.
+
+  - question: What is a chosen-ciphertext attack?
+    answer: Attacker submits ciphertexts to learn information about plaintext.
+
+  - question: What is a key-stretching function?
+    answer: Function increasing computational cost of password hashing.
+
+  - question: What is a cryptographic nonce?
+    answer: A number used once to prevent replay attacks.
+
+  - question: What is a deterministic signature?
+    answer: Signature algorithm producing the same output for identical inputs.
+
+  - question: What is a certificate transparency SCT?
+    answer: Signed certificate timestamp proving inclusion in CT logs.
+
+  - question: What is OCSP stapling?
+    answer: Server includes OCSP response in TLS handshake to reduce latency.
+
+  - question: What is a key escrow system?
+    answer: System storing encryption keys for recovery or compliance.
+
+  - question: What is perfect forward secrecy?
+    answer: Compromise of long-term keys does not reveal past session keys.
+
+  - question: What is a cryptographic split key?
+    answer: Key divided into multiple parts requiring quorum to reconstruct.
+
+  # ============================
+  # ADVANCED THREAT DETECTION & RESPONSE
+  # ============================
+
+  - question: What is behavioral anomaly detection?
+    answer: Identifying deviations from baseline behavior such as unusual SMB fan-out.
+
+  - question: What is a detection engineering pipeline?
+    answer: Process for designing, testing, deploying, and tuning detection rules.
+
+  - question: What is a log integrity control?
+    answer: Mechanisms ensuring logs cannot be tampered with, such as hashing or append-only storage.
+
+  - question: What is a detection gap analysis?
+    answer: Identifying missing coverage across attack techniques.
+
+  - question: What is a threat hunting hypothesis?
+    answer: A testable assumption about attacker behavior used to guide hunts.
+
+  - question: What is a lateral movement detection?
+    answer: Identifying unauthorized east-west traffic or credential misuse.
+
+  - question: What is a C2 detection heuristic?
+    answer: Indicators such as beaconing intervals, domain generation algorithms, or encrypted tunnels.
+
+  - question: What is a memory forensics triage?
+    answer: Rapid analysis of RAM for malicious processes, handles, and injected code.
+
+  - question: What is a kernel rootkit detection method?
+    answer: Checking for hidden modules, hooked syscalls, or altered kernel structures.
+
+  - question: What is a deception breadcrumb?
+    answer: Fake credentials or artifacts planted to detect attacker interaction.
+
+  - question: What is an IOC aging strategy?
+    answer: Retiring outdated indicators to reduce false positives.
+
+  - question: What is an IOA-based detection?
+    answer: Behavioral detection focusing on attacker intent rather than artifacts.
+
+  - question: What is a threat intelligence enrichment pipeline?
+    answer: Adding context such as geolocation, reputation, and ATT&CK mapping to events.
+
+  - question: What is a SOAR playbook?
+    answer: Automated workflow for incident response actions.
+
+  - question: What is a containment automation?
+    answer: Automatically isolating compromised hosts or accounts.
+
+  - question: What is a detection-as-code model?
+    answer: Storing detection logic in version-controlled repositories.
+
+  # ============================
+  # ADVANCED APPLICATION SECURITY
+  # ============================
+
+  - question: What is a deserialization gadget chain?
+    answer: Sequence of classes whose methods enable arbitrary code execution during deserialization.
+
+  - question: What is a state machine vulnerability?
+    answer: Flaws allowing users to skip required workflow steps.
+
+  - question: What is a race condition in authentication?
+    answer: Timing flaw allowing session creation before credential verification.
+
+  - question: What is a CSRF bypass via SameSite misconfiguration?
+    answer: Cookies set to SameSite=None without secure flag allow cross-site requests.
+
+  - question: What is a DOM-based XSS?
+    answer: XSS occurring entirely in client-side JavaScript without server reflection.
+
+  - question: What is a prototype pollution attack?
+    answer: Modifying JavaScript object prototypes to alter application behavior.
+
+  - question: What is a SSRF pivot chain?
+    answer: Using SSRF to access internal services, then metadata endpoints.
+
+  - question: What is a JWT audience mismatch?
+    answer: Token intended for one service accepted by another.
+
+  - question: What is a path traversal via symlink?
+    answer: Using symbolic links to access restricted files.
+
+  - question: What is a sandbox escape?
+    answer: Breaking out of restricted execution environments.
+
+  - question: What is a CSP bypass?
+    answer: Exploiting unsafe-inline, wildcard sources, or JSONP endpoints.
+
+  - question: What is a clickjacking frame busting failure?
+    answer: Missing X-Frame-Options or CSP frame-ancestors allowing UI redress attacks.
+
+  - question: What is a template injection?
+    answer: Injecting malicious expressions into server-side template engines.
+
+  - question: What is a blind SQL injection?
+    answer: SQLi where results are not directly visible, requiring inference.
+
+  - question: What is a NoSQL injection operator abuse?
+    answer: Using operators like $ne or $where to bypass authentication.
+
+  # ============================
+  # ADVANCED GRC & RISK
+  # ============================
+
+  - question: What is a risk register?
+    answer: Document listing risks, likelihood, impact, and mitigation.
+
+  - question: What is a control inheritance model?
+    answer: Lower-level systems inheriting controls from higher-level systems.
+
+  - question: What is a compensating control justification?
+    answer: Explanation of how an alternative control meets the same objective.
+
+  - question: What is a continuous monitoring strategy?
+    answer: Ongoing assessment of controls, vulnerabilities, and threats.
+
+  - question: What is a security architecture decision record?
+    answer: Document capturing rationale behind architecture decisions.
+
+  - question: What is a business impact analysis dependency map?
+    answer: Mapping critical functions to supporting systems and processes.
+
+  - question: What is a regulatory scoping exercise?
+    answer: Determining which regulations apply to a system.
+
+  - question: What is a control effectiveness assessment?
+    answer: Evaluating how well controls reduce risk.
+
+  - question: What is a tabletop escalation path?
+    answer: Defined chain of command for incident response decisions.
+
+  - question: What is a DR failback plan?
+    answer: Steps to return operations from DR site to primary site.
+
+  - question: What is a legal hold preservation order?
+    answer: Requirement to suspend data deletion due to litigation.
+
+  - question: What is a cryptographic erase?
+    answer: Destroying encryption keys to render data unrecoverable.
+
+  - question: What is a data residency requirement?
+    answer: Mandate that data remain within specific geographic boundaries.
+
+  - question: What is a privacy impact assessment?
+    answer: Evaluation of how systems handle personal data and associated risks.
+
+  - question: What is a control baseline tailoring?
+    answer: Adjusting standard controls to fit system-specific needs.
+
+  - question: What is a security exception process?
+    answer: Formal approval for deviations from policy.
+

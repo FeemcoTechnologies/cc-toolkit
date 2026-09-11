@@ -1,0 +1,1310 @@
+# =============================================================================
+# EDR Default Detection Rules
+# =============================================================================
+# These rules ship with the agent and are enabled by default. They cover
+# the most common detection scenarios for Linux and Windows endpoints.
+#
+# Each rule defines:
+#   - Identity metadata (id, name, severity, platform, tags)
+#   - An osquery query to run
+#   - Detection logic (field, op, threshold, group_by)
+#   - Response actions to trigger on match
+#
+# Rules use the schema defined in schema.py. The agent validates all rules
+# at load time and skips any that fail validation.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. New Listening Port Detected (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-001
+  name: "New Listening Port Detected (Linux)"
+  description: >
+    A new listening port appeared that was not present in the baseline.
+    New ports can indicate unauthorized services, reverse shells, or
+    misconfigured applications.
+  severity: medium
+  platform: linux
+  tags:
+    - network
+    - baseline
+    - persistence
+  osquery:
+    query: >
+      SELECT lp.port, lp.protocol, lp.address, p.name AS process_name,
+             p.pid, p.path AS process_path, u.username
+      FROM listening_ports lp
+      LEFT JOIN processes p ON lp.pid = p.pid
+      LEFT JOIN users u ON p.uid = u.uid
+      WHERE lp.port > 0
+      ORDER BY lp.port;
+    differential: true
+  detect:
+    field: port
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 2. New Listening Port Detected (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-002
+  name: "New Listening Port Detected (Windows)"
+  description: >
+    A new listening port appeared on a Windows host that was not in the
+    baseline. May indicate unauthorized services or lateral movement tooling.
+  severity: medium
+  platform: windows
+  tags:
+    - network
+    - baseline
+    - persistence
+  osquery:
+    query: >
+      SELECT lp.port, lp.protocol, lp.address, p.name AS process_name,
+             p.pid, p.path AS process_path, p.cmdline
+      FROM listening_ports lp
+      LEFT JOIN processes p ON lp.pid = p.pid
+      WHERE lp.port > 0
+      ORDER BY lp.port;
+    differential: true
+  detect:
+    field: port
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 3. New Running Process Detected (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-003
+  name: "New Running Process Detected (Linux)"
+  description: >
+    A process is running that was not present in the baseline process list.
+    New processes can indicate malware execution, unauthorized tools, or
+    attacker payloads.
+  severity: medium
+  platform: linux
+  tags:
+    - process
+    - baseline
+    - execution
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.uid,
+             u.username, p.start_time, p.parent
+      FROM processes p
+      LEFT JOIN users u ON p.uid = u.uid
+      WHERE p.name != ''
+      ORDER BY p.start_time DESC;
+    differential: true
+  detect:
+    field: name
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 4. New Running Process Detected (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-004
+  name: "New Running Process Detected (Windows)"
+  description: >
+    A process is running that was not present in the baseline. May indicate
+    unauthorized software, living-off-the-land binaries, or attacker tools.
+  severity: medium
+  platform: windows
+  tags:
+    - process
+    - baseline
+    - execution
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.owner,
+             p.parent, p.start_time, p.version
+      FROM processes p
+      WHERE p.name != ''
+      ORDER BY p.start_time DESC;
+    differential: true
+  detect:
+    field: name
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 5. New User Account Created (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-005
+  name: "New User Account Created (Linux)"
+  description: >
+    A new user account was detected on a Linux host. Unauthorized accounts
+    are a common persistence mechanism used by attackers.
+  severity: high
+  platform: linux
+  tags:
+    - persistence
+    - accounts
+    - baseline
+  osquery:
+    query: >
+      SELECT u.uid, u.username, u.directory, u.shell,
+             u.description, ugid.groupname AS primary_group
+      FROM users u
+      LEFT JOIN groups ugid ON u.gid = ugid.gid
+      WHERE u.uid >= 1000
+         OR u.uid = 0
+      ORDER BY u.uid;
+    differential: true
+  detect:
+    field: username
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "New user account detected on Linux host"
+
+# -----------------------------------------------------------------------------
+# 6. New User Account Created (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-006
+  name: "New User Account Created (Windows)"
+  description: >
+    A new local user account was detected on a Windows host. Unauthorized
+    accounts enable persistent access and lateral movement.
+  severity: high
+  platform: windows
+  tags:
+    - persistence
+    - accounts
+    - baseline
+  osquery:
+    query: >
+      SELECT u.sid, u.username, u.full_name, u.disabled,
+             u.last_login, u.home_directory, u.shell
+      FROM users u
+      WHERE u.username NOT IN (
+        'SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE',
+        'DefaultAccount', 'WDAGUtilityAccount'
+      )
+      ORDER BY u.username;
+    differential: true
+  detect:
+    field: username
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "New user account detected on Windows host"
+
+# -----------------------------------------------------------------------------
+# 7. SSH Key Added
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-007
+  name: "SSH Authorized Key Added"
+  description: >
+    A new SSH authorized key was added to any user account. Attackers
+    frequently add SSH keys for persistent remote access.
+  severity: high
+  platform: linux
+  tags:
+    - persistence
+    - ssh
+    - baseline
+  osquery:
+    query: >
+      SELECT ak.uid, u.username, ak.key, ak.key_file,
+             ak.options, ak.command
+      FROM authorized_keys ak
+      LEFT JOIN users u ON ak.uid = u.uid
+      ORDER BY ak.uid;
+    differential: true
+  detect:
+    field: key
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "New SSH authorized key detected"
+
+# -----------------------------------------------------------------------------
+# 8. Cron Job Changed (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-008
+  name: "Cron Job Changed (Linux)"
+  description: >
+    A crontab entry was added, modified, or removed. Cron changes are a
+    common persistence and privilege escalation vector on Linux.
+  severity: medium
+  platform: linux
+  tags:
+    - persistence
+    - scheduling
+    - baseline
+  osquery:
+    query: >
+      SELECT event, username, cron_command, minute, hour,
+             day_of_month, month, day_of_week, path
+      FROM crontab
+      WHERE cron_command != ''
+        AND cron_command NOT LIKE '#%';
+    differential: true
+  detect:
+    field: cron_command
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 9. Scheduled Task Created or Modified (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-009
+  name: "Scheduled Task Created or Modified (Windows)"
+  description: >
+    A Windows scheduled task was created or modified. Attackers use scheduled
+    tasks for persistence, privilege escalation, and execution of payloads.
+  severity: high
+  platform: windows
+  tags:
+    - persistence
+    - scheduling
+    - baseline
+  osquery:
+    query: >
+      SELECT st.task_name, st.task_path, st.actions, st.triggers,
+             st.principals, st.settings, st.state
+      FROM scheduled_tasks st
+      WHERE st.task_name != ''
+      ORDER BY st.task_name;
+    differential: true
+  detect:
+    field: task_name
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 10. New SUID Binary (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-010
+  name: "New SUID Binary Detected (Linux)"
+  description: >
+    A new SUID/SGID binary was detected. Attackers plant SUID binaries
+    for privilege escalation and persistent root access.
+  severity: high
+  platform: linux
+  tags:
+    - privilege-escalation
+    - filesystem
+    - baseline
+  osquery:
+    query: >
+      SELECT suid_bit, suid_uid, path, username, permission,
+             size, modified_time
+      FROM suid_bin
+      WHERE suid_bit = 1
+      ORDER BY path;
+    differential: true
+  detect:
+    field: path
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "New SUID binary detected -- possible privilege escalation"
+
+# -----------------------------------------------------------------------------
+# 11. Firewall Rule Changed (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-011
+  name: "Firewall Rule Changed (Linux)"
+  description: >
+    An iptables/nftables firewall rule was added, removed, or modified.
+    Firewall changes can open network paths for data exfiltration or
+    lateral movement.
+  severity: medium
+  platform: linux
+  tags:
+    - network
+    - firewall
+    - baseline
+  osquery:
+    query: >
+      SELECT chain, policy, target, protocol, src_ip, dst_ip,
+             src_port, dst_port, input_interface, output_interface
+      FROM iptables
+      ORDER BY chain, target;
+    differential: true
+  detect:
+    field: policy
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 12. Firewall Rule Changed (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-012
+  name: "Firewall Rule Changed (Windows)"
+  description: >
+    A Windows Defender Firewall rule was added, removed, or modified.
+    Firewall changes can bypass host-based network protections.
+  severity: medium
+  platform: windows
+  tags:
+    - network
+    - firewall
+    - baseline
+  osquery:
+    query: >
+      SELECT r.name, r.group, r.enabled, r.action, r.direction,
+             r.local_addresses, r.remote_addresses,
+             r.local_ports, r.remote_ports, r.protocol
+      FROM windows_firewall_rules r
+      WHERE r.enabled = 1
+      ORDER BY r.name;
+    differential: true
+  detect:
+    field: name
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 13. Sensitive System File Modified (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-013
+  name: "Sensitive System File Modified (Linux)"
+  description: >
+    A critical system file (/etc/passwd, /etc/shadow, /etc/sudoers, etc.)
+    was modified. These files control authentication, authorization, and
+    system configuration. Unauthorized changes are a strong indicator of
+    compromise.
+  severity: critical
+  platform: linux
+  tags:
+    - filesystem
+    - integrity
+    - credential-access
+  osquery:
+    query: >
+      SELECT f.path, f.filename, f.uid, f.gid, f.mode,
+             f.size, f.mtime, f.ctime, u.username
+      FROM file f
+      LEFT JOIN users u ON f.uid = u.uid
+      WHERE f.path IN (
+        '/etc/passwd', '/etc/shadow', '/etc/sudoers',
+        '/etc/sudoers.d', '/etc/ssh/sshd_config',
+        '/etc/pam.d', '/etc/crontab', '/etc/ld.so.preload'
+      )
+      AND f.type = 'regular';
+    interval: 60
+  detect:
+    field: mtime
+    op: changed
+  response:
+    - name: "log_critical"
+      type: log
+      params:
+        level: critical
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "CRITICAL: Sensitive system file was modified"
+
+# -----------------------------------------------------------------------------
+# 14. Sensitive System File Modified (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-014
+  name: "Sensitive System File Modified (Windows)"
+  description: >
+    A critical Windows system file or configuration was modified. Includes
+    hosts file, security policy, and boot configuration.
+  severity: critical
+  platform: windows
+  tags:
+    - filesystem
+    - integrity
+    - credential-access
+  osquery:
+    query: >
+      SELECT f.path, f.filename, f.uid, f.mode,
+             f.size, f.mtime, f.ctime
+      FROM file f
+      WHERE f.path IN (
+        'C:\Windows\System32\drivers\etc\hosts',
+        'C:\Windows\System32\config\SAM',
+        'C:\Windows\System32\config\SYSTEM',
+        'C:\Windows\System32\config\SECURITY',
+        'C:\Windows\System32\config\SOFTWARE'
+      )
+      AND f.type = 'regular';
+    interval: 60
+  detect:
+    field: mtime
+    op: changed
+  response:
+    - name: "log_critical"
+      type: log
+      params:
+        level: critical
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "CRITICAL: Sensitive Windows system file was modified"
+
+# -----------------------------------------------------------------------------
+# 15. Suspicious Process Name Detected
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-015
+  name: "Suspicious Process Name Detected"
+  description: >
+    A process matching known malware, post-exploitation, or offensive
+    security tooling patterns was detected. Matches common indicators
+    including Mimikatz, Cobalt Strike, Metasploit, and others.
+  severity: critical
+  platform: all
+  tags:
+    - malware
+    - offense-tooling
+    - execution
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.uid,
+             p.parent, p.start_time, u.username
+      FROM processes p
+      LEFT JOIN users u ON p.uid = u.uid
+      WHERE p.name != '';
+    interval: 30
+  detect:
+    field: name
+    op: regex
+    value: >-
+      (?i)(mimikatz|mimilib|mimidrv|cobaltstrike|cobalt.?strike|
+      msfconsole|meterpreter|metasploit|powersploit|empire|
+      covenant|brute.?ratel|sliver|havoc|undetected.?win|
+      mykatz|dumpert|SafetyKatz|Rubeus|SharpHound|BloodHound|
+      mimikatz64|invoke.?mimikatz|sekurlsa|kerberos::list)
+  response:
+    - name: "log_critical"
+      type: log
+      params:
+        level: critical
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "CRITICAL: Suspicious/offensive tooling process detected"
+
+# -----------------------------------------------------------------------------
+# 16. Suspicious Process Command Line Detected
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-016
+  name: "Suspicious Process Command Line Detected"
+  description: >
+    A process command line contains patterns associated with credential
+    dumping, lateral movement, or reconnaissance. Matches common LOLBins
+    and attacker techniques.
+  severity: high
+  platform: windows
+  tags:
+    - credential-access
+    - lolbin
+    - execution
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.owner,
+             p.parent, p.start_time
+      FROM processes p
+      WHERE p.cmdline != '';
+    interval: 30
+  detect:
+    field: cmdline
+    op: regex
+    value: >-
+      (?i)(sekurlsa::logonpasswords|lsass.*dump|
+      ntdsutil.*ifm|vssadmin.*delete.*shadows|
+      wmic.*shadowcopy.*delete|bcdedit.*recoveryenabled.*no|
+      net.*user.*\/add|net.*localgroup.*administrators|
+      whoami.*\/priv|systeminfo.*|tasklist.*\/svc|
+      nltest.*\/dclist|net.*group.*\"domain admins\"|
+      reg.*save.*SAM|reg.*save.*SECURITY|
+      certutil.*-urlcache.*-split.*-f|
+      bitsadmin.*\/transfer|mshta.*http|regsvr32.*\/s.*\/i.*scrobj)
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 17. Reverse Shell Detected
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-017
+  name: "Reverse Shell Detected"
+  description: >
+    A process command line contains patterns consistent with a reverse
+    shell or bind shell. Includes bash, Python, Perl, PHP, netcat, and
+    PowerShell reverse shell patterns.
+  severity: critical
+  platform: all
+  tags:
+    - reverse-shell
+    - execution
+    - post-exploitation
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.uid,
+             p.parent, u.username, p.start_time
+      FROM processes p
+      LEFT JOIN users u ON p.uid = u.uid
+      WHERE p.cmdline != '';
+    interval: 30
+  detect:
+    field: cmdline
+    op: regex
+    value: >-
+      (bash\s+-i\s+.*\/dev\/tcp|
+      \/dev\/tcp\/[\d.]+\/\d+|
+      nc\s+-e\s+\/bin\/|
+      ncat\s+-e\s+\/bin\/|
+      python[23]?\s+-c\s+.*socket.*connect|
+      python[23]?\s+-c\s+.*subprocess|
+      perl\s+-e\s+.*socket.*INET|
+      php\s+-fsockopen|
+      ruby\s+-rsocket.*TCPSocket|
+      powershell.*-w\s+hidden.*-enc.*|
+      powershell.*IEX.*Net.*Sockets.*TCPClient|
+      Invoke-PowerShellTcp|
+      pwsh.*-enc.*|
+      socat\s+TCP:)
+  response:
+    - name: "log_critical"
+      type: log
+      params:
+        level: critical
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "CRITICAL: Reverse shell detected -- possible active compromise"
+
+# -----------------------------------------------------------------------------
+# 18. Privilege Escalation Attempt (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-018
+  name: "Privilege Escalation Attempt (Linux)"
+  description: >
+    Detected commands or process behavior consistent with privilege
+    escalation on Linux. Includes sudo usage from non-admin users,
+    su attempts, and kernel exploit patterns.
+  severity: high
+  platform: linux
+  tags:
+    - privilege-escalation
+    - execution
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.uid,
+             p.parent, u.username, p.start_time
+      FROM processes p
+      LEFT JOIN users u ON p.uid = u.uid
+      WHERE p.name IN ('sudo', 'su', 'pkexec', 'doas')
+         OR p.cmdline LIKE '%chmod%4755%'
+         OR p.cmdline LIKE '%chmod%u+s%'
+         OR p.cmdline LIKE '%setcap%';
+    interval: 30
+  detect:
+    field: cmdline
+    op: contains
+    value: "sudo"
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 19. USB Device Connected (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-019
+  name: "USB Device Connected (Linux)"
+  description: >
+    A USB device was connected to the system. Unexpected USB devices
+    can indicate data exfiltration, malicious hardware, or unauthorized
+    peripherals.
+  severity: low
+  platform: linux
+  tags:
+    - hardware
+    - data-exfiltration
+    - baseline
+  osquery:
+    query: >
+      SELECT vendor, model, serial, type, removable,
+             bus, usb_port, dev_fs_path
+      FROM usb_devices
+      ORDER BY vendor, model;
+    differential: true
+  detect:
+    field: serial
+    op: new_in_baseline
+  response:
+    - name: "log_info"
+      type: log
+      params:
+        level: info
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 20. USB Device Connected (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-020
+  name: "USB Device Connected (Windows)"
+  description: >
+    A USB device was connected to a Windows host. Unexpected removable
+    media may indicate data exfiltration or malicious hardware.
+  severity: low
+  platform: windows
+  tags:
+    - hardware
+    - data-exfiltration
+    - baseline
+  osquery:
+    query: >
+      SELECT de.device_name, de.device_class, de.service,
+             de.manufacturer, de.serial_number_id
+      FROM device_events de
+      JOIN disk_events dk ON de.device_id = dk.device_id
+      WHERE dk.type = 'USB'
+        OR de.device_class = 'USB';
+    differential: true
+  detect:
+    field: serial_number_id
+    op: new_in_baseline
+  response:
+    - name: "log_info"
+      type: log
+      params:
+        level: info
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 21. Service Installed or Changed (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-021
+  name: "Service Installed or Changed (Windows)"
+  description: >
+    A Windows service was installed, modified, or its binary path changed.
+    Service manipulation is a common persistence and privilege escalation
+    technique.
+  severity: high
+  platform: windows
+  tags:
+    - persistence
+    - services
+    - baseline
+  osquery:
+    query: >
+      SELECT s.name, s.display_name, s.status, s.start_type,
+             s.binary_path, s.account_name, s.description,
+             s.service_type, s.pid
+      FROM services s
+      WHERE s.name NOT IN (
+        'WinDefend', 'wuauserv', 'Spooler', 'Themes',
+        'Dhcp', 'Dnscache', 'W32Time', 'EventLog'
+      )
+      ORDER BY s.name;
+    differential: true
+  detect:
+    field: binary_path
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 22. Systemd Unit Changed (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-022
+  name: "Systemd Unit Changed (Linux)"
+  description: >
+    A systemd unit file was added or modified. Attackers create or modify
+    systemd units for persistence and privilege escalation.
+  severity: medium
+  platform: linux
+  tags:
+    - persistence
+    - services
+    - baseline
+  osquery:
+    query: >
+      SELECT unit, description, load_state, active_state,
+             sub_state, unit_file_state, file_path
+      FROM systemd_units
+      WHERE unit_file_state IS NOT NULL
+        AND unit NOT LIKE 'user@%'
+        AND unit NOT LIKE 'session-%'
+      ORDER BY unit;
+    differential: true
+  detect:
+    field: unit
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 23. Registry Modification (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-023
+  name: "Registry Key Modified (Windows)"
+  description: >
+    A Windows registry key in a critical persistence or security path was
+    modified. Covers Run keys, AppInit_DLLs, Winlogon, and LSA secrets.
+  severity: high
+  platform: windows
+  tags:
+    - persistence
+    - registry
+    - defense-evasion
+  osquery:
+    query: >
+      SELECT r.key, r.name, r.data, r.type, r.mtime,
+             r.sid, u.username
+      FROM registry r
+      LEFT JOIN users u ON r.sid = u.sid
+      WHERE r.key LIKE 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run%'
+         OR r.key LIKE 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce%'
+         OR r.key LIKE 'HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run%'
+         OR r.key LIKE 'HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce%'
+         OR r.key LIKE 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon%'
+         OR r.key LIKE 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa%'
+         OR r.key LIKE 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options%'
+         OR r.key LIKE 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System%'
+         OR r.key LIKE 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\%';
+    differential: true
+  detect:
+    field: key
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "Registry modification in critical persistence path"
+
+# -----------------------------------------------------------------------------
+# 24. Kernel Module Loaded (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-024
+  name: "Kernel Module Loaded (Linux)"
+  description: >
+    A new kernel module was loaded. Rootkits and advanced malware load
+    custom kernel modules for stealth. Unexpected modules should be
+    investigated immediately.
+  severity: high
+  platform: linux
+  tags:
+    - persistence
+    - kernel
+    - rootkit
+    - baseline
+  osquery:
+    query: >
+      SELECT name, size, used_by, status, address
+      FROM kernel_modules
+      WHERE name != ''
+      ORDER BY name;
+    differential: true
+  detect:
+    field: name
+    op: new_in_baseline
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "notify_admin"
+      type: notify
+      params:
+        channel: security
+        message: "New kernel module loaded -- possible rootkit"
+
+# -----------------------------------------------------------------------------
+# 25. Package Installed (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-025
+  name: "Package Installed (Linux)"
+  description: >
+    A new software package was installed. Track unexpected packages that
+    could indicate unauthorized software or attacker tools.
+  severity: info
+  platform: linux
+  tags:
+    - software
+    - baseline
+  osquery:
+    query: >
+      SELECT name, version, release, source, size,
+             install_time, maintainer
+      FROM deb_packages
+      WHERE name NOT LIKE 'lib%'
+        AND name NOT LIKE 'fonts-%'
+      ORDER BY install_time DESC;
+    differential: true
+  detect:
+    field: name
+    op: new_in_baseline
+  response:
+    - name: "log_info"
+      type: log
+      params:
+        level: info
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 26. Package Installed (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-026
+  name: "Software Installed (Windows)"
+  description: >
+    New software was installed on the Windows host. Unexpected installations
+    may indicate unauthorized tools or attacker payloads.
+  severity: info
+  platform: windows
+  tags:
+    - software
+    - baseline
+  osquery:
+    query: >
+      SELECT name, version, publisher, install_date,
+             install_location, uninstall_string
+      FROM programs
+      WHERE name != ''
+      ORDER BY install_date DESC;
+    differential: true
+  detect:
+    field: name
+    op: new_in_baseline
+  response:
+    - name: "log_info"
+      type: log
+      params:
+        level: info
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 27. Container Started (Docker)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-027
+  name: "Container Started (Docker)"
+  description: >
+    A Docker or Podman container was started. Containers running with
+    excessive privileges, unusual images, or from unknown registries
+    should be investigated.
+  severity: medium
+  platform: linux
+  tags:
+    - container
+    - docker
+    - baseline
+  osquery:
+    query: >
+      SELECT c.id, c.name, c.image, c.status, c.state,
+             c.created, c.platform,
+             c.primary_ip, c.ports
+      FROM docker_containers c
+      WHERE c.state = 'running'
+      ORDER BY c.created DESC;
+    differential: true
+  detect:
+    field: id
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 28. DNS Query to Known-Bad Domain
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-028
+  name: "DNS Query to Known-Bad Domain"
+  description: >
+    A DNS query was observed for a domain associated with known malware
+    infrastructure, command-and-control servers, or threat intelligence
+    feeds. Requires an external threat intel list to be configured.
+  severity: critical
+  platform: all
+  tags:
+    - dns
+    - threat-intel
+    - c2
+  osquery:
+    query: >
+      SELECT de.query, de.querytype, de.answer,
+             de.rcode, de.rrname, de.tld,
+             p.name AS process_name, p.pid
+      FROM dns_events de
+      LEFT JOIN processes p ON de.pid = p.pid
+      WHERE de.querytype IN ('A', 'AAAA', 'CNAME');
+    interval: 60
+  detect:
+    field: query
+    op: regex
+    value: >-
+      (?i)(.*\.top$|.*\.xyz$|.*\.tk$|.*\.ml$|.*\.ga$|
+      .*\.cf$|.*\.gq$|.*\.cc$|.*\.pw$|.*\.ws$|
+      .*\.buzz$|.*\.loan$|.*\.racing$|.*\.date$|
+      .*\.stream$|.*\.download$|.*\.accountant$|
+      .*\.win$|.*\.bid$|.*\.club$|.*\.work$|
+      .*\.icu$|.*\.monster$|.*\.surf$|.*\.rest$|
+      .*\.cam$|.*\.sbs$|.*\.cfd$)
+  response:
+    - name: "log_critical"
+      type: log
+      params:
+        level: critical
+    - name: "alert"
+      type: alert
+    - name: "block_ip"
+      type: block_ip
+      params:
+        duration: 3600
+        reason: "DNS query to known-bad TLD"
+
+# -----------------------------------------------------------------------------
+# 29. Process Count Threshold Exceeded
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-029
+  name: "Process Count Threshold Exceeded"
+  description: >
+    The number of processes matching a specific name exceeds the threshold.
+    Fork bombs, cryptominers, or DoS tools may spawn excessive child
+    processes. Threshold: more than 50 instances of the same process name.
+  severity: high
+  platform: all
+  tags:
+    - process
+    - threshold
+    - fork-bomb
+    - cryptomining
+  osquery:
+    query: >
+      SELECT p.name, COUNT(*) AS process_count
+      FROM processes p
+      WHERE p.name != ''
+      GROUP BY p.name;
+  detect:
+    field: process_count
+    op: gt
+    value: 0
+    threshold: 50
+    group_by: name
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+    - name: "kill_process"
+      type: kill_process
+      params:
+        confirm: true
+        reason: "Excessive process count threshold exceeded"
+
+# -----------------------------------------------------------------------------
+# 30. Listening Port Count Threshold Exceeded
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-030
+  name: "Listening Port Count Threshold Exceeded"
+  description: >
+    A single process is listening on more than 20 ports. This behavior
+    is unusual and may indicate a backdoor, port scanner, or misconfigured
+    service.
+  severity: high
+  platform: all
+  tags:
+    - network
+    - threshold
+    - backdoor
+  osquery:
+    query: >
+      SELECT p.name AS process_name, p.pid, COUNT(*) AS port_count
+      FROM listening_ports lp
+      LEFT JOIN processes p ON lp.pid = p.pid
+      WHERE lp.port > 0
+      GROUP BY p.name, p.pid;
+  detect:
+    field: port_count
+    op: gt
+    value: 0
+    threshold: 20
+    group_by: process_name
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 31. PowerShell Script Execution with Encoded Command (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-031
+  name: "Encoded PowerShell Execution"
+  description: >
+    PowerShell was invoked with an encoded command (-Enc/-EncodedCommand).
+    This is a common attacker technique to obfuscate payloads and bypass
+    script block logging.
+  severity: high
+  platform: windows
+  tags:
+    - execution
+    - powershell
+    - defense-evasion
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.owner,
+             p.parent, p.start_time
+      FROM processes p
+      WHERE p.name IN ('powershell.exe', 'pwsh.exe', 'powershell_ise.exe');
+    interval: 30
+  detect:
+    field: cmdline
+    op: regex
+    value: (?i)(-enc\s|encodedcommand\s|-e\s+[A-Za-z0-9+/=]{20,})
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 32. WMI Process Creation (Windows)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-032
+  name: "WMI Process Creation Detected"
+  description: >
+    A process was created via Windows Management Instrumentation (WMI).
+    WMI-based execution is a common lateral movement and persistence
+    technique used by APT groups.
+  severity: medium
+  platform: windows
+  tags:
+    - execution
+    - lateral-movement
+    - wmi
+  osquery:
+    query: >
+      SELECT p.pid, p.name, p.path, p.cmdline, p.owner,
+             p.parent, p.start_time
+      FROM processes p
+      WHERE p.name IN ('wmiprvse.exe', 'wmiPrvSE.exe')
+         OR p.parent IN (
+           SELECT pid FROM processes WHERE name = 'wmiprvse.exe'
+         );
+    interval: 30
+  detect:
+    field: name
+    op: eq
+    value: "wmiprvse.exe"
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 33. Service Account Logon Without Password (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-033
+  name: "Service Account with Empty Password (Linux)"
+  description: >
+    A Linux user account has an empty or unlocked password field in
+    /etc/shadow. This can indicate a misconfiguration or attacker-modified
+    credential.
+  severity: high
+  platform: linux
+  tags:
+    - credential-access
+    - authentication
+    - misconfiguration
+  osquery:
+    query: >
+      SELECT u.username, u.uid, u.directory, u.shell,
+             s.password
+      FROM users u
+      LEFT JOIN shadow s ON u.username = s.username
+      WHERE (s.password = '' OR s.password = '!')
+        AND u.uid >= 1000;
+  detect:
+    field: password
+    op: eq
+    value: ""
+  response:
+    - name: "log_error"
+      type: log
+      params:
+        level: error
+    - name: "alert"
+      type: alert
+
+# -----------------------------------------------------------------------------
+# 34. Unexpected Outbound Connection (Linux)
+# -----------------------------------------------------------------------------
+- id: EDR-BUILTIN-034
+  name: "Unexpected Outbound Connection (Linux)"
+  description: >
+    A process made an outbound TCP connection to a non-standard port.
+    Common ports like 80/443 are excluded. Unusual outbound connections
+    may indicate C2 communication or data exfiltration.
+  severity: medium
+  platform: linux
+  tags:
+    - network
+    - c2
+    - data-exfiltration
+  osquery:
+    query: >
+      SELECT c.pid, p.name AS process_name, p.path AS process_path,
+             c.remote_address, c.remote_port, c.local_address,
+             c.local_port, c.state, u.username
+      FROM process_open_sockets c
+      LEFT JOIN processes p ON c.pid = p.pid
+      LEFT JOIN users u ON p.uid = u.uid
+      WHERE c.family = 2
+        AND c.remote_port > 0
+        AND c.remote_port NOT IN (80, 443, 53, 8080, 8443)
+        AND c.state = 'ESTABLISHED'
+        AND c.remote_address NOT LIKE '127.%'
+        AND c.remote_address NOT LIKE '10.%'
+        AND c.remote_address NOT LIKE '192.168.%'
+        AND c.remote_address NOT LIKE '172.16.%';
+    interval: 30
+  detect:
+    field: remote_port
+    op: new_in_baseline
+  response:
+    - name: "log_warning"
+      type: log
+      params:
+        level: warning
+    - name: "alert"
+      type: alert

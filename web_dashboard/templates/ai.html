@@ -73,9 +73,10 @@
         <div class="flex gap-2 mb-3">
             <button onclick="launchOpencode()" id="btn-opencode" class="bg-indigo-700 hover:bg-indigo-600 px-3 py-1.5 rounded text-sm">Launch Opencode</button>
             <button onclick="stopOpencode()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm">Stop</button>
+            <a id="opencode-new-tab" href="{{ opencode_url }}" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300 ml-auto self-center hidden">Open in new tab &rarr;</a>
         </div>
         <div id="opencode-status" class="text-xs text-gray-500 mb-2">Not running</div>
-        <pre id="opencode-output" class="bg-gray-950 rounded p-2 text-xs text-gray-300 h-48 overflow-y-auto font-mono whitespace-pre-wrap"></pre>
+        <div id="oc-terminal-container" class="h-48 bg-gray-950 rounded hidden"></div>
     </div>
     <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
         <div class="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-800">
@@ -86,6 +87,24 @@
         </div>
         <div id="ai-terminal-container"></div>
     </div>
+</div>
+
+<!-- Opencode Web UI iframe -->
+<div id="opencode-iframe-panel" class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden mb-6 hidden">
+    <div class="flex items-center justify-between px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+        <span class="text-sm text-indigo-400 flex items-center gap-1">
+            <i data-lucide="bot" class="w-4 h-4"></i> OpenCode Web
+        </span>
+        <div class="flex items-center gap-3">
+            <button onclick="toggleOcConsole()" id="btn-oc-console" class="text-xs text-gray-500 hover:text-gray-300">Tmux Console</button>
+            <a id="opencode-iframe-newtab" href="{{ opencode_url }}" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300">Open in new tab &rarr;</a>
+        </div>
+    </div>
+    <div class="px-3 py-2 bg-yellow-900/20 border-b border-yellow-900/30 text-xs text-yellow-400 flex items-center gap-2" id="opencode-iframe-notice">
+        <i data-lucide="alert-triangle" class="w-3 h-3 shrink-0"></i>
+        <span>If blank, OpenCode may block iframes. <a id="opencode-iframe-notice-link" href="{{ opencode_url }}" target="_blank" class="underline">Open in new tab</a> instead.</span>
+    </div>
+    <iframe id="opencode-frame" src="" class="w-full" style="min-height: 700px;"></iframe>
 </div>
 
 <!-- Config snippet -->
@@ -206,6 +225,7 @@ async function startAll(btn) {
     if (!btn) return;
     btn.textContent = 'Starting...'; btn.disabled = true;
     await fetch('/api/ai/start', {method:'POST'});
+    launchOpencode();
     setTimeout(() => { refreshStatus(); btn.textContent = 'Start All'; btn.disabled = false; }, 3000);
 }
 
@@ -216,6 +236,8 @@ async function stopAll() {
 }
 
 // ---- Opencode ----
+const ocUrl = '{{ opencode_url }}';
+
 async function launchOpencode() {
     const btn = document.getElementById('btn-opencode');
     btn.textContent = 'Starting...'; btn.disabled = true;
@@ -223,34 +245,125 @@ async function launchOpencode() {
     const result = await r.json();
     btn.textContent = 'Launch Opencode'; btn.disabled = false;
     if (result.status === 'started' || result.status === 'already_running') {
-        document.getElementById('opencode-status').textContent = 'Running in tmux session "opencode"';
-        pollOpencodeOutput();
+        document.getElementById('opencode-status').textContent = 'Running — web UI on port ' + (result.url || ocUrl).split(':').pop();
+        showOpencodeFrame(result.url || ocUrl);
     } else {
         document.getElementById('opencode-status').textContent = 'Failed: ' + (result.error || 'unknown');
     }
 }
 
-async function stopOpencode() {
-    await fetch('/api/cc', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'run tmux kill-session -t opencode'})});
-    document.getElementById('opencode-status').textContent = 'Not running';
-    document.getElementById('opencode-output').textContent = '';
+function showOpencodeFrame(url) {
+    const panel = document.getElementById('opencode-iframe-panel');
+    const frame = document.getElementById('opencode-frame');
+    panel.classList.remove('hidden');
+    if (!frame.src || frame.src === 'about:blank') {
+        frame.src = url;
+    }
+    // Show and update the new-tab link in the status card
+    const newTabLink = document.getElementById('opencode-new-tab');
+    if (newTabLink) { newTabLink.classList.remove('hidden'); newTabLink.href = url; }
+    // Update all the new-tab links in the iframe panel
+    document.querySelectorAll('#opencode-iframe-newtab, #opencode-iframe-notice-link').forEach(a => a.href = url);
 }
 
-let opencodePoll = null;
-async function pollOpencodeOutput() {
-    const el = document.getElementById('opencode-output');
-    const statusEl = document.getElementById('opencode-status');
-    const r = await fetch('/api/ai/opencode-output');
-    const result = await r.json();
-    if (result.running) {
-        el.textContent = result.output;
-        statusEl.textContent = 'Running in tmux session "opencode"';
-        opencodePoll = setTimeout(pollOpencodeOutput, 2000);
-    } else {
-        statusEl.textContent = 'Stopped';
-        opencodePoll = null;
-    }
+async function stopOpencode() {
+    await fetch('/api/cc', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'run tmux kill-session -t opencode'})});
+    if (ocWs) { ocWs.close(); ocWs = null; }
+    document.getElementById('opencode-status').textContent = 'Not running';
+    document.getElementById('opencode-iframe-panel').classList.add('hidden');
+    document.getElementById('opencode-frame').src = 'about:blank';
 }
+
+async function checkOpencodeStatus() {
+    try {
+        const r = await fetch('/api/ai/opencode-output');
+        const result = await r.json();
+        if (result.running) {
+            document.getElementById('opencode-status').textContent = 'Running — web UI on port ' + ocUrl.split(':').pop();
+            showOpencodeFrame(ocUrl);
+        } else {
+            document.getElementById('opencode-status').textContent = 'Not running';
+            document.getElementById('opencode-iframe-panel').classList.add('hidden');
+        }
+    } catch (_) { /* transient */ }
+}
+
+// ---- Opencode Console (real PTY via WS terminal -> tmux attach) ----
+const ocTerm = new Terminal({
+    theme: { background: '#030712', foreground: '#e5e7eb', cursor: '#6366f1',
+             black: '#000', red: '#ef4444', green: '#22c55e', yellow: '#eab308',
+             blue: '#6366f1', magenta: '#a855f7', cyan: '#22d3ee', white: '#fff' },
+    fontSize: 12, fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    cursorBlink: true, convertEol: true,
+});
+const ocFit = new FitAddon.FitAddon();
+ocTerm.loadAddon(ocFit);
+ocTerm.open(document.getElementById('oc-terminal-container'));
+ocFit.fit();
+window.addEventListener('resize', () => { ocFit.fit(); ocSendResize(); });
+
+let ocWs = null;
+
+function ocWsUrl() {
+    const loc = window.location;
+    const wsPort = {{ config.get('ws_port', 5001) }};
+    const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + loc.hostname + ':' + wsPort;
+}
+
+function ocSendResize() {
+    if (!ocWs || ocWs.readyState !== WebSocket.OPEN) return;
+    const d = ocFit.proposeDimensions();
+    if (d) ocWs.send(JSON.stringify({ type: 'resize', rows: d.rows, cols: d.cols }));
+}
+
+function toggleOcConsole() {
+    const container = document.getElementById('oc-terminal-container');
+    const btn = document.getElementById('btn-oc-console');
+    // If console is visible, hide it
+    if (!container.classList.contains('hidden') && ocWs && ocWs.readyState === WebSocket.OPEN) {
+        ocWs.close();
+        container.classList.add('hidden');
+        btn.textContent = 'Tmux Console';
+        return;
+    }
+    // Show console and connect
+    container.classList.remove('hidden');
+    btn.textContent = 'Disconnect';
+    ocFit.fit();
+    ocWs = new WebSocket(ocWsUrl());
+    ocWs.binaryType = 'arraybuffer';
+    ocWs.onopen = () => ocWs.send(JSON.stringify({ tmux: 'opencode' }));
+    ocWs.onmessage = (e) => {
+        if (typeof e.data === 'string') {
+            try {
+                const m = JSON.parse(e.data);
+                if (m.type === 'connected') {
+                    ocTerm.write('\r\n\x1b[1;36mAttached to tmux session "opencode"\x1b[0m\r\n');
+                    return;
+                }
+            } catch (_) { /* raw terminal output */ }
+            ocTerm.write(e.data);
+        } else {
+            ocTerm.write(new Uint8Array(e.data));
+        }
+    };
+    ocWs.onclose = () => {
+        btn.textContent = 'Tmux Console';
+        container.classList.add('hidden');
+        ocTerm.write('\r\n\x1b[90m(console disconnected)\x1b[0m\r\n');
+        ocWs = null;
+    };
+    ocWs.onerror = () => {
+        ocTerm.write('\r\n\x1b[31mWS error — is the terminal server (ws_port) running?\x1b[0m\r\n');
+        ocWs.close();
+    };
+}
+
+ocTerm.onData((data) => {
+    if (ocWs && ocWs.readyState === WebSocket.OPEN) ocWs.send(data);
+});
+ocTerm.onResize(() => setTimeout(ocSendResize, 200));
 
 async function refreshConfig() {
     try {
@@ -266,5 +379,6 @@ async function refreshConfig() {
 refreshStatus();
 refreshConfig();
 setInterval(refreshStatus, 10000);
+setInterval(checkOpencodeStatus, 5000);
 </script>
 {% endblock %}

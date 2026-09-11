@@ -10,8 +10,7 @@ import threading
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 

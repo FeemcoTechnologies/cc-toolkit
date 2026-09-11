@@ -1,0 +1,244 @@
+checklist_id: ad-internal-network
+title: Active Directory Internal Network Penetration Test Checklist
+description: >
+  Comprehensive checklist for assessing an Active Directory environment from
+  an internal network perspective. Covers reconnaissance, authentication attacks,
+  privilege escalation, lateral movement, domain persistence, and forest trust
+  abuse mapped to MITRE ATT&CK.
+version: "1.0"
+categories:
+  - name: Initial Reconnaissance
+    items:
+      - id: AD-IR-1
+        description: Enumerate domain controllers via LDAP, DNS SRV records, and SMB
+        mitre_attack: T1595
+        runbook: quick-recon
+      - id: AD-IR-2
+        description: Enumerate domain users via Kerberos AS-REP (Kerbrute user enum)
+        mitre_attack: T1589
+        runbook: ad-enum-v2
+      - id: AD-IR-3
+        description: Enumerate domain admins, groups, computers, and OUs via LDAP
+        mitre_attack: T1087
+        runbook: ad-enum-v2
+      - id: AD-IR-4
+        description: BloodHound ingestor — map AD attack paths
+        mitre_attack: T1595
+      - id: AD-IR-5
+        description: Enumerate DNS zones and records
+        mitre_attack: T1595
+      - id: AD-IR-6
+        description: Scan for SMB signing disabled hosts
+        mitre_attack: T1557
+      - id: AD-IR-7
+        description: Enumerate MSSQL instances / services across the domain
+        mitre_attack: T1595
+
+  - name: Credential Access — Authentication Attacks
+    items:
+      - id: AD-CA-1
+        description: AS-REP roasting — retrieve TGT for users with DONT_REQ_PREAUTH
+        mitre_attack: T1558
+        runbook: password-audit-v2
+      - id: AD-CA-2
+        description: Kerberoasting — request TGS for service accounts
+        mitre_attack: T1558
+        runbook: password-audit-v2
+      - id: AD-CA-3
+        description: Password spraying across all domain users
+        mitre_attack: T1110
+      - id: AD-CA-4
+        description: SMB relay / NTLM relay to capture hashes
+        mitre_attack: T1557
+      - id: AD-CA-5
+        description: LLMNR / mDNS / NBT-NS poisoning for NTLMv2 hash capture
+        mitre_attack: T1557
+      - id: AD-CA-6
+        description: Responder capture — analyze captured NTLMv2 hashes
+        mitre_attack: T1557
+      - id: AD-CA-7
+        description: Crack captured hashes with hashcat / John (rockyou / rules)
+        mitre_attack: T1110
+        runbook: password-audit-v2
+      - id: AD-CA-8
+        description: IPv6 DNS spoofing (mitm6) — capture auth via WPAD poison
+        mitre_attack: T1557
+      - id: AD-CA-9
+        description: Password in description / SMB comments / GPP passwords
+        mitre_attack: T1552
+      - id: AD-CA-10
+        description: Group Managed Service Account (gMSA) password retrieval
+        mitre_attack: T1552
+
+  - name: Privilege Escalation — ACL & Delegation Abuse
+    items:
+      - id: AD-PE-1
+        description: BloodHound path analysis — identify shortest path to DA
+        mitre_attack: T1068
+      - id: AD-PE-2
+        description: GenericAll / GenericWrite / WriteOwner ACE abuse on user or group
+        mitre_attack: T1098
+      - id: AD-PE-3
+        description: ForceChangePassword on high-value user without admin
+        mitre_attack: T1098
+      - id: AD-PE-4
+        description: AllowedToAct on behalf of other identity (Resource-Based Constrained Delegation)
+        mitre_attack: T1558
+      - id: AD-PE-5
+        description: Unconstrained delegation on computer objects
+        mitre_attack: T1558
+      - id: AD-PE-6
+        description: Constrained delegation abuse — protocol transition enabled
+        mitre_attack: T1558
+      - id: AD-PE-7
+        description: AdminSDHolder / SDProp manipulation for backdoor persistence
+        mitre_attack: T1098
+      - id: AD-PE-8
+        description: Group Policy inheritance abuse — modify GPO linked to admin group
+        mitre_attack: T1484
+      - id: AD-PE-9
+        description: DNSAdmin to domain admin via dnsadmin group exploit
+        mitre_attack: T1068
+
+  - name: Lateral Movement
+    items:
+      - id: AD-LM-1
+        description: PSRemoting / WinRM to other domain-joined hosts
+        mitre_attack: T1021
+      - id: AD-LM-2
+        description: WMI execution for lateral movement
+        mitre_attack: T1047
+      - id: AD-LM-3
+        description: Scheduled task creation on remote host
+        mitre_attack: T1053
+      - id: AD-LM-4
+        description: SMB exec / PsExec for command execution
+        mitre_attack: T1021
+      - id: AD-LM-5
+        description: Pass-the-Hash (PtH) using NTLM hashes
+        mitre_attack: T1550
+      - id: AD-LM-6
+        description: Overpass-the-Hash (Kerberos token from NTLM hash)
+        mitre_attack: T1550
+      - id: AD-LM-7
+        description: Silver ticket — forge TGS for service with known SPN password
+        mitre_attack: T1558
+      - id: AD-LM-8
+        description: DCOM lateral movement (MMC, Excel, ShellWindows)
+        mitre_attack: T1021
+
+  - name: Domain Persistence
+    items:
+      - id: AD-DP-1
+        description: Golden ticket — forge KRBTGT TGT for any user
+        mitre_attack: T1558
+      - id: AD-DP-2
+        description: Diamond ticket — modify existing TGT with KRBTGT hash
+        mitre_attack: T1558
+      - id: AD-DP-3
+        description: Skeleton key / security support provider (SSP) injection
+        mitre_attack: T1554
+      - id: AD-DP-4
+        description: DSRM (Directory Services Restore Mode) password abuse
+        mitre_attack: T1098
+      - id: AD-DP-5
+        description: Custom ACL-based backdoor on high-value object
+        mitre_attack: T1098
+      - id: AD-DP-6
+        description: AdminCount attribute manipulation to hide in BloodHound
+        mitre_attack: T1098
+      - id: AD-DP-7
+        description: Set custom SPN on user for Kerberoasting persistence
+        mitre_attack: T1558
+
+  - name: Domain Trust Abuse
+    items:
+      - id: AD-DT-1
+        description: Enumerate all domain trusts and forest trusts
+        mitre_attack: T1482
+      - id: AD-DT-2
+        description: SIDHistory injection across forest trust (extra SIDs)
+        mitre_attack: T1558
+      - id: AD-DT-3
+        description: Inter-forest trust ticket (TGT) delegation abuse
+        mitre_attack: T1482
+      - id: AD-DT-4
+        description: Child-to-parent domain trust abuse (KRBTGT hash from child)
+        mitre_attack: T1558
+      - id: AD-DT-5
+        description: Azure AD Connect (AAD) account compromise to reach cloud
+        mitre_attack: T1528
+      - id: AD-DT-6
+        description: Federated trust (AD FS) token signing cert theft
+        mitre_attack: T1558
+
+  - name: Active Directory Certificate Services (ADCS)
+    items:
+      - id: AD-ADCS-1
+        description: ESC1 — SAN attribute in certificate template (domain admin cert)
+        mitre_attack: T1558
+        runbook: ad-cs-v2
+      - id: AD-ADCS-2
+        description: ESC2 — Any purpose EKU in certificate template
+        runbook: ad-cs-v2
+      - id: AD-ADCS-3
+        description: ESC3 — Enrollment agent certificate template abuse
+        runbook: ad-cs-v2
+      - id: AD-ADCS-4
+        description: ESC4 — Weak ACL on certificate template allows modification
+        runbook: ad-cs-v2
+      - id: AD-ADCS-5
+        description: ESC5 — Weak CA security (DC access, web enrollment enabled)
+      - id: AD-ADCS-6
+        description: ESC6 — EDITF_ATTRIBUTESUBJECTALTNAME2 flag on CA
+        runbook: ad-cs-v2
+      - id: AD-ADCS-7
+        description: ESC7 — CA certificate manager approval bypass
+        runbook: ad-cs-v2
+      - id: AD-ADCS-8
+        description: ESC8 — NTLM relay to AD CS web enrollment (RPC over HTTP)
+        runbook: ad-cs-v2
+      - id: AD-ADCS-9
+        description: ESC9/ESC10/ESC11 — No security extension / weak certificate mapping
+        runbook: ad-cs-v2
+
+  - name: Post-Exploitation & Data Access
+    items:
+      - id: AD-PX-1
+        description: DCSync — replicate directory from DC (DRSUAPI)
+        mitre_attack: T1003
+        runbook: ad-enum-v2
+      - id: AD-PX-2
+        description: NTDS.dit extraction and offline hash cracking
+        mitre_attack: T1003
+      - id: AD-PX-3
+        description: LSA Secrets / SAM hive dump from domain-joined host
+        mitre_attack: T1003
+      - id: AD-PX-4
+        description: Group Policy object extraction for passwords and configs
+        mitre_attack: T1552
+      - id: AD-PX-5
+        description: SMB share enumeration for sensitive data
+        mitre_attack: T1552
+      - id: AD-PX-6
+        description: MSSQL linked server abuse for cross-server queries
+        mitre_attack: T1021
+
+  - name: Detection & Logging Gaps
+    items:
+      - id: AD-DL-1
+        description: Windows Event Log 4625 (failed logon) / 4776 (NTLM) not monitored
+        mitre_attack: T1562
+      - id: AD-DL-2
+        description: Kerberos 4768 / 4769 (TGT/TGS requests) not monitored for roasting
+      - id: AD-DL-3
+        description: PowerShell logging (ScriptBlock, Module, Transcription) disabled
+        mitre_attack: T1562
+      - id: AD-DL-4
+        description: Sysmon not deployed on domain controllers
+      - id: AD-DL-5
+        description: No alert on DCSync (4662 on DS-Replication-Get-Changes)
+      - id: AD-DL-6
+        description: No alert on service creation (4697) or scheduled task creation (4698)
+      - id: AD-DL-7
+        description: LAPS not deployed to randomize local admin passwords

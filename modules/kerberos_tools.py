@@ -1,12 +1,11 @@
 import logging
 """Kerberos configuration & ticket management — time sync, krb5.conf, kinit."""
 
-import os
 import re
 import subprocess
 from pathlib import Path
 from shutil import which
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 
@@ -300,7 +299,6 @@ def bloodhound_ingest(domain: str, username: str, password: str,
         cmd = ["python3", "-m", "bloodhound"]
     else:
         cmd = ["python3", str(bh_script)]
-        cmd_dir = str(bh_script.parent)
 
     cmd += ["-d", domain, "-u", username, "-p", password,
             "-c", collection_method, "--zip"]

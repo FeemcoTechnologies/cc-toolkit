@@ -1,0 +1,333 @@
+# CC Toolkit — MCP Feature Manifest
+
+Generated: 2026-08-10T18:52:56
+
+This manifest reflects the tool surface the MCP server would expose
+at the next start, based on `config.json` `features` (and the `CC_MCP_TOOLS` env override if set).
+
+- Feature groups: **12** available, **12** enabled
+- Tool index: **296** MCP tools
+- Exposed at next start: **295** (always-on: doctor)
+- Env override `CC_MCP_TOOLS`: none (config applies)
+
+## Enabled groups
+
+- **ad** — Active Directory (25 tools)
+- **appsec** — AppSec (DAST/SAST/SCA) (22 tools)
+- **bb** — Bug Bounty (10 tools)
+- **binary** — Binary Exploitation (16 tools)
+- **case** — Case Management (104 tools)
+- **forensics** — Forensics & Creds (15 tools)
+- **recon** — Recon & Assets (42 tools)
+- **rules** — Rule Engine & Reference (17 tools)
+- **tool-exec** — Tool Execution (10 tools)
+- **util** — Utility (5 tools)
+- **web** — Web App Testing (11 tools)
+- **wifi** — WiFi / Wireless (24 tools)
+
+## Allowlist (prefixes)
+```
+case,evidence,findings,ir_,projects,job,jobs,flashcards,prompts,playbook,runbook,papermill,dashboard,nmap,auto_recon,dns,enum4linux,assets,customers,credentials,loot,ffuf,gobuster,pd,web,tool_sqlmap,tool_caido,tool_gophish,tool_evilginx,burp,zap,caido,sbom,sca_,secret_scan,sast,osv,cdn,appsec_scan,ad,impacket,kerberos,pypykatz,tool_bloodhound,tool_windapsearch,tool_evil_winrm,tool_responder,wifi,binary,bin_surface,bb,forensics,browser,tool_lazagne,tool_trufflehog,tool_john,tool_pspy,tool_winpeas,hashcat,linpeas,rules,ref,tags,tools,chisel,tool_chisel,tool_ligolo,tool_metasploit,tool_hydra,util,doctor
+```
+
+## Force-disabled (denylist)
+
+- (none)
+
+## Exposed tools
+
+- `ad_bloodyad_dump`
+- `ad_bloodyad_exec`
+- `ad_certipy_find`
+- `ad_certipy_request`
+- `ad_kerbrute_bruteforce`
+- `ad_kerbrute_userenum`
+- `ad_ldapnomnom_enum`
+- `ad_netexec_pre2k`
+- `appsec_scan`
+- `assets_create`
+- `assets_delete`
+- `assets_import_nmap`
+- `assets_list`
+- `assets_stats`
+- `auto_recon`
+- `bb_creds_clear`
+- `bb_creds_list`
+- `bb_creds_set`
+- `bb_discover`
+- `bb_import_case`
+- `bb_program_get`
+- `bb_programs_list`
+- `bb_reports_get`
+- `bb_sync`
+- `bb_sync_program`
+- `bin_surface`
+- `binary_analyze`
+- `binary_angr`
+- `binary_check`
+- `binary_checksec`
+- `binary_cyclic`
+- `binary_exploit_strategy`
+- `binary_fmtstr`
+- `binary_functions`
+- `binary_fuzz`
+- `binary_gadgets`
+- `binary_heap`
+- `binary_pattern_offset`
+- `binary_strings`
+- `binary_summary`
+- `binary_vulns`
+- `browser_analyze_chrome_profile`
+- `browser_analyze_leveldb`
+- `browser_extract_sensitive`
+- `burp_health`
+- `burp_import`
+- `burp_issues_list`
+- `burp_scan_start`
+- `burp_scan_status`
+- `caido_health`
+- `caido_requests`
+- `caido_workflows`
+- `case_archive`
+- `case_checklist_delete`
+- `case_checklist_finding`
+- `case_checklist_from_findings`
+- `case_checklist_init`
+- `case_checklist_items`
+- `case_checklist_list`
+- `case_checklist_progress`
+- `case_checklist_status`
+- `case_checklist_template_get`
+- `case_checklist_templates`
+- `case_checklist_update`
+- `case_close`
+- `case_create`
+- `case_delete`
+- `case_evidence_add`
+- `case_evidence_list`
+- `case_evidence_upload`
+- `case_evidence_verify`
+- `case_export`
+- `case_files_delete`
+- `case_files_list`
+- `case_files_preview`
+- `case_files_tree`
+- `case_files_upload`
+- `case_finding_add`
+- `case_finding_add_tag`
+- `case_finding_create`
+- `case_finding_delete`
+- `case_finding_detail`
+- `case_finding_link_evidence`
+- `case_finding_remove_tag`
+- `case_finding_retest_add`
+- `case_finding_retest_delete`
+- `case_finding_retests`
+- `case_finding_unlink_evidence`
+- `case_finding_update`
+- `case_findings_bulk_delete`
+- `case_findings_bulk_update`
+- `case_goal_add`
+- `case_goal_list`
+- `case_info`
+- `case_list`
+- `case_nmap_scan`
+- `case_notes_add`
+- `case_notes_list`
+- `case_report_engagement`
+- `case_report_generate`
+- `case_report_obsidian`
+- `case_retests_summary`
+- `case_scope_add`
+- `case_scope_check`
+- `case_scope_list`
+- `case_scope_remove`
+- `case_strength_add`
+- `case_strength_list`
+- `case_strength_remove`
+- `case_tags_list`
+- `case_task_add`
+- `case_task_delete`
+- `case_task_done`
+- `case_task_list`
+- `case_task_toggle`
+- `case_timeline`
+- `case_topology`
+- `case_unarchive`
+- `case_update_meta`
+- `case_weakness_add`
+- `case_weakness_list`
+- `case_weakness_remove`
+- `cdn_scan`
+- `chisel_tunnel`
+- `credentials_create`
+- `credentials_delete`
+- `credentials_get`
+- `credentials_list`
+- `customers_create`
+- `customers_delete`
+- `customers_list`
+- `dashboard_stats`
+- `dns_history`
+- `dns_monitor_start`
+- `dns_monitor_stop`
+- `dns_monitors`
+- `dns_resolve`
+- `dns_track_domain`
+- `doctor_run`
+- `enum4linux`
+- `evidence_delete`
+- `evidence_download_url`
+- `evidence_list`
+- `evidence_upload`
+- `ffuf_directory`
+- `findings_list`
+- `findings_stats`
+- `flashcards_deck`
+- `flashcards_list`
+- `forensics_kape_collect`
+- `forensics_semgrep_scan`
+- `forensics_yara_scan`
+- `gobuster_directory`
+- `hashcat_crack`
+- `impacket_psexec`
+- `impacket_secretsdump`
+- `impacket_smbexec`
+- `impacket_ticketer`
+- `impacket_wmiexec`
+- `ir_containment_add`
+- `ir_containment_list`
+- `ir_summary`
+- `ir_timeline_add`
+- `ir_timeline_list`
+- `ir_ttp_add`
+- `ir_ttp_list`
+- `job_cancel`
+- `job_create`
+- `job_status`
+- `jobs_list`
+- `kerberos_config`
+- `kerberos_kinit`
+- `kerberos_klist`
+- `kerberos_setup`
+- `kerberos_time_sync`
+- `linpeas_local`
+- `loot_add_credential`
+- `loot_add_session`
+- `loot_add_token`
+- `loot_delete_credential`
+- `loot_delete_session`
+- `loot_delete_token`
+- `loot_list_credentials`
+- `loot_list_sessions`
+- `loot_list_tokens`
+- `loot_search`
+- `nmap_full_tcp`
+- `nmap_initial_tcp`
+- `nmap_initial_udp`
+- `nmap_parse`
+- `nmap_pipeline`
+- `osv_scan`
+- `papermill_list`
+- `papermill_run`
+- `pd_dnsx`
+- `pd_httpx`
+- `pd_katana`
+- `pd_naabu`
+- `pd_subfinder`
+- `playbook_launch`
+- `playbook_list`
+- `playbook_log`
+- `playbook_status`
+- `projects_board_data`
+- `projects_board_update`
+- `prompts_get`
+- `prompts_list`
+- `pypykatz_parse`
+- `ref_cves`
+- `ref_event_ids`
+- `ref_ldap_filters`
+- `rules_bulk_delete`
+- `rules_create`
+- `rules_delete`
+- `rules_export`
+- `rules_get`
+- `rules_import`
+- `rules_list`
+- `rules_save`
+- `rules_scan_all`
+- `rules_scan_target`
+- `rules_stats`
+- `rules_template`
+- `runbook_get`
+- `runbook_get_steps`
+- `runbook_list`
+- `runbook_set`
+- `sast_scan`
+- `sbom_existing`
+- `sbom_generate`
+- `sca_grype_scan`
+- `sca_trivy_scan`
+- `secret_scan`
+- `tags_resolve`
+- `tags_search`
+- `tool_bloodhound_py_ingest`
+- `tool_caido_import`
+- `tool_chisel_server`
+- `tool_evil_winrm_connect`
+- `tool_evilginx_start`
+- `tool_gophish_import`
+- `tool_hydra_bruteforce`
+- `tool_john_crack`
+- `tool_lazagne_run`
+- `tool_ligolo_agent`
+- `tool_ligolo_proxy`
+- `tool_metasploit_module`
+- `tool_metasploit_resource`
+- `tool_pspy_monitor`
+- `tool_responder_analyze`
+- `tool_responder_poison`
+- `tool_sqlmap_detect`
+- `tool_sqlmap_exploit`
+- `tool_trufflehog_local`
+- `tool_trufflehog_org`
+- `tool_windapsearch_enum`
+- `tool_winpeas_run`
+- `tools_discover`
+- `tools_run_in_dir`
+- `tools_search`
+- `util_mitm_start`
+- `util_route_scan`
+- `util_sigma_convert`
+- `util_swaks_send`
+- `util_wsgidav_serve`
+- `web_graphw00f_scan`
+- `web_jwt_attack`
+- `web_jwt_scan`
+- `web_nuclei_scan`
+- `wifi_arp_spoof`
+- `wifi_auto_attack`
+- `wifi_connect`
+- `wifi_deauth`
+- `wifi_eaphammer_attack`
+- `wifi_evil_twin`
+- `wifi_handshake_capture`
+- `wifi_mitmproxy`
+- `wifi_monitor_cleanup_orphans`
+- `wifi_monitor_data`
+- `wifi_monitor_interfaces`
+- `wifi_monitor_parse_pcap`
+- `wifi_monitor_sessions`
+- `wifi_monitor_start`
+- `wifi_monitor_status`
+- `wifi_monitor_stop`
+- `wifi_network_scan`
+- `wifi_proxy`
+- `wifi_rogue_ap`
+- `wifi_scan`
+- `wifi_sycophant_relay`
+- `wifi_wireless_graph`
+- `zap_health`
+- `zap_issues_list`
+- `zap_scan_start`
+- `zap_scan_status`

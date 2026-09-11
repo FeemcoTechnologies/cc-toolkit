@@ -9,16 +9,15 @@ Supports both legacy playbook YAML (simple tool chain) and v2 runbook YAML.
 import datetime
 import functools
 import json
-import os
 import re
 import subprocess
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import escape as html_escape
 from pathlib import Path
 from shutil import which
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 from .config import PLAYBOOKS_DIR, CASES_DIR, CC_DIR
 from .notifier import Notifier
@@ -379,6 +378,20 @@ def _exec_parallel(step: dict, ctx: RunContext, run_step_fn) -> List[dict]:
     return results
 
 
+def _exec_sequential(step: dict, ctx: RunContext, run_step_fn) -> List[dict]:
+    children = step.get("steps", [])
+    if isinstance(children, dict):
+        children = [children]
+    results = []
+    for s in children:
+        r = run_step_fn(s, ctx)
+        if isinstance(r, list):
+            results.extend(r)
+        else:
+            results.append(r)
+    return results
+
+
 def _exec_prompt(step: dict, ctx: RunContext, run_step_fn=None) -> dict:
     cond = step.get("condition") or step.get("when", True)
     if not _eval_condition(cond, ctx):
@@ -419,7 +432,7 @@ def _exec_notify(step: dict, ctx: RunContext) -> dict:
     if webhook_targets:
         cfg = {}
         try:
-            from .constants import load_config
+from .config import load_config
             cfg = load_config()
         except Exception:
 
@@ -467,8 +480,15 @@ def _exec_runbook(step: dict, ctx: RunContext, run_step_fn) -> dict:
         return {"error": f"Runbook not found: {path}"}
 
     sub_vars = ctx.resolve_args(step.get("vars", {}))
+    # Unique sub case_id per nested runbook: a shared "{parent}_sub" suffix
+    # makes parallel sub-runbooks write to the same case dir and clobber each
+    # other's runbook-log.json / artifacts. The counter is incremented under
+    # ctx._lock so concurrent parallel siblings get distinct ids.
+    with ctx._lock:
+        ctx._sub_seq = getattr(ctx, "_sub_seq", 0) + 1
+        sub_seq = ctx._sub_seq
     sub_ctx = RunContext(
-        str(pb), ctx.targets, f"{ctx.case_id}_sub",
+        str(pb), ctx.targets, f"{ctx.case_id}_sub{sub_seq}",
         {**ctx.vars, **sub_vars}
     )
     engine = RunbookEngine(PLAYBOOKS_DIR)
@@ -499,14 +519,17 @@ def _exec_report(step: dict, ctx: RunContext) -> dict:
         sections["Step Outputs"] += f"- `{sid}` rc={rc} `{cmd}`\n"
 
     if fmt == "html":
+        # Escape all interpolated text — title, headings and step bodies can
+        # contain user/scan data that must not break out of the HTML document.
+        e_title = html_escape(title)
         html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>{title}</title><style>
+<title>{e_title}</title><style>
 body {{ font-family: Arial; margin: 2em; background: #f5f5f5; }}
 h1 {{ color: #1a1a2e; border-bottom: 3px solid #e94560; }}
 pre {{ background: #1e1e2e; color: #cdd6f4; padding: 1em; border-radius: 6px; }}
-</style></head><body><h1>{title}</h1>"""
+</style></head><body><h1>{e_title}</h1>"""
         for h, b in sections.items():
-            html += f"<h2>{h}</h2><pre>{b}</pre>"
+            html += f"<h2>{html_escape(h)}</h2><pre>{html_escape(b)}</pre>"
         html += f"<p>Generated {datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')} UTC</p></body></html>"
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         Path(output).write_text(html)
@@ -537,7 +560,7 @@ def _exec_burp(step: dict, ctx: RunContext) -> dict:
         host: str         — filter proxy history by host
     """
     from .burp_client import BurpClient
-    from .constants import BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
+from .config import BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
 
     action = step.get("action", "health")
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY,
@@ -702,7 +725,7 @@ class RunbookEngine:
             errors.append(f"{prefix}: expected a dict, got {type(step).__name__} ('{step}')")
             return
 
-        step_id = step.get("id", step.get("name", f"<index>"))
+        step_id = step.get("id", step.get("name", "<index>"))
 
         # Must have at least one meaningful field
         has_content = bool(step.get("id") or step.get("name") or
@@ -861,7 +884,6 @@ class RunbookEngine:
         # Write minimal case.json so the case is accessible from the dashboard
         case_json = ctx.case_dir / "case.json"
         if not case_json.exists():
-            import calendar
             now = datetime.datetime.now(datetime.timezone.utc)
             case_json.write_text(json.dumps({
                 "case_id": ctx.case_id,
@@ -896,12 +918,11 @@ class RunbookEngine:
     def _run_steps(self, steps: list, ctx: RunContext,
                    verbose: bool) -> List[dict]:
         results = []
-        prompt_skip = False
         for step in steps:
             # Check global skip-prompts
             if ctx.vars.get("_skip_prompts") and step.get("type") == "prompt":
                 if verbose:
-                    print(f"  Skipping prompt (global skip)")
+                    print("  Skipping prompt (global skip)")
                 continue
             r = self._run_step(step, ctx, verbose)
             if isinstance(r, list):
@@ -923,7 +944,7 @@ class RunbookEngine:
         when = step.get("when", True)
         if not _eval_condition(when, ctx):
             if verbose:
-                print(f"    skipped (condition not met)")
+                print("    skipped (condition not met)")
             return {"step_id": step_id, "skipped": True, "type": step_type}
 
         ctx.add_log({"step_id": step_id, "name": step_name, "type": step_type})
@@ -940,6 +961,8 @@ class RunbookEngine:
                 result = _exec_foreach(step, ctx, _rs)
             elif step_type == "parallel":
                 result = _exec_parallel(step, ctx, _rs)
+            elif step_type == "sequential":
+                result = _exec_sequential(step, ctx, _rs)
             elif step_type == "prompt":
                 result = _exec_prompt(step, ctx, _rs)
             elif step_type == "notify":
@@ -984,7 +1007,7 @@ class RunbookEngine:
             elif rc is not None:
                 print(f"    {'\u2713' if rc == 0 else '\u2717'} rc={rc}")
             else:
-                print(f"    \u2713")
+                print("    \u2713")
 
         return result
 

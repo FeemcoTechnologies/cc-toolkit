@@ -1,0 +1,112 @@
+rules:
+  - id: node.open-redirect-res
+    pattern: |
+      res.redirect($INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Open redirect — validate that res.redirect targets are local/allowlisted
+    metadata:
+      cwe: CWE-601
+
+  - id: node.nosql-injection-mongoose
+    pattern: |
+      $MODEL.find($QUERY_OBJ)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: NoSQL injection — ensure $query object is not attacker-controlled operators
+    metadata:
+      cwe: CWE-943
+
+  - id: node.mass-assignment-mongoose
+    pattern: |
+      $MODEL.findOneAndUpdate($FILTER, $BODY)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Mass assignment — if $BODY mirrors request.body, sensitive fields can be set
+    metadata:
+      cwe: CWE-915
+      owasp: A1
+
+  - id: node.path-traversal-res-send
+    pattern: |
+      res.sendFile($INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Path traversal risk — validate paths supplied to sendFile
+    metadata:
+      cwe: CWE-22
+      owasp: A1
+
+  - id: node.sqli-sequelize-raw
+    pattern: |
+      sequelize.query($QUERY_STRING)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Raw SQL query — use parameterized replacements if $query_string is built partially from input
+    metadata:
+      cwe: CWE-89
+      owasp: A1
+
+  - id: node.ssti-ejs
+    pattern: |
+      ejs.render($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: SSTI — never render user-controlled EJS templates
+    metadata:
+      cwe: CWE-1336
+
+  - id: node.handlebars-ssti
+    pattern: |
+      hbs.compile($INPUT)
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: Template injection — never compile user-controlled templates
+    metadata:
+      cwe: CWE-1336
+
+  - id: node.cookie-session-fixation
+    pattern: |
+      req.sessionID = $INPUT
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: Session fixation — never assign sessionID from user input
+    metadata:
+      cwe: CWE-384
+
+  - id: node.jwt-hardcoded-secret
+    pattern: |
+      jwt.sign($PAYLOAD, "$SECRET")
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: JWT signing with hardcoded secret — use env-injected strong secret
+    metadata:
+      cwe: CWE-345
+
+  - id: node.default-cors-any
+    pattern: |
+      app.use(cors())
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: CORS default reflects arbitrary origins — misconfig risk
+    metadata:
+      cwe: CWE-942
+
+  - id: node.cors-any-origin
+    pattern: |
+      cors({ origin: true })
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: CORS reflects any origin with credentials — likely misconfiguration
+    metadata:
+      cwe: CWE-942
+
+  - id: node.ssrf-httprequest
+    pattern: |
+      request.get($INPUT)
+    severity: WARNING
+    languages: [javascript, typescript]
+    message: SSRF risk — ensure URLs are not user-controlled
+    metadata:
+      cwe: CWE-918
+      owasp: A1

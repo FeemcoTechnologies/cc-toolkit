@@ -1369,9 +1369,13 @@ def resolve(tag: str) -> dict:
 def search(q: str, namespace: str = "") -> list:
     """Search tags by query string, optionally filtered by namespace."""
     results = []
-    sources = [ALL] if not namespace else {k: v for k, v in ALL.items() if k.startswith(namespace + ":")}
-    if not namespace and namespace in NAMESPACE_MAP:
-        sources = {k: v for k, v in NAMESPACE_MAP[namespace].items()}
+    if namespace and namespace in NAMESPACE_MAP:
+        sources = NAMESPACE_MAP[namespace]
+    elif namespace:
+        prefix = f"{namespace}:"
+        sources = {k: v for k, v in ALL.items() if k.startswith(prefix)}
+    else:
+        sources = ALL
     ql = q.lower()
     for key, val in sources.items():
         name = val[0] if isinstance(val, tuple) else val

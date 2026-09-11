@@ -37,7 +37,7 @@
             <div class="text-lg font-bold text-indigo-400">{{ s.total }}</div>
         </a>
         {% if fmt in ('nuclei', 'yara', 'semgrep', 'codeql') %}
-        <button onclick="event.stopPropagation(); openScanAllModal('{{ fmt }}')" class="absolute top-1 right-1 bg-gray-800 hover:bg-emerald-700 rounded px-1.5 py-0.5 text-xs opacity-0 group-hover:opacity-100 transition-opacity" title="Scan target with all {{ fmt }} rules">&#9654;</button>
+        <button data-scanall="{{ fmt }}" class="absolute top-1 right-1 bg-gray-800 hover:bg-emerald-700 rounded px-1.5 py-0.5 text-xs opacity-0 group-hover:opacity-100 transition-opacity" title="Scan target with all {{ fmt }} rules">&#9654;</button>
         {% endif %}
     </div>
     {% endfor %}
@@ -172,6 +172,14 @@
 <script>
 let scanAllFmt = '';
 let selectedRules = new Map();
+
+document.addEventListener('click', function(e) {
+    const btn = e.target.closest('[data-scanall]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openScanAllModal(btn.getAttribute('data-scanall'));
+});
 
 function openScanAllModal(fmt) {
     scanAllFmt = fmt;

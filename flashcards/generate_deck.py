@@ -1,4 +1,5 @@
 import yaml
+import os
 
 cards = [
   {
@@ -809,10 +810,12 @@ deck = {
     "cards": cards
 }
 
-with open(r"C:\Users\no_ne\Desktop\git-repo\Scripts\ai-combined-tools\flashcards\csirt-soc-analyst.yaml", "w", encoding="utf-8") as f:
+_out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csirt-soc-analyst.yaml")
+
+with open(_out_path, "w", encoding="utf-8") as f:
     yaml.dump(deck, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=4096)
 
-with open(r"C:\Users\no_ne\Desktop\git-repo\Scripts\ai-combined-tools\flashcards\csirt-soc-analyst.yaml", "r", encoding="utf-8") as f:
+with open(_out_path, "r", encoding="utf-8") as f:
     loaded = yaml.safe_load(f)
     print(f"Title: {loaded['title']}")
     print(f"Description: {loaded['description']}")

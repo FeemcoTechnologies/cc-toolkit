@@ -58,6 +58,25 @@
         return div.innerHTML;
     }
 
+    function renderResult(j) {
+        if (!j.result && !j.case_id) return '';
+        var html = '';
+        var cid = j.case_id || (j.result && j.result.case_id);
+        if (cid) {
+            html += '<div class="mt-2"><a href="/case/' + escapeHtml(cid) + '" class="text-xs text-indigo-400 hover:text-indigo-300">View Case: ' + escapeHtml(cid) + '</a></div>';
+        }
+        if (j.result && typeof j.result === 'object') {
+            try {
+                var pretty = JSON.stringify(j.result, null, 2);
+                html += '<details class="mt-2"><summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-200 select-none">Result (' + pretty.length + ' chars) &#9660;</summary>' +
+                    '<pre class="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-xs font-mono text-gray-300 max-h-80 overflow-auto whitespace-pre-wrap">' + escapeHtml(pretty) + '</pre></details>';
+            } catch (_) { }
+        } else if (j.result) {
+            html += '<div class="mt-2 text-xs text-gray-500 truncate">' + escapeHtml(String(j.result)) + '</div>';
+        }
+        return html;
+    }
+
     function renderJob(j) {
         var icon = ICONS[j.status] || '<span class="text-gray-400">?</span>';
         var pct = j.progress || 0;
@@ -109,8 +128,7 @@
             '<div class="h-full ' + barColor + ' rounded-full transition-all duration-500" style="width:' + pct + '%"></div>' +
             '</div>' +
             (j.error ? '<div class="mt-2 text-xs text-red-400 bg-red-900/30 rounded p-2 font-mono">' + escapeHtml(j.error) + '</div>' : '') +
-            (j.result && j.result.case_id ? '<div class="mt-2"><a href="/case/' + escapeHtml(j.result.case_id) + '" class="text-xs text-indigo-400 hover:text-indigo-300">View Case: ' + escapeHtml(j.result.case_id) + '</a></div>' : '') +
-            (j.result && !j.result.case_id ? '<div class="mt-2 text-xs text-gray-500 truncate">' + escapeHtml(JSON.stringify(j.result)) + '</div>' : '') +
+            renderResult(j) +
             '</div>';
     }
 

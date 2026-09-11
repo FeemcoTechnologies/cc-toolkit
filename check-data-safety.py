@@ -10,7 +10,6 @@ Scans staged files and the working directory for:
 Exit code: 0 = safe, 1 = BLOCKED
 """
 
-import os
 import re
 import subprocess
 import sys
@@ -69,7 +68,10 @@ def check_file(filepath: Path, is_staged: bool = False) -> list[str]:
     if not filepath.is_file():
         return violations
 
-    if filepath.suffix in (".py", ".yaml", ".yml", ".json", ".html", ".js", ".md", ".txt", ".sh", ".conf", ".env", ".toml", ".cfg", ".ini"):
+    # NOTE: Path(".env").suffix == "" (dotfiles have no extension), so the
+    # literal filename must be matched explicitly — otherwise .env is never
+    # content-scanned even though it's in the extension tuple.
+    if filepath.suffix in (".py", ".yaml", ".yml", ".json", ".html", ".js", ".md", ".txt", ".sh", ".conf", ".env", ".toml", ".cfg", ".ini") or filepath.name in (".env", ".env.example"):
         try:
             content = filepath.read_text(encoding="utf-8", errors="replace")
         except Exception:

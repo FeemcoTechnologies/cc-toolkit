@@ -1,16 +1,24 @@
 import datetime
-import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
-import subprocess
 import tarfile
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import CASES_DIR
+
+_CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+# Module-level locks shared across ALL CaseManager instances. The MCP layer
+# builds a fresh CaseManager per call, so per-instance locks would never
+# serialize concurrent writers and would allow lost updates.
+_MANIFEST_LOCK = threading.RLock()
+_FILE_LOCKS: Dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
 
 
 def _dir_size(path: Path) -> int:
@@ -83,14 +91,13 @@ class CaseManager:
     def __init__(self, cases_dir: Optional[Path] = None):
         self.cases_dir = Path(cases_dir or CASES_DIR)
         self.cases_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._file_locks: Dict[str, threading.Lock] = {}
 
     def _get_file_lock(self, path: Path) -> threading.Lock:
         key = str(path.resolve())
-        if key not in self._file_locks:
-            self._file_locks[key] = threading.Lock()
-        return self._file_locks[key]
+        with _FILE_LOCKS_GUARD:
+            if key not in _FILE_LOCKS:
+                _FILE_LOCKS[key] = threading.Lock()
+            return _FILE_LOCKS[key]
 
     def _update_json(self, path: Path, updater):
         """Atomically read, modify, and write a JSON file."""
@@ -104,22 +111,26 @@ class CaseManager:
             return result if result is not None else data
 
     def _case_path(self, case_id: str) -> Path:
+        if not _CASE_ID_RE.match(case_id or ""):
+            raise ValueError(f"Invalid case_id: {case_id!r}")
         return self.cases_dir / case_id
 
     def _manifest_path(self, case_id: str) -> Path:
         return self._case_path(case_id) / "case.json"
 
     def _write_manifest(self, case_id: str, manifest: dict):
-        """Atomically write manifest to case.json via tmp+replace."""
-        mf = self._manifest_path(case_id)
-        manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        tmp = mf.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(manifest, indent=2, default=str))
-        tmp.replace(mf)
+        """Atomically write manifest to case.json via tmp+replace (under shared lock)."""
+        with _MANIFEST_LOCK:
+            mf = self._manifest_path(case_id)
+            manifest["modified"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            tmp = mf.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(manifest, indent=2, default=str))
+            tmp.replace(mf)
 
     def _update_manifest(self, case_id: str, updater) -> Optional[dict]:
-        """Atomically read, modify, and write case.json. updater(manifest) is called under lock."""
-        with self._lock:
+        """Atomically read, modify, and write case.json. updater(manifest) is
+        called under the shared module lock (safe across concurrent instances)."""
+        with _MANIFEST_LOCK:
             mf = self._manifest_path(case_id)
             if not mf.exists():
                 return None
@@ -131,22 +142,27 @@ class CaseManager:
     def list_cases(self) -> List[dict]:
         cases = []
         for d in sorted(self.cases_dir.iterdir()):
-            if d.is_dir():
-                mf = d / "case.json"
-                if mf.exists():
-                    try:
-                        c = json.loads(mf.read_text())
-                    except (json.JSONDecodeError, ValueError):
-                        c = {"case_id": d.name, "status": "corrupt"}
-                    cases.append(c)
-                else:
-                    cases.append({
-                        "case_id": d.name,
-                        "created": datetime.datetime.fromtimestamp(
-                            d.stat().st_ctime
-                        ).isoformat(),
-                        "status": "unknown",
-                    })
+            if not d.is_dir():
+                continue
+            # CLI quick-scan output folders (scan_<ts>) are scan artifacts, not
+            # cases — keep them out of the case list.
+            if d.name.startswith("scan_"):
+                continue
+            mf = d / "case.json"
+            if mf.exists():
+                try:
+                    c = json.loads(mf.read_text())
+                except (json.JSONDecodeError, ValueError):
+                    c = {"case_id": d.name, "status": "corrupt"}
+                cases.append(c)
+            else:
+                cases.append({
+                    "case_id": d.name,
+                    "created": datetime.datetime.fromtimestamp(
+                        d.stat().st_ctime
+                    ).isoformat(),
+                    "status": "unknown",
+                })
         return cases
 
     def create(self, case_id: str, client: str = "",
@@ -185,7 +201,7 @@ class CaseManager:
         case_dir.mkdir(parents=True, exist_ok=True)
         for subdir in self.CASE_STRUCTURE:
             (case_dir / subdir).mkdir(parents=True, exist_ok=True)
-        self._manifest_path(case_id).write_text(json.dumps(manifest, indent=2))
+        self._write_manifest(case_id, manifest)
         # Log creation event
         self.ir_timeline_add(case_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                              f"Case created ({case_type})", severity="info",
@@ -250,7 +266,6 @@ class CaseManager:
         mf = self._manifest_path(case_id)
         if not mf.exists():
             return None
-        manifest = json.loads(mf.read_text())
         src = Path(filepath).resolve()
         if not src.exists():
             return None
@@ -282,23 +297,24 @@ class CaseManager:
             "description": description,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        manifest["evidence"].append(record)
-        self._write_manifest(case_id, manifest)
-        return record
+        return self._update_manifest(case_id, lambda manifest: (
+            manifest["evidence"].append(record), record)[-1])
 
     def delete_evidence(self, case_id: str, filename: str) -> bool:
         """Remove an evidence record from the manifest by filename. Returns True if found and removed."""
         mf = self._manifest_path(case_id)
         if not mf.exists():
             return False
-        manifest = json.loads(mf.read_text())
-        ev_list = manifest.get("evidence", [])
-        new_list = [e for e in ev_list if e.get("filename") != filename]
-        if len(new_list) == len(ev_list):
-            return False
-        manifest["evidence"] = new_list
-        self._write_manifest(case_id, manifest)
-        return True
+
+        def updater(manifest):
+            ev_list = manifest.get("evidence", [])
+            new_list = [e for e in ev_list if e.get("filename") != filename]
+            if len(new_list) == len(ev_list):
+                return False
+            manifest["evidence"] = new_list
+            return True
+
+        return self._update_manifest(case_id, updater)
 
     def verify_evidence(self, case_id: str) -> List[dict]:
         """Rehash all evidence files and compare against manifest. Return discrepancies."""
@@ -316,8 +332,11 @@ class CaseManager:
                     "expected_sha256": ev["sha256"],
                 })
                 continue
-            actual_sha = hashlib.sha256(stored.read_bytes()).hexdigest()
-            actual_md5 = hashlib.md5(stored.read_bytes()).hexdigest()
+            # Read the file once; compute both digests from the same bytes so
+            # a file modified mid-verify can't produce mismatched SHA/MD5.
+            data = stored.read_bytes()
+            actual_sha = hashlib.sha256(data).hexdigest()
+            actual_md5 = hashlib.md5(data).hexdigest()
             match = actual_sha == ev["sha256"] and actual_md5 == ev["md5"]
             results.append({
                 "filename": ev["filename"],
@@ -423,27 +442,22 @@ class CaseManager:
         tp = self._tasks_path(case_id)
         if not tp.exists():
             return False
-        tasks = json.loads(tp.read_text())
-        before = len(tasks["tasks"])
-        tasks["tasks"] = [t for t in tasks["tasks"] if t["id"] != task_id]
-        if len(tasks["tasks"]) < before:
-            tp.write_text(json.dumps(tasks, indent=2))
-            return True
-        return False
+
+        def updater(tasks):
+            before = len(tasks["tasks"])
+            tasks["tasks"] = [t for t in tasks["tasks"] if t["id"] != task_id]
+            return len(tasks["tasks"]) < before
+
+        return self._update_json(tp, updater)
 
     def add_note(self, case_id: str, body: str, tags: List[str] = None) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
         note = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "body": body,
             "tags": tags or [],
         }
-        manifest["notes"].append(note)
-        self._write_manifest(case_id, manifest)
-        return note
+        return self._update_manifest(case_id, lambda manifest: (
+            manifest["notes"].append(note), note)[-1])
 
     def close(self, case_id: str) -> Optional[dict]:
         return self.set_meta(case_id, status="closed")
@@ -462,22 +476,48 @@ class CaseManager:
         if not case_dir.exists():
             raise FileNotFoundError(f"Case '{case_id}' directory not found at {case_dir}")
 
-        # Ensure closed and log to timeline
         mf = self._manifest_path(case_id)
         now = datetime.datetime.now(datetime.timezone.utc)
+        # Snapshot the manifest so we can roll back if archiving fails. We set
+        # status="closed" BEFORE tarring so the embedded case.json is correct,
+        # but if the archive cannot be created we restore the original manifest
+        # instead of leaving the case marked closed with a false "archived" event.
+        backup_manifest = None
         if mf.exists():
-            manifest = json.loads(mf.read_text())
-            manifest["status"] = "closed"
-            self._write_manifest(case_id, manifest)
-            self.ir_timeline_add(case_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                 "Case archived", severity="info", source="system")
+            backup_manifest = json.loads(mf.read_text())
 
         archive_path = self._archive_path(case_id)
-        orig_size = _dir_size(case_dir)
-        with tarfile.open(archive_path, "w:gz") as tar:
-            tar.add(case_dir, arcname=case_id)
+        try:
+            # Set status="closed" and log the archived event BEFORE tarring so
+            # both are embedded in the archived case.json. On failure we restore
+            # the snapshot so we don't leave the case marked closed with a false
+            # "Case archived" event and no archive.
+            if mf.exists():
+                manifest = json.loads(mf.read_text())
+                manifest["status"] = "closed"
+                self._write_manifest(case_id, manifest)
+                self.ir_timeline_add(case_id, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                     "Case archived", severity="info", source="system")
 
-        shutil.rmtree(case_dir)
+            orig_size = _dir_size(case_dir)
+            with tarfile.open(archive_path, "w:gz") as tar:
+                tar.add(case_dir, arcname=case_id)
+
+            shutil.rmtree(case_dir)
+        except Exception:
+            # Roll back the status/timeline change and drop any partial archive.
+            if backup_manifest is not None:
+                try:
+                    self._write_manifest(case_id, backup_manifest)
+                except Exception:
+                    pass
+            try:
+                if archive_path.exists():
+                    archive_path.unlink()
+            except Exception:
+                pass
+            raise
+
         archived_size = archive_path.stat().st_size
         return {
             "case_id": case_id,
@@ -546,30 +586,24 @@ class CaseManager:
     # ---- Goals ----
     def goal_add(self, case_id: str, goal: str) -> Optional[dict]:
         """Add an analysis goal to a case. Goals are required for all case types."""
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        if "goals" not in manifest:
-            manifest["goals"] = []
-        manifest["goals"].append(goal)
-        self._write_manifest(case_id, manifest)
-        return {"case_id": case_id, "goals": manifest["goals"]}
+        def updater(manifest):
+            if "goals" not in manifest:
+                manifest["goals"] = []
+            manifest["goals"].append(goal)
+            return {"case_id": case_id, "goals": manifest["goals"]}
+        return self._update_manifest(case_id, updater)
 
     def goal_remove(self, case_id: str, index: int = -1) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        goals = manifest.get("goals", [])
-        if not goals:
-            return None
-        if 0 <= index < len(goals):
-            removed = goals.pop(index)
-        else:
-            removed = goals.pop()
-        self._write_manifest(case_id, manifest)
-        return {"removed": removed, "goals": goals}
+        def updater(manifest):
+            goals = manifest.get("goals", [])
+            if not goals:
+                return None
+            if 0 <= index < len(goals):
+                removed = goals.pop(index)
+            else:
+                removed = goals.pop()
+            return {"removed": removed, "goals": goals}
+        return self._update_manifest(case_id, updater)
 
     def goal_list(self, case_id: str) -> List[str]:
         mf = self._manifest_path(case_id)
@@ -582,12 +616,6 @@ class CaseManager:
                         event: str, severity: str = "info",
                         source: str = "") -> Optional[dict]:
         """Add a timestamped event to the IR timeline."""
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        if "ir_timeline" not in manifest:
-            manifest["ir_timeline"] = []
         entry = {
             "timestamp": timestamp,
             "event": event,
@@ -595,9 +623,12 @@ class CaseManager:
             "source": source,
             "logged": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        manifest["ir_timeline"].append(entry)
-        self._write_manifest(case_id, manifest)
-        return entry
+        def updater(manifest):
+            if "ir_timeline" not in manifest:
+                manifest["ir_timeline"] = []
+            manifest["ir_timeline"].append(entry)
+            return entry
+        return self._update_manifest(case_id, updater)
 
     def ir_timeline_list(self, case_id: str) -> List[dict]:
         mf = self._manifest_path(case_id)
@@ -609,12 +640,6 @@ class CaseManager:
     def ir_ttp_add(self, case_id: str, tactic: str, technique: str,
                    technique_id: str = "", notes: str = "") -> Optional[dict]:
         """Log a TTP observed during incident response."""
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        if "ir_ttps" not in manifest:
-            manifest["ir_ttps"] = []
         entry = {
             "tactic": tactic,
             "technique": technique,
@@ -622,9 +647,12 @@ class CaseManager:
             "notes": notes,
             "logged": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        manifest["ir_ttps"].append(entry)
-        self._write_manifest(case_id, manifest)
-        return entry
+        def updater(manifest):
+            if "ir_ttps" not in manifest:
+                manifest["ir_ttps"] = []
+            manifest["ir_ttps"].append(entry)
+            return entry
+        return self._update_manifest(case_id, updater)
 
     def ir_ttp_list(self, case_id: str) -> List[dict]:
         mf = self._manifest_path(case_id)
@@ -637,36 +665,30 @@ class CaseManager:
                            status: str = "pending",
                            owner: str = "") -> Optional[dict]:
         """Document a containment/remediation step."""
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        if "ir_containment" not in manifest:
-            manifest["ir_containment"] = []
-        entry = {
-            "id": f"C{len(manifest['ir_containment'])+1:03d}",
-            "action": action,
-            "status": status,
-            "owner": owner,
-            "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        manifest["ir_containment"].append(entry)
-        self._write_manifest(case_id, manifest)
-        return entry
+        def updater(manifest):
+            if "ir_containment" not in manifest:
+                manifest["ir_containment"] = []
+            entry = {
+                "id": f"C{len(manifest['ir_containment'])+1:03d}",
+                "action": action,
+                "status": status,
+                "owner": owner,
+                "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            manifest["ir_containment"].append(entry)
+            return entry
+        return self._update_manifest(case_id, updater)
 
     def ir_containment_update(self, case_id: str, containment_id: str,
                               status: str) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
+        def updater(manifest):
+            for entry in manifest.get("ir_containment", []):
+                if entry.get("id") == containment_id:
+                    entry["status"] = status
+                    entry["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    return entry
             return None
-        manifest = json.loads(mf.read_text())
-        for entry in manifest.get("ir_containment", []):
-            if entry.get("id") == containment_id:
-                entry["status"] = status
-                entry["updated"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                self._write_manifest(case_id, manifest)
-                return entry
-        return None
+        return self._update_manifest(case_id, updater)
 
     def ir_containment_list(self, case_id: str) -> List[dict]:
         mf = self._manifest_path(case_id)
@@ -729,30 +751,24 @@ class CaseManager:
 
     # ---- Strengths ----
     def add_strength(self, case_id: str, text: str) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        if "strengths" not in manifest:
-            manifest["strengths"] = []
-        manifest["strengths"].append(text)
-        self._write_manifest(case_id, manifest)
-        return {"case_id": case_id, "strengths": manifest["strengths"]}
+        def updater(manifest):
+            if "strengths" not in manifest:
+                manifest["strengths"] = []
+            manifest["strengths"].append(text)
+            return {"case_id": case_id, "strengths": manifest["strengths"]}
+        return self._update_manifest(case_id, updater)
 
     def remove_strength(self, case_id: str, index: int = -1) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        strengths = manifest.get("strengths", [])
-        if not strengths:
-            return None
-        if 0 <= index < len(strengths):
-            removed = strengths.pop(index)
-        else:
-            removed = strengths.pop()
-        self._write_manifest(case_id, manifest)
-        return {"removed": removed, "strengths": strengths}
+        def updater(manifest):
+            strengths = manifest.get("strengths", [])
+            if not strengths:
+                return None
+            if 0 <= index < len(strengths):
+                removed = strengths.pop(index)
+            else:
+                removed = strengths.pop()
+            return {"removed": removed, "strengths": strengths}
+        return self._update_manifest(case_id, updater)
 
     def list_strengths(self, case_id: str) -> List[str]:
         mf = self._manifest_path(case_id)
@@ -762,30 +778,24 @@ class CaseManager:
 
     # ---- Weaknesses ----
     def add_weakness(self, case_id: str, text: str) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        if "weaknesses" not in manifest:
-            manifest["weaknesses"] = []
-        manifest["weaknesses"].append(text)
-        self._write_manifest(case_id, manifest)
-        return {"case_id": case_id, "weaknesses": manifest["weaknesses"]}
+        def updater(manifest):
+            if "weaknesses" not in manifest:
+                manifest["weaknesses"] = []
+            manifest["weaknesses"].append(text)
+            return {"case_id": case_id, "weaknesses": manifest["weaknesses"]}
+        return self._update_manifest(case_id, updater)
 
     def remove_weakness(self, case_id: str, index: int = -1) -> Optional[dict]:
-        mf = self._manifest_path(case_id)
-        if not mf.exists():
-            return None
-        manifest = json.loads(mf.read_text())
-        weaknesses = manifest.get("weaknesses", [])
-        if not weaknesses:
-            return None
-        if 0 <= index < len(weaknesses):
-            removed = weaknesses.pop(index)
-        else:
-            removed = weaknesses.pop()
-        self._write_manifest(case_id, manifest)
-        return {"removed": removed, "weaknesses": weaknesses}
+        def updater(manifest):
+            weaknesses = manifest.get("weaknesses", [])
+            if not weaknesses:
+                return None
+            if 0 <= index < len(weaknesses):
+                removed = weaknesses.pop(index)
+            else:
+                removed = weaknesses.pop()
+            return {"removed": removed, "weaknesses": weaknesses}
+        return self._update_manifest(case_id, updater)
 
     def list_weaknesses(self, case_id: str) -> List[str]:
         mf = self._manifest_path(case_id)

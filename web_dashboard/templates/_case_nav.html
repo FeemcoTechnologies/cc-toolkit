@@ -10,8 +10,9 @@
         {% set sections = [
             ("overview",  "/case/" + case.case_id,              "layout-dashboard", "Overview"),
             ("board",     "/case/" + case.case_id + "/board",   "columns",          "Board"),
+            ("checklist", "/case/" + case.case_id + "/checklist","check-square",    "Checklist"),
             ("gantt",     "/case/" + case.case_id + "/gantt",   "calendar",         "Timeline"),
-            ("findings",  "/case/" + case.case_id + "/findings","search-circle",           "Findings"),
+            ("findings",  "/case/" + case.case_id + "/findings","search-circle",    "Findings"),
             ("notes",     "/case/" + case.case_id + "/notes",   "file-text",        "Notes"),
             ("evidence",  "/case/" + case.case_id + "/evidence","shield",           "Evidence"),
             ("files",     "/case/" + case.case_id + "/files",   "folder-open",      "Files"),

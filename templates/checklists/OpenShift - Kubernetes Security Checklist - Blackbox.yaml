@@ -1,0 +1,283 @@
+checklist_id: OpenShift - Kubernetes Security Checklist - Blackbox
+title: OpenShift / Kubernetes Black-Box Pentest Checklist
+version: '1.0'
+categories:
+- name: Cluster Hardening & Configuration
+  items:
+  - id: OCP-CF-1
+    description: OpenShift version supported
+    commands:
+    - oc version
+  - id: OCP-CF-2
+    description: API server audit logging enabled
+    commands:
+    - oc get pods -A
+    - oc -n openshift-kube-apiserver logs -l app=kube-apiserver | grep audit
+  - id: OCP-CF-3
+    description: etcd encryption at rest enabled
+    commands:
+    - oc get secret -n pentest <secret> -o yaml
+    - oc get --raw /api/v1/namespaces/pentest/secrets/<secret>
+  - id: OCP-CF-4
+    description: etcd network access restricted to control plane only
+    commands:
+    - oc run nettest --rm -it --image=registry.access.redhat.com/ubi9/ubi -- bash
+    - nc -zv <master-ip> 2379
+    - nc -zv <worker-ip> 2379
+  - id: OCP-CF-5
+    description: OAuth identity provider configured
+    commands:
+    - oc get oauth cluster -o yaml | grep identityProviders
+  - id: OCP-CF-6
+    description: kubeadmin user removed
+    commands:
+    - oc get user kubeadmin
+    - oc get secrets -n kube-system | grep kubeadmin
+  - id: OCP-CF-7
+    description: API not exposed publicly
+    commands:
+    - oc get infrastructure cluster -o jsonpath='{.status.apiServerURL}'
+    - dig +short api.<cluster-domain>
+  - id: OCP-CF-8
+    description: kubelet anonymous auth disabled
+    commands:
+    - curl -k https://<worker-ip>:10250/pods
+- name: RBAC & Access Control
+  items:
+  - id: OCP-RB-1
+    description: cluster-admin only assigned to essentials
+    commands:
+    - oc get clusterrolebindings | grep cluster-admin
+  - id: OCP-RB-2
+    description: no users bound to cluster-admin
+    commands:
+    - oc get clusterrolebindings | grep cluster-admin
+  - id: OCP-RB-3
+    description: custom roles least privilege
+    commands:
+    - oc get clusterroles -o yaml | grep "\*"
+  - id: OCP-RB-4
+    description: SA tokens not automounted unnecessarily
+    commands:
+    - ls /var/run/secrets/kubernetes.io/serviceaccount/
+  - id: OCP-RB-5
+    description: RoleBindings audited
+    commands:
+    - oc get rolebindings -A
+    - oc get clusterrolebindings
+  - id: OCP-RB-6
+    description: no anonymous API access
+    commands:
+    - curl -k https://10.0.0.188:6443/api
+  - id: OCP-RB-7
+    description: impersonation restricted
+    commands:
+    - oc auth can-i impersonate group system:masters
+    - oc auth can-i impersonate user system:admin
+- name: Pod Security & Workload Hardening
+  items:
+  - id: OCP-PS-1
+    description: PSA enforced
+    commands:
+    - oc run privtest --image=ubi9 --overrides='{"spec":{"containers":[{"name":"c","image":"ubi9","securityContext":{"privileged":true}}]}}'
+  - id: OCP-PS-2
+    description: containers not running as root
+    commands:
+    - oc run root-test --image=ubi9 --overrides='{"spec":{"containers":[{"name":"c","image":"ubi9","securityContext":{"runAsUser":0}}]}}'
+  - id: OCP-PS-3
+    description: privileged containers blocked
+    commands:
+    - oc run privtest --image=ubi9 --overrides='{"spec":{"containers":[{"name":"c","image":"ubi9","securityContext":{"privileged":true}}]}}'
+  - id: OCP-PS-4
+    description: read-only root filesystem
+    commands:
+    - oc run rw-test --image=ubi9 -- bash -c "touch /tmp/test"
+  - id: OCP-PS-5
+    description: capabilities dropped
+    commands:
+    - oc run cap-test --image=ubi9 --overrides='{"spec":{"containers":[{"name":"c","image":"ubi9","securityContext":{"capabilities":{"add":["SYS_ADMIN"]}}}]}}'
+  - id: OCP-PS-6
+    description: hostNetwork disabled
+    commands:
+    - oc run hostnet-test --image=ubi9 --overrides='{"spec":{"hostNetwork":true}}'
+  - id: OCP-PS-7
+    description: hostPID/hostIPC disabled
+    commands:
+    - oc run hostpid-test --image=ubi9 --overrides='{"spec":{"hostPID":true}}'
+  - id: OCP-PS-8
+    description: resource limits defined
+    commands:
+    - oc get pods -A -o jsonpath='{..resources}'
+  - id: OCP-PS-9
+    description: PDBs configured
+    commands:
+    - oc get pdb -A
+  - id: OCP-PS-10
+    description: seccomp applied
+    commands:
+    - oc get pods -A -o jsonpath='{..seccompProfile}'
+  - id: OCP-PS-11
+    description: SELinux profile applied
+    commands:
+    - oc get scc
+  - id: OCP-PS-12
+    description: network policies enforced
+    commands:
+    - oc get networkpolicy -A
+- name: Secrets Management
+  items:
+  - id: OCP-SM-1
+    description: no secrets in env vars
+    commands:
+    - oc get pods -A -o yaml | grep env: null
+  - id: OCP-SM-2
+    description: sealed/external secrets used
+    commands:
+    - oc get crd | grep -i secret
+  - id: OCP-SM-3
+    description: secrets encrypted in etcd
+    commands:
+    - oc get --raw /api/v1/namespaces/pentest/secrets/<secret>
+  - id: OCP-SM-4
+    description: secrets not in Git
+    commands:
+    - oc get secrets -A -o yaml | grep git
+  - id: OCP-SM-5
+    description: vault CSI driver present
+    commands:
+    - oc get pods -A | grep csi
+  - id: OCP-SM-6
+    description: SA tokens not used externally
+    commands:
+    - oc get configmaps -A -o yaml | grep -i token
+- name: Network Security
+  items:
+  - id: OCP-NW-1
+    description: default deny policies
+    commands:
+    - oc get networkpolicy -A
+  - id: OCP-NW-2
+    description: explicit allow rules
+    commands:
+    - oc get networkpolicy -A
+  - id: OCP-NW-3
+    description: no public LoadBalancers
+    commands:
+    - oc get svc -A | grep LoadBalancer
+  - id: OCP-NW-4
+    description: NodePorts restricted
+    commands:
+    - oc get svc -A | grep NodePort
+  - id: OCP-NW-5
+    description: cluster CIDR boundaries
+    commands:
+    - oc get network.config.openshift.io cluster -o yaml
+  - id: OCP-NW-6
+    description: egress router configured
+    commands:
+    - oc get egressrouter -A
+  - id: OCP-NW-7
+    description: mTLS enforced
+    commands:
+    - oc get smcp -A
+  - id: OCP-NW-8
+    description: DNS spoofing protection
+    commands:
+    - dig +short <service>.<namespace>.svc.cluster.local
+- name: Container Registry & Image Security
+  items:
+  - id: OCP-IR-1
+    description: image signatures enforced
+    commands:
+    - oc get imagesignatures -A
+  - id: OCP-IR-2
+    description: vulnerability scanning
+    commands:
+    - oc get pods -A | grep -E "clair|trivy"
+  - id: OCP-IR-3
+    description: no :latest tags
+    commands:
+    - oc get pods -A -o jsonpath='{..image}' | grep latest
+  - id: OCP-IR-4
+    description: imagePullSecrets not shared
+    commands:
+    - oc get serviceaccounts -A -o yaml | grep imagePullSecrets
+  - id: OCP-IR-5
+    description: trusted base images
+    commands:
+    - oc get pods -A -o jsonpath='{..image}'
+  - id: OCP-IR-6
+    description: imagestream import policies
+    commands:
+    - oc get imagestream -A -o yaml | grep insecure
+- name: Admission Control & Policy
+  items:
+  - id: OCP-AC-1
+    description: SCC enforced
+    commands:
+    - oc get scc
+  - id: OCP-AC-2
+    description: OPA Gatekeeper present
+    commands:
+    - oc get gk -A
+  - id: OCP-AC-3
+    description: Kyverno policies applied
+    commands:
+    - oc get clusterpolicy -A
+  - id: OCP-AC-4
+    description: mutating webhooks audited
+    commands:
+    - oc get mutatingwebhookconfiguration
+  - id: OCP-AC-5
+    description: validating webhooks enforced
+    commands:
+    - oc get validatingwebhookconfiguration
+- name: Monitoring, Logging & Forensics
+  items:
+  - id: OCP-ML-1
+    description: audit logs shipped
+    commands:
+    - oc -n openshift-kube-apiserver logs -l app=kube-apiserver | grep audit
+  - id: OCP-ML-2
+    description: Falco/Tracee present
+    commands:
+    - oc get pods -A | grep -E "falco|tracee"
+  - id: OCP-ML-3
+    description: kube-bench/kube-hunter scheduled
+    commands:
+    - oc get cronjob -A | grep -E "bench|hunter"
+  - id: OCP-ML-4
+    description: API access audit logged
+    commands:
+    - oc get pods -A
+    - oc -n openshift-kube-apiserver logs -l app=kube-apiserver | grep audit
+  - id: OCP-ML-5
+    description: suspicious API call alerts
+    commands:
+    - oc get prometheusrule -A | grep api
+  - id: OCP-ML-6
+    description: etcd backups encrypted
+    commands:
+    - oc get pod -n openshift-etcd | grep backup
+- name: Supply Chain & CI/CD
+  items:
+  - id: OCP-SC-1
+    description: pipeline SA least privilege
+    commands:
+    - oc auth can-i --as=system:serviceaccount:<ns>:pipeline --list
+  - id: OCP-SC-2
+    description: build isolation
+    commands:
+    - oc get pods -A | grep build
+  - id: OCP-SC-3
+    description: ArgoCD webhook verification
+    commands:
+    - oc get argocd -A -o yaml | grep webhook
+  - id: OCP-SC-4
+    description: SBOM generated
+    commands:
+    - oc get imagestream -A -o yaml | grep sbom
+  - id: OCP-SC-5
+    description: CI/CD secrets not exposed
+    commands:
+    - oc logs -n <build-ns> <build-pod> | grep -i secret

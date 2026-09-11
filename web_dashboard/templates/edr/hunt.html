@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}EDR - Threat Hunt{% endblock %}
+{% block head %}
+<style>
+    .history-item { @apply bg-gray-800/50 rounded px-3 py-2 cursor-pointer hover:bg-gray-800 transition-colors text-xs font-mono text-gray-400; }
+    .history-item:hover { color: #818cf8; }
+    .result-cell { @apply px-3 py-2 text-xs text-gray-300 border-b border-gray-800/50; }
+    .result-header { @apply px-3 py-2 text-xs text-gray-400 uppercase border-b border-gray-800 font-semibold text-left; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="search" class="w-5 h-5 text-purple-400"></i> Threat Hunt</h1>
+    <div class="flex gap-2 items-center">
+        <span class="text-xs text-gray-500">osquery SQL</span>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+    <div class="lg:col-span-3 space-y-4">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+            <label class="block text-xs text-gray-400 mb-2">SQL Query</label>
+            <textarea id="hunt-sql" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm font-mono text-gray-200 resize-y" rows="4" placeholder="SELECT pid, name, path, cmdline FROM processes WHERE name LIKE '%malware%';"></textarea>
+            <div class="flex items-center gap-3 mt-3">
+                <select id="hunt-device" class="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 flex-1">
+                    <option value="">All Devices</option>
+                </select>
+                <button id="hunt-btn" onclick="runHunt()" class="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-xs px-4 py-1.5 rounded font-medium flex items-center gap-2">
+                    <span id="hunt-btn-text">Run Query</span>
+                    <span id="hunt-btn-spinner" class="hidden"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg></span>
+                </button>
+            </div>
+        </div>
+
+        <div id="server-banner" class="hidden bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 text-sm text-red-300">
+            EDR server is unreachable.
+        </div>
+
+        <div id="result-area" class="hidden">
+            <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+                    <span class="text-sm font-semibold text-gray-300">Results</span>
+                    <span id="result-count" class="text-xs text-gray-500"></span>
+                </div>
+                <div id="result-table-wrap" class="overflow-x-auto" style="max-height: 500px; overflow-y: auto;">
+                    <table class="w-full text-sm">
+                        <thead id="result-thead"></thead>
+                        <tbody id="result-tbody"></tbody>
+                    </table>
+                </div>
+                <div id="result-raw" class="hidden px-4 py-3 bg-gray-950 font-mono text-xs text-gray-300 whitespace-pre-wrap max-h-60 overflow-auto"></div>
+            </div>
+        </div>
+
+        <div id="result-empty" class="hidden bg-gray-900 rounded-lg border border-gray-800 p-5 text-center text-gray-500 text-sm">
+            Run a query to see results.
+        </div>
+    </div>
+
+    <div class="space-y-4">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h3 class="text-sm font-semibold mb-3 text-gray-300">Query History</h3>
+            <div id="history-empty" class="text-gray-600 text-xs">No queries yet.</div>
+            <div id="history-list" class="space-y-1"></div>
+        </div>
+
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h3 class="text-sm font-semibold mb-3 text-gray-300">Quick Queries</h3>
+            <div class="space-y-1">
+                <button onclick="quickQuery('SELECT pid, name, path FROM processes;')" class="block w-full text-left text-xs text-gray-400 hover:text-indigo-400 px-2 py-1 rounded hover:bg-gray-800">All Processes</button>
+                <button onclick="quickQuery('SELECT * FROM listening_ports;')" class="block w-full text-left text-xs text-gray-400 hover:text-indigo-400 px-2 py-1 rounded hover:bg-gray-800">Listening Ports</button>
+                <button onclick="quickQuery('SELECT * FROM users;')" class="block w-full text-left text-xs text-gray-400 hover:text-indigo-400 px-2 py-1 rounded hover:bg-gray-800">Users</button>
+                <button onclick="quickQuery('SELECT * FROM shell_history;')" class="block w-full text-left text-xs text-gray-400 hover:text-indigo-400 px-2 py-1 rounded hover:bg-gray-800">Shell History</button>
+                <button onclick="quickQuery('SELECT * FROM crontab;')" class="block w-full text-left text-xs text-gray-400 hover:text-indigo-400 px-2 py-1 rounded hover:bg-gray-800">Crontabs</button>
+                <button onclick="quickQuery('SELECT * FROM authorized_keys;')" class="block w-full text-left text-xs text-gray-400 hover:text-indigo-400 px-2 py-1 rounded hover:bg-gray-800">Authorized Keys</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+var API_HUNT = '{{ url_for("edr.api_hunt") }}';
+var API_HUNT_DEVICES = '{{ url_for("edr.api_hunt_devices") }}';
+var _history = [];
+var MAX_HISTORY = 10;
+
+function quickQuery(sql) {
+    document.getElementById('hunt-sql').value = sql;
+    runHunt();
+}
+
+function renderHistory() {
+    var list = document.getElementById('history-list');
+    var empty = document.getElementById('history-empty');
+    if (!_history.length) { empty.classList.remove('hidden'); list.innerHTML = ''; return; }
+    empty.classList.add('hidden');
+    list.innerHTML = '';
+    _history.forEach(function(h, i) {
+        var div = document.createElement('div');
+        div.className = 'history-item';
+        div.textContent = h.length > 50 ? h.substring(0, 50) + '...' : h;
+        div.title = h;
+        div.onclick = function() { document.getElementById('hunt-sql').value = h; };
+        list.appendChild(div);
+    });
+}
+
+function addToHistory(sql) {
+    _history = _history.filter(function(h) { return h !== sql; });
+    _history.unshift(sql);
+    if (_history.length > MAX_HISTORY) _history = _history.slice(0, MAX_HISTORY);
+    renderHistory();
+}
+
+function renderResults(data) {
+    var area = document.getElementById('result-area');
+    var empty = document.getElementById('result-empty');
+    area.classList.remove('hidden');
+    empty.classList.add('hidden');
+
+    if (data.error) {
+        document.getElementById('result-thead').innerHTML = '';
+        document.getElementById('result-tbody').innerHTML = '<tr><td class="px-4 py-3 text-red-400 text-sm">' + esc(data.error) + '</td></tr>';
+        document.getElementById('result-count').textContent = '';
+        return;
+    }
+
+    var rows = data.rows || data.results || [];
+    var cols = data.columns || data.fields || [];
+    if (!cols.length && rows.length) cols = Object.keys(rows[0]);
+
+    document.getElementById('result-count').textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '');
+
+    var thead = document.getElementById('result-thead');
+    thead.innerHTML = '<tr>' + cols.map(function(c) { return '<th class="result-header">' + esc(c) + '</th>'; }).join('') + '</tr>';
+
+    var tbody = document.getElementById('result-tbody');
+    tbody.innerHTML = '';
+    rows.forEach(function(row) {
+        var tr = document.createElement('tr');
+        tr.className = 'hover:bg-gray-800/30';
+        cols.forEach(function(c) {
+            var val = typeof row === 'object' ? row[c] : row;
+            var td = document.createElement('td');
+            td.className = 'result-cell';
+            td.textContent = val != null ? String(val) : '';
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+}
+
+async function loadDevices() {
+    try {
+        var r = await fetch(API_HUNT_DEVICES);
+        var d = await r.json();
+        if (d.error) return;
+        var agents = Array.isArray(d) ? d : (d.agents || []);
+        var sel = document.getElementById('hunt-device');
+        agents.forEach(function(a) {
+            var opt = document.createElement('option');
+            opt.value = a.uuid || '';
+            opt.textContent = a.hostname || a.uuid || '?';
+            sel.appendChild(opt);
+        });
+    } catch(e) {}
+}
+
+async function runHunt() {
+    var sql = document.getElementById('hunt-sql').value.trim();
+    if (!sql) return;
+    var btn = document.getElementById('hunt-btn');
+    var txt = document.getElementById('hunt-btn-text');
+    var spin = document.getElementById('hunt-btn-spinner');
+    btn.disabled = true;
+    txt.textContent = 'Running...';
+    spin.classList.remove('hidden');
+    document.getElementById('server-banner').classList.add('hidden');
+    addToHistory(sql);
+    try {
+        var r = await fetch(API_HUNT, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({sql: sql, device_uuid: document.getElementById('hunt-device').value})
+        });
+        var d = await r.json();
+        renderResults(d);
+    } catch(e) {
+        document.getElementById('server-banner').classList.remove('hidden');
+        document.getElementById('result-area').classList.add('hidden');
+        document.getElementById('result-empty').classList.remove('hidden');
+        document.getElementById('result-empty').textContent = 'Network error: ' + esc(e.message);
+    } finally {
+        btn.disabled = false;
+        txt.textContent = 'Run Query';
+        spin.classList.add('hidden');
+    }
+}
+
+renderHistory();
+loadDevices();
+</script>
+{% endblock %}

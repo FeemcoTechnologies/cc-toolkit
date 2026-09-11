@@ -1,9 +1,8 @@
-import logging
 """Obsidian vault bridge — push structured findings to your vault."""
 
 import datetime
 import json
-import os
+import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
