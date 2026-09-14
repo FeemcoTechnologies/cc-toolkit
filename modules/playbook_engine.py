@@ -432,7 +432,7 @@ def _exec_notify(step: dict, ctx: RunContext) -> dict:
     if webhook_targets:
         cfg = {}
         try:
-from .config import load_config
+            from .config import load_config
             cfg = load_config()
         except Exception:
 
@@ -560,7 +560,7 @@ def _exec_burp(step: dict, ctx: RunContext) -> dict:
         host: str         — filter proxy history by host
     """
     from .burp_client import BurpClient
-from .config import BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
+    from .config import BURP_API_URL, BURP_API_KEY, BURP_PROXY_URL
 
     action = step.get("action", "health")
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY,

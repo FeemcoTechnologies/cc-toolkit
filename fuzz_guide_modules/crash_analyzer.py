@@ -6,8 +6,11 @@ faulting instruction + stack so the AI can immediately reason about it.
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import tempfile
+import time
 
 
 def analyze_crash(
@@ -25,16 +28,21 @@ def analyze_crash(
     gdb = shutil.which("gdb") or "gdb"
 
     # Build the run target command. For file-mode, pass crash path as arg.
+    # Everything is shlex-split then re-quoted and GDB's shell is disabled
+    # (set startup-with-shell off) so args cannot smuggle shell commands or
+    # inject extra GDB commands via newlines.
     if args and "@@" in args:
-        run_args = args.replace("@@", crash_file)
+        run_parts = shlex.split(args.replace("@@", crash_file))
     elif args:
-        run_args = f"{args} < {crash_file}"
+        run_parts = shlex.split(args) + ["<", crash_file]
     else:
-        run_args = f"< {crash_file}"
+        run_parts = ["<", crash_file]
+    run_args = " ".join(shlex.quote(p) for p in run_parts)
 
     script = f"""
 set pagination off
 set confirm off
+set startup-with-shell off
 run {run_args}
 bt 12
 info registers
@@ -42,8 +50,8 @@ info args
 quit
 """
 
+    script_path = None
     try:
-        import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".gdb", delete=False) as gf:
             gf.write(script)
             script_path = gf.name
@@ -52,7 +60,6 @@ quit
             text=True, timeout=timeout_s, capture_output=True,
         )
         text = out.stdout + out.stderr
-        os.unlink(script_path)
     except subprocess.TimeoutExpired:
         return {
             "binary": binary,
@@ -62,6 +69,12 @@ quit
         }
     except Exception as e:
         return {"error": f"gdb failed: {e}"}
+    finally:
+        if script_path:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
 
     # ---- parse the interesting bits ----
     signal = _extract_signal(text)
@@ -85,8 +98,10 @@ def analyze_corpus(
     crash_dir: str,
     args: str = "",
     max_crashes: int = 8,
+    budget_s: int = 120,
 ) -> dict:
-    """Triage up to N crash files from an AFL output dir."""
+    """Triage up to N crash files from an AFL output dir, bounded by a
+    rolling time budget so the batch cannot block the MCP server."""
     if not os.path.isdir(crash_dir):
         return {"error": f"Crash dir not found: {crash_dir}"}
 
@@ -97,11 +112,18 @@ def analyze_corpus(
     if not files:
         return {"crash_dir": crash_dir, "count": 0}
 
+    start = time.monotonic()
     results = []
     unique_signals: dict = {}
+    budget_hit = False
     for f in files[:max_crashes]:
+        elapsed = int(time.monotonic() - start)
+        remaining = budget_s - elapsed
+        if remaining <= 0:
+            budget_hit = True
+            break
         path = os.path.join(crash_dir, f)
-        r = analyze_crash(binary, path, args)
+        r = analyze_crash(binary, path, args, timeout_s=min(30, remaining))
         key = r.get("signal", "?") + "|" + (r.get("faulting_instruction") or "")[:40]
         if key not in unique_signals:
             unique_signals[key] = True
@@ -111,6 +133,7 @@ def analyze_corpus(
         "crash_dir": crash_dir,
         "count": len(files),
         "analyzed": len(results),
+        "budget_hit": budget_hit,
         "unique_signatures": len(unique_signals),
         "crashes": results,
     }

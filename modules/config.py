@@ -7,6 +7,7 @@ All settings have sensible defaults and can be overridden via:
 
 import os
 import json
+import secrets
 from pathlib import Path
 
 
@@ -34,7 +35,10 @@ DASHBOARD_PORT     = int(_env_or_default("PORT",      "5000"))
 DASHBOARD_API_KEY  = _env_or_default("API_KEY",  "")
 WS_PORT            = int(_env_or_default("WS_PORT",   "5001"))
 DEBUG              = _env_or_default("DEBUG",    "").lower() in ("1", "true", "yes")
-SECRET_KEY         = _env_or_default("SECRET",   "change-me-in-production")
+# If CC_SECRET is not set a per-process random key is generated so sessions
+# are always signed and the weak placeholder can never be relied upon.
+# Set CC_SECRET (or CC_DASHBOARD_KEY for API access) in production.
+SECRET_KEY         = _env_or_default("SECRET", "") or secrets.token_hex(16)
 
 # ── External Services ──────────────────────────────────────────────────────
 # Jupyter notebook server

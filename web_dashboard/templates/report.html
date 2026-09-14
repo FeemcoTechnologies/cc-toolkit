@@ -9,8 +9,11 @@
   #editor-container .ql-editor h3 { font-size: 1.1em; }
   #editor-container .ql-editor pre { background: #1e1e2e; color: #cdd6f4; padding: 0.8em; border-radius: 4px; white-space: pre-wrap; }
   #editor-container .ql-editor table { border-collapse: collapse; width: 100%; }
-  #editor-container .ql-editor table th { background: #000; color: #fff; font-weight: 600; border: 1px solid #444; }
+  #editor-container .ql-editor table th,
+  #editor-container .ql-editor table td[data-row="1"] { background: #000; color: #fff; font-weight: 600; border: 1px solid #444; }
   #editor-container .ql-editor table td { background: #fff; color: #222; border: 1px solid #ccc; padding: 6px 10px; }
+  /* Collapse spacer paragraphs Quill inserts between split tables */
+  #editor-container .ql-editor table + p:has(+ table) { display: none; }
   #editor-container { background: #fff; border-radius: 0 0 6px 6px; }
 </style>
 {% endblock %}
@@ -89,6 +92,36 @@ const quill = new Quill('#editor-container', {
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
 turndown.use(turndownPluginGfm.gfm);
 
+// Teach marked how to parse Pandoc-style heading attributes into real
+// id="" attributes (marked v18 does NOT understand them natively, so
+// without this they'd render as literal anchor text inside headings).
+marked.use({
+  renderer: {
+    heading(token) {
+      const text = (token.tokens && this.parser && this.parser.parseInline)
+        ? this.parser.parseInline(token.tokens)
+        : (token.text || '');
+      const m = text.match(/\{\x23([a-zA-Z0-9_:-]+)\}\s*$/);
+      let id = '', txt = text;
+      if (m) { id = ' id="' + m[1] + '"'; txt = text.slice(0, m.index); }
+      return '<h' + token.depth + id + '>' + txt.replace(/\s+$/, '') + '</h' + token.depth + '>\n';
+    }
+  }
+});
+
+// Turndown drops HTML heading ids by default, which would kill the finding
+// anchors (and the page-break CSS) on the preview round-trip. Preserve them.
+turndown.addRule('headingWithId', {
+  filter: function(node) {
+    return /^H[1-6]$/.test(node.nodeName) && node.getAttribute && node.getAttribute('id');
+  },
+  replacement: function(content, node) {
+    const lvl = parseInt(node.nodeName[1], 10);
+    const id = node.getAttribute('id');
+    return new Array(lvl + 1).join('#') + ' ' + content + ' {' + '\x23' + id + '}\n\n';
+  }
+});
+
 // --- HTML normalizers for Quill output quirks ---
 function normalizeQuillHtml(html) {
   const d = document.createElement('div');
@@ -148,6 +181,10 @@ function normalizeQuillHtml(html) {
     // Remove any remaining data-row attrs (cleanup)
     d.querySelectorAll('td[data-row]').forEach(function(td) { td.removeAttribute('data-row'); });
   })();
+  // 2b. Quill renders empty cells as <td><br></td>. A <br> inside a cell
+  //     makes turndown's GFM table rule emit a literal newline in the cell
+  //     (and it can bail entirely on such tables), so strip them.
+  d.querySelectorAll('table td br, table th br').forEach(function(br) { br.remove(); });
   // 3. Convert first row of any table from <td> to <th> if not already a header
   d.querySelectorAll('table').forEach(function(table) {
     if (table.querySelector('th') || table.querySelector('thead')) return;
@@ -159,7 +196,9 @@ function normalizeQuillHtml(html) {
     var hr = document.createElement('tr');
     rows[0].querySelectorAll('td').forEach(function(td) {
       var th = document.createElement('th');
-      th.innerHTML = td.innerHTML;
+      // Headers arrive from quillTableTransform wrapped in <strong>; strip
+      // it so round-tripped markdown reads "| Role |" (not "| **Role** |").
+      th.innerHTML = td.innerHTML.replace(/<strong>/g, '').replace(/<\/strong>/g, '');
       hr.appendChild(th);
     });
     thead.appendChild(hr);
@@ -220,6 +259,33 @@ function normalizeQuillHtml(html) {
   });
   return d.innerHTML;
 }
+
+// --- Quill table pre-transform ---
+// Quill 2's table module mangles HTML tables on paste: internal whitespace
+// makes it split each row into its own <table> element (inserting <p> </p>
+// spacers), and <thead>/<th> cells collapse into one merged cell. Normalize
+// the markup BEFORE pasting so every table stays intact and header cells
+// survive. Two directly-adjacent tables are also given an empty <p>
+// separator, otherwise Quill fuses them into a single table.
+function quillTableTransform(html) {
+  // Strip server-emitted page-break markers so the editor stays clean; they are
+  // re-injected on preview export where pagination actually matters.
+  html = html.replace(/<div class="page-break"><\/div>/gi, '');
+  html = html.replace(/<table[\s\S]*?<\/table>/gi, function(tbl) {
+    return tbl
+      .replace(/>\s+</g, '><')
+      .replace(/<thead>/gi, '')
+      .replace(/<\/thead>/gi, '')
+      .replace(/<tbody>/gi, '')
+      .replace(/<\/tbody>/gi, '')
+      .replace(/<th([^>]*)>/gi, function(m, attrs) { return '<td' + (attrs || '') + '><strong>'; })
+      .replace(/<\/th>/gi, '</strong></td>');
+  });
+  // Separate meta-adjacent tables so Quill doesn't fuse them into one
+  html = html.replace(/<\/table>\s*<table/gi, '</table>\n<p></p>\n<table');
+  return html;
+}
+
 let loaded = false;
 
 // --- Load report ---
@@ -267,7 +333,7 @@ async function loadReport() {
     temp.querySelectorAll('table').forEach(function(table) {
       window._originalTables.push(table.outerHTML);
     });
-    quill.clipboard.dangerouslyPasteHTML(html);
+    quill.clipboard.dangerouslyPasteHTML(quillTableTransform(html));
     loaded = true;
     showStatus('Report loaded');
     // Scroll to top
@@ -346,12 +412,71 @@ async function exportReport(format) {
   }
 }
 
+// Quill strips <h3 id="..."> attrs on paste, so finding headings
+// lose their finding anchors in the markdown round-trip.
+// Re-derive them from the "#N" prefix so the preview keeps the
+// id="finding-N" + page-break CSS the server emits.
+function reinjectFindingHeadingIds(md) {
+  return md.split('\n').map(function(line) {
+    if (!/^#{1,6}\s+#\d+/.test(line)) return line;
+    const m = line.match(/^(#{1,6})\s+#(\d+)\s+—\s+(.+?)(\s*\{\x23finding-\d+\})?\s*$/);
+    if (m && !m[4]) {
+      return '### #' + m[2] + ' — ' + m[3] + ' {' + '\x23finding-' + m[2] + '}';
+    }
+    return line;
+  }).join('\n');
+}
+
+// Page-break markers are stripped on editor paste (so Quill doesn't show
+// blank paragraphs); re-inject them here so the preview + DOCX/PDF/HTML
+// exports paginate. Each top-level section and each finding starts a new page;
+// the cover and TOC headings are left alone. Idempotent: never inserts a second
+// marker when the preceding content line is already a page-break div.
+function reinjectPageBreaks(md) {
+  // Only these top-level sections (+ every finding) get a page break. Sub-headings
+  // inside finding descriptions (e.g. a literal "## Scope" in finding #1) must NOT.
+  const TOP = ['confidentiality statement', 'disclaimer', 'contact information',
+    'engagement contacts', 'assessment overview', 'scope', 'executive summary',
+    'strengths', 'weaknesses', 'findings', 'risk assessment matrix', 'methodology',
+    'appendix a \u2013 flags discovered', 'retest summary', 'evidence screenshots'];
+  const lines = md.split('\n');
+  const out = [];
+  let inFinding = false;
+  lines.forEach(function(line, idx) {
+    const stripped = line.trim();
+    const isFinding = /^###\s+#\d+\s+/.test(stripped);
+    let isSection = false;
+    if (!inFinding && /^##\s+/.test(stripped)) {
+      const h = stripped.replace(/^#{2}\s+/, '').trim().toLowerCase();
+      isSection = TOP.indexOf(h) !== -1;
+    }
+    if (isSection) inFinding = false;
+    if (isFinding) inFinding = true;
+    if (isSection || isFinding) {
+      // Idempotent: never insert a second marker when the closest preceding
+      // content line is already a page-break div.
+      let guarded = false;
+      for (let j = idx - 1; j >= 0; j--) {
+        const prev = lines[j].trim();
+        if (prev === '') continue;
+        guarded = prev.startsWith('<div');
+        break;
+      }
+      if (!guarded) out.push('<div class="page-break"></div>', '');
+    }
+    out.push(line);
+  });
+  return out.join('\n');
+}
+
 // --- Preview (client-side turndown → server-side _md_to_html_full) ---
 async function refreshPreview() {
   const raw = quill.root.innerHTML;
   if (!raw.trim() || raw === '<p><br></p>') { previewPlaceholder(); return; }
   // Normalize Quill HTML quirks then convert to markdown via turndown
-  const md = turndown.turndown(normalizeQuillHtml(raw));
+  let md = turndown.turndown(normalizeQuillHtml(raw));
+  md = reinjectFindingHeadingIds(md);
+  md = reinjectPageBreaks(md);
   try {
     const r = await fetch('/api/case/{{ case.case_id }}/report/generate', {
       method: 'POST',

@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 try:
-from .config import CC_DIR
+    from .config import CC_DIR
 except ImportError:
     CC_DIR = Path("/workspace")
 

@@ -26,17 +26,20 @@ _ghidra_svc = GhidraService()
 
 
 def _auth_ok():
-    # mirror app.py: session login OR API-key header
-    try:
-        from flask import session
-    except Exception:
-        session = None
-    if session and session.get("_authed"):
-        return True
+    # When CC_DASHBOARD_KEY is configured it is the ONLY accepted credential:
+    # the session-cookie path is not consulted, so a forged Flask session
+    # cookie (default/known SECRET_KEY) can never bypass the API key.
     dash_secret = os.environ.get("CC_DASHBOARD_KEY", "")
     if dash_secret:
         return request.headers.get("X-API-Key") == dash_secret
-    # no API key configured — allow (local/docker dev); production should set CC_DASHBOARD_KEY
+    # no API key configured — mirror app.py: allow session login, else open
+    # (local/docker dev); production should set CC_DASHBOARD_KEY
+    try:
+        from flask import session
+        if session.get("_authed"):
+            return True
+    except Exception:
+        pass
     return True
 
 

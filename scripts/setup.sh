@@ -60,7 +60,7 @@ done
 
 # ── 6. OpenCode MCP Configuration ──────────────────────────────────────────
 echo ""
-echo "[6/6] Configuring opencode MCP servers"
+echo "[6/7] Configuring opencode MCP servers"
 cfg_dir="${CC_OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 cfg_file="${cfg_dir}/opencode.json"
 mkdir -p "$cfg_dir"

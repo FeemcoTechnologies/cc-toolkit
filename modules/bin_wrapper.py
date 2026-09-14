@@ -148,3 +148,93 @@ def pattern_offset(value: str) -> dict:
 def net(target: str) -> dict:
     """Network service analysis for a binary or host:port target."""
     return _run(["net", target])
+
+
+def symbolic(binary: str, target_func: str = "system", avoid: list | None = None,
+             dump_input: bool = False, output: str | None = None) -> dict:
+    """Symbolic execution with angr; optionally synthesize + dump concrete stdin."""
+    args = ["symbolic", "--target", target_func]
+    if avoid:
+        args += ["--avoid", ",".join(avoid)]
+    if dump_input:
+        args += ["--dump-input"]
+    if output:
+        args += ["--output", output]
+    args += [binary]
+    return _run_text(args, timeout=300)
+
+
+def ghidra(binary: str, target: str | None = None, timeout: int = 300) -> dict:
+    """Ghidra headless decompilation of main() and optionally a named symbol."""
+    args = ["ghidra", binary, "--timeout", str(timeout)]
+    if target:
+        args += ["--target", target]
+    return _run_text(args, timeout=timeout + 120)
+
+
+def trace(binary: str, tool: str = "strace", timeout: int = 15,
+          trace_filter: str = "process,file,network,memory",
+          summary: bool = False, argv: str = "") -> dict:
+    """Dynamic tracing with strace (syscall counts + interesting events) or ltrace."""
+    args = ["trace", binary, "--tool", tool, "--timeout", str(timeout)]
+    if tool == "strace":
+        args += ["--trace", trace_filter]
+    if summary:
+        args += ["--summary"]
+    if argv:
+        args += ["--argv", argv]
+    return _run(args, timeout=timeout + 30)
+
+
+def dbg(binary: str, break_at: str = "main", stdin_file: str | None = None,
+        argv: str = "", extra_cmd: str = "", timeout: int = 60) -> dict:
+    """GDB batch triage: run, catch signal, registers, backtrace, /bin/sh scan."""
+    args = ["dbg", binary, "--break", break_at, "--timeout", str(timeout)]
+    if stdin_file:
+        args += ["--stdin", stdin_file]
+    if argv:
+        args += ["--argv", argv]
+    if extra_cmd:
+        args += ["--cmd", extra_cmd]
+    return _run(args, timeout=timeout + 30)
+
+
+def afl_scout() -> dict:
+    """Check AFL++ availability (afl-fuzz / afl-clang-fast)."""
+    return _run_text(["afl", "scout"])
+
+
+def afl_gen(binary: str, output_dir: str | None = None) -> dict:
+    """Generate an AFL++ harness workspace (harness.c, build.sh, fuzz.sh, seeds)."""
+    args = ["afl", "gen", binary]
+    if output_dir:
+        args += ["--output", output_dir]
+    return _run_text(args)
+
+
+def afl_fuzz(binary: str, harness: str | None = None,
+             output_dir: str = "findings", timeout: int = 60) -> dict:
+    """Run afl-fuzz against a built harness for N seconds."""
+    args = ["afl", "fuzz", binary, "--timeout", str(timeout), "--output", output_dir]
+    if harness:
+        args += ["--harness", harness]
+    return _run_text(args, timeout=timeout + 120)
+
+
+def afl_triage(binary: str, harness: str | None = None,
+               output_dir: str = "findings") -> dict:
+    """gdb-triage crashes found in an AFL++ findings directory."""
+    args = ["afl", "triage", binary, "--output", output_dir]
+    if harness:
+        args += ["--harness", harness]
+    return _run_text(args, timeout=180)
+
+
+def setup(install: bool = False, only: str = "") -> dict:
+    """Report missing analysis tools and (with install=True) install them."""
+    args = ["setup"]
+    if install:
+        args += ["--install"]
+    if only:
+        args += ["--only", only]
+    return _run_text(args, timeout=1800 if install else 60)

@@ -910,7 +910,7 @@ def burp_health() -> str:
     Related: burp_scan_start, burp_scan_status, burp_issues_list
     Use this first to verify Burp is reachable."""
     from modules.burp_client import BurpClient
-from modules.config import BURP_API_URL, BURP_API_KEY
+    from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     h = bc.health()
     v = bc.versions()
@@ -924,7 +924,7 @@ def burp_scan_start(urls: str) -> str:
     Related: burp_scan_status, burp_issues_list
     """
     from modules.burp_client import BurpClient
-from modules.config import BURP_API_URL, BURP_API_KEY
+    from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     url_list = [u.strip() for u in urls.split(",") if u.strip()]
     r = bc.scan_start(url_list)
@@ -940,7 +940,7 @@ def burp_scan_status(scan_id: str) -> str:
     Related: burp_scan_start, burp_issues_list
     """
     from modules.burp_client import BurpClient
-from modules.config import BURP_API_URL, BURP_API_KEY
+    from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     r = bc.scan_status(scan_id)
     import json as _json
@@ -954,7 +954,7 @@ def burp_issues_list(scan_id: str, severity: str = "") -> str:
     Related: burp_scan_start, burp_scan_status
     """
     from modules.burp_client import BurpClient
-from modules.config import BURP_API_URL, BURP_API_KEY
+    from modules.config import BURP_API_URL, BURP_API_KEY
     bc = BurpClient(api_url=BURP_API_URL, api_key=BURP_API_KEY)
     issues = bc.issues_list(scan_id, severity=severity)
     if not issues:
@@ -1076,7 +1076,7 @@ def zap_issues_list(api_url: str = "", risk: str = "", baseurl: str = "",
 
 
 def _zap_cfg() -> dict:
-from modules.config import load_config
+    from modules.config import load_config
     cfg = load_config()
     return cfg.get("zap", {})
 
@@ -3543,7 +3543,7 @@ def caido_workflows() -> str:
 
 
 def _caido_cfg() -> dict:
-from modules.config import load_config
+    from modules.config import load_config
     cfg = load_config()
     return {
         "url": cfg.get("caido_url", "http://127.0.0.1:8080"),
@@ -4136,11 +4136,12 @@ def pypykatz_parse(dump_file: str) -> str:
 # Binary Exploitation (ai-bug-bounty integration)
 # ---------------------------------------------------------------------------
 
-def _bin_result(r: dict) -> str:
-    if r.get("error"):
-        return f"Error: {r['error']}"
-    if r.get("stdout"):
-        return r["stdout"][:4000]
+def _bin_result(r) -> str:
+    if isinstance(r, dict):
+        if r.get("error"):
+            return f"Error: {r['error']}"
+        if r.get("stdout"):
+            return r["stdout"][:4000]
     return json.dumps(r, indent=2, default=str)[:4000]
 
 async def _run_bin_noargs(fn):
@@ -4311,6 +4312,109 @@ async def binary_pattern_offset(value: str) -> str:
     """
     from modules.bin_wrapper import pattern_offset as _bp
     return await _run_bin_kwargs(_bp, value=value)
+
+
+@mcp.tool()
+async def binary_symbolic(binary_path: str, target_func: str = "system",
+                          avoid: str = "", dump_input: bool = False,
+                          output: str = "") -> str:
+    """
+    Run angr symbolic execution to find a path to a target function and, when
+    requested, synthesize concrete stdin bytes for it. avoid is a comma-separated
+    list of symbols to avoid (e.g. 'exit,abort'). dump_input writes the solved
+    stdin bytes to the given output file.
+    Phase: Binary Exploitation
+    Related: binary_angr, binary_ghidra, binary_analyze, binary_fuzz
+    """
+    from modules.bin_wrapper import symbolic as _bs
+    avoid_list = [s.strip() for s in avoid.split(",") if s.strip()] if avoid else None
+    return await _run_bin_kwargs(_bs, binary_path, target_func=target_func,
+                                 avoid=avoid_list, dump_input=dump_input,
+                                 output=output or None)
+
+
+@mcp.tool()
+async def binary_ghidra(binary_path: str, target: str = "", timeout: int = 300) -> str:
+    """
+    Run Ghidra headless to decompile main() (and optionally a named symbol via target).
+    Returns raw decompiled C plus function/import/string metadata. Requires analyzeHeadless.
+    Phase: Binary Exploitation
+    Related: binary_analyze, binary_angr, binary_functions, binary_symbolic
+    """
+    from modules.bin_wrapper import ghidra as _bg
+    return await _run_bin_kwargs(_bg, binary_path, target=target or None, timeout=timeout)
+
+
+@mcp.tool()
+async def binary_trace(binary_path: str, tool: str = "strace", timeout: int = 15,
+                       trace_filter: str = "process,file,network,memory",
+                       summary: bool = False, argv: str = "") -> str:
+    """
+    Dynamically trace a binary with strace (syscall counts + interesting events
+    for process/file/network/memory) or ltrace. summary appends strace -c rollups.
+    Scheme: these filters help map the runtime attack surface.
+    Phase: Binary Exploitation
+    Related: binary_dbg, binary_analyze, binary_ghidra
+    """
+    from modules.bin_wrapper import trace as _bt
+    return await _run_bin_kwargs(_bt, binary_path, tool=tool, timeout=timeout,
+                                 trace_filter=trace_filter, summary=summary, argv=argv)
+
+
+@mcp.tool()
+async def binary_dbg(binary_path: str, break_at: str = "main", stdin_file: str = "",
+                     argv: str = "", extra_cmd: str = "", timeout: int = 60) -> str:
+    """
+    GDB batch triage of a target: set breakpoint, run (optionally with stdin from a
+    file and argv), capture registers/backtrace on signal, dump stack, and scan for
+    /bin/sh on the stack. Useful after a crash for offset + gadget confirmation.
+    Phase: Binary Exploitation
+    Related: binary_trace, binary_analyze, binary_pattern_offset
+    """
+    from modules.bin_wrapper import dbg as _bd
+    return await _run_bin_kwargs(_bd, binary_path, break_at=break_at,
+                                 stdin_file=stdin_file or None, argv=argv,
+                                 extra_cmd=extra_cmd, timeout=timeout)
+
+
+@mcp.tool()
+async def binary_afl(binary_path: str = "", action: str = "scout",
+                     output_dir: str = "findings", timeout: int = 60,
+                     harness: str = "") -> str:
+    """
+    Orchestrate AFL++ fuzzing of a binary: genius generates a harness workspace
+    (harness.c, build.sh, fuzz.sh, seeds), build compiles it, fuzz runs afl-fuzz
+    for timeout seconds, triage gdb-crashes the findings and scout checks what is
+    installed. To gen/fuzz/triage, provide binary_path.
+    Phase: Binary Exploitation
+    Related: binary_fuzz, binary_analyze, binary_dbg
+    """
+    from modules.bin_wrapper import afl_scout, afl_gen, afl_fuzz, afl_triage
+    a = action.lower()
+    if a == "scout":
+        return await _run_bin_noargs(afl_scout)
+    if a in ("gen", "build"):
+        return await _run_bin_kwargs(afl_gen, binary_path, output_dir=output_dir or None)
+    if a == "fuzz":
+        return await _run_bin_kwargs(afl_fuzz, binary_path, harness=harness or None,
+                                     output_dir=output_dir, timeout=timeout)
+    if a == "triage":
+        return await _run_bin_kwargs(afl_triage, binary_path, harness=harness or None,
+                                     output_dir=output_dir)
+    return f"Error: unknown afl action '{action}' (expected scout/gen/build/fuzz/triage)"
+
+
+@mcp.tool()
+async def binary_setup(install: bool = False, only: str = "") -> str:
+    """
+    Show a report of missing binary-analysis tools (radare2, ghidra, angr, pwntools,
+    gdb, afl++, gcc, strace, ltrace...) and with install=True install them via apt/pip/gem.
+    only restricts to one category (apt/pip/gem).
+    Phase: Binary Exploitation
+    Related: binary_check, binary_analyze
+    """
+    from modules.bin_wrapper import setup as _bs
+    return await _run_bin_kwargs(_bs, install=install, only=only)
 
 
 @mcp.tool()
@@ -6778,7 +6882,7 @@ def main():
     denylist = ""
     config_ok = False
     try:
-from modules.config import load_config
+        from modules.config import load_config
         from modules.feature_groups import build_allowlist, build_denylist
         feats = load_config().get("features") or {}
         config_allowlist = build_allowlist(feats)

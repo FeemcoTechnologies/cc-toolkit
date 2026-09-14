@@ -18,10 +18,13 @@ def enumerate_binaries(folder: str, max_files: int = 500) -> list[dict]:
 
     results = []
     seen = 0
+    scanned = 0
+    scan_cap = max_files * 4
     for root, _dirs, files in os.walk(folder):
         for fname in files:
-            if seen >= max_files:
+            if seen >= max_files or scanned >= scan_cap:
                 return results
+            scanned += 1
             path = os.path.join(root, fname)
             try:
                 out = subprocess.check_output(

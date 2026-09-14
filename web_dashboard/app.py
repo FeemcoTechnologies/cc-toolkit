@@ -2422,7 +2422,7 @@ def api_case_runbook_run(case_id: str):
     def _run(*, _progress=None):
         try:
             from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+            from modules.config import PLAYBOOKS_DIR
             if _progress:
                 _progress(current_step=1, message="Building runbook...")
 
@@ -2517,7 +2517,7 @@ def api_case_runbook_log(case_id: str):
 def runbooks_list():
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         import yaml
         engine = RunbookEngine(PLAYBOOKS_DIR)
         files = engine.list_runbooks()
@@ -2600,7 +2600,7 @@ def _count_step_types(data: dict) -> dict:
 def runbook_detail(filename: str):
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         engine = RunbookEngine(PLAYBOOKS_DIR)
         data = engine.load(filename)
     except Exception as e:
@@ -2641,7 +2641,7 @@ def api_runbook_run(filename: str):
     def _run(*, _progress=None):
         try:
             from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+            from modules.config import PLAYBOOKS_DIR
             from modules.case_manager import CaseManager
             import json as _json
             if _progress:
@@ -2701,7 +2701,7 @@ from modules.config import PLAYBOOKS_DIR
 def api_runbooks_list():
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         import yaml
         engine = RunbookEngine(PLAYBOOKS_DIR)
         files = engine.list_runbooks()
@@ -2733,7 +2733,7 @@ from modules.config import PLAYBOOKS_DIR
 def api_runbook_steps(filename: str):
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         engine = RunbookEngine(PLAYBOOKS_DIR)
         data = engine.load(filename)
         steps = []
@@ -3127,8 +3127,23 @@ def api_report_generate(case_id: str):
                 tmp_html.close()
                 out_path = tmp_path.with_suffix(f".{fmt}")
                 if fmt == "docx":
-                    subprocess.run(["pandoc", str(tmp_path), "-o", str(out_path), "--from", "html"],
-                                   capture_output=True, text=True, timeout=60)
+                    # Route through markdown so page-break markers become real Word
+                    # page breaks. markdownify drops empty divs, so swap the marker
+                    # for a literal token paragraph first; _convert_md_to_docx turns
+                    # it back into a real page-break run.
+                    try:
+                        from markdownify import markdownify as _md_from_html
+                        styled_pb = styled.replace(
+                            '<div class="page-break"></div>',
+                            '<p class="pbmark">@@PAGEBREAK@@</p>')
+                        md_for_docx = _md_from_html(styled_pb, heading_style="ATX")
+                        if not _convert_md_to_docx(md_for_docx, out_path, f"Report — {case_id}",
+                                                   case_dir=case_dir):
+                            subprocess.run(["pandoc", str(tmp_path), "-o", str(out_path), "--from", "html"],
+                                           capture_output=True, text=True, timeout=60)
+                    except Exception:
+                        subprocess.run(["pandoc", str(tmp_path), "-o", str(out_path), "--from", "html"],
+                                       capture_output=True, text=True, timeout=60)
                 else:
                     from weasyprint import HTML
                     HTML(filename=str(tmp_path)).write_pdf(str(out_path))
@@ -4147,7 +4162,7 @@ def _get_loot_db():
     global _LOOT
     if _LOOT is None:
         from modules.tool_wrappers import LootDB
-from modules.config import CC_DIR
+        from modules.config import CC_DIR
         _LOOT = LootDB(CC_DIR / "loot.db")
     return _LOOT
 
@@ -4414,7 +4429,7 @@ def _read_mcp_resource(uri: str) -> str:
     """Read an MCP resource by URI — shared logic with cc_mcp_server.py."""
     import yaml
     from modules.case_manager import CaseManager
-from modules.config import CASES_DIR, CC_DIR
+    from modules.config import CASES_DIR, CC_DIR
     from modules.findings_db import FindingsDB
     import json as _json
 
@@ -4501,7 +4516,7 @@ def _read_mcp_playbooks() -> str:
 
 def _read_mcp_prompts() -> str:
     import yaml
-from modules.config import CC_DIR
+    from modules.config import CC_DIR
     prompts_dir = CC_DIR / "prompts"
     if not prompts_dir.is_dir():
         return "[]"
@@ -4676,7 +4691,7 @@ def api_burp_config_update():
         updates["burp_proxy_url"] = data["proxy_url"]
         DASHBOARD_CONFIG["burp_proxy_url"] = data["proxy_url"]
     if updates:
-from modules.config import update_config
+        from modules.config import update_config
         update_config(lambda cfg, u=updates: cfg.update(u))
     return jsonify({"status": "ok"})
 
@@ -5139,7 +5154,7 @@ def api_appsec_caido_config():
 @csrf_required
 def api_appsec_caido_config_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     updates = {}
     if "base_url" in data and data["base_url"].strip():
         updates["caido_url"] = data["base_url"].strip()
@@ -5170,7 +5185,7 @@ def api_appsec_zap_config():
 @csrf_required
 def api_appsec_zap_config_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     def _mut(cfg):
         z = dict(cfg.get("zap") or {})
         if data.get("url", "").strip():
@@ -5200,7 +5215,7 @@ def api_appsec_burp_config():
 @csrf_required
 def api_appsec_burp_config_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     def _mut(cfg):
         if data.get("api_url", "").strip():
             cfg["burp_api_url"] = data["api_url"].strip()
@@ -5571,6 +5586,211 @@ def api_appsec_file_scan():
 
 
 # ---------------------------------------------------------------------------
+# Binary Exploitation Toolkit (ai-bug-bounty/bin-tools.py)
+# ---------------------------------------------------------------------------
+# action: (help text, primary target label, default timeout seconds)
+_BIN_ACTIONS = {
+    "check":         ("Check installed RE/exploitation tools", "", 60),
+    "analyze":       ("Full binary analysis (file, security, vulns, exploitability)", "binary", 900),
+    "summary":       ("Concise AI-friendly security summary", "binary", 120),
+    "vulns":         ("Vulnerability scan (dangerous funcs, packers, anti-debug)", "binary", 180),
+    "checksec":      ("Security mitigations (NX, canary, RELRO, PIE, CET)", "binary", 120),
+    "gadgets":       ("Find ROP/NOP gadgets", "binary", 300),
+    "exploit":       ("Exploitability scoring + technique strategy", "binary", 180),
+    "fmtstr":        ("Format string vulnerability analysis", "binary", 180),
+    "heap":          ("Heap analysis (allocator detection + techniques)", "binary", 180),
+    "net":           ("Network service analysis (binary path or tcp://host:port)", "target", 180),
+    "symbolic":      ("Symbolic execution with angr (reach system, avoid symbols)", "binary", 600),
+    "ghidra":        ("Ghidra headless decompile of main()/named symbol", "binary", 600),
+    "trace":         ("strace/ltrace dynamic tracing", "binary", 180),
+    "dbg":           ("GDB batch triage (registers, backtrace, crash)", "binary", 300),
+    "afl":           ("AFL++ fuzzing (scout/gen/fuzz/triage)", "binary", 1200),
+    "setup":         ("Audit/install missing analysis tools", "", 1800),
+    "bindiff":       ("radiff2 binary diffing vs a second file", "binary1", 180),
+    "libc":          ("libc fingerprinting from leaked offsets (libc.rip)", "symbol", 120),
+    "one_gadget":    ("one_gadget offsets in a libc file", "libc", 180),
+    "seccomp":       ("Seccomp-bpf filter analysis", "binary", 180),
+    "scout":         ("One-pass comprehensive recon", "binary", 300),
+    "fuzz":          ("Generate AFL++ fuzzing harness workspace", "binary", 120),
+    "strings":       ("Extract printable strings", "binary", 180),
+    "funcs":         ("List exported/visible functions", "binary", 120),
+    "crash":         ("Core dump / crash data triage", "core", 180),
+    "scaffold":      ("Generate exploit.py template", "binary", 60),
+    "cyclic":        ("Generate de Bruijn cyclic pattern", "", 30),
+    "pattern":       ("Find offset of value in cyclic pattern", "", 30),
+    "asm":           ("Assemble instructions to bytes", "", 30),
+    "disasm":        ("Disassemble bytes to instructions", "", 30),
+    "shellcode":     ("Generate shellcode", "", 60),
+    "patch":         ("Patch/modify binary bytes", "binary", 60),
+    "ropchain":      ("Generate a ROP chain payload", "binary", 60),
+    "ret2csu":       ("Generate ret2csu (__libc_csu_init) exploit", "binary", 60),
+    "ret2dlresolve": ("Generate ret2dlresolve exploit scaffolding", "binary", 60),
+}
+
+
+def _bin_bool(data: dict, field: str) -> bool:
+    return str(data.get(field) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _bin_build_argv(action: str, data: dict) -> list:
+    """Map a dashboard request to bin-tools.py argv; raw extras appended last."""
+    def _t(field: str) -> str:
+        return (data.get(field) or "").strip()
+
+    primary = _t("target") or _t("binary") or _t("path")
+    extra = [tok for tok in shlex.split(_t("extra") or "") if tok]
+
+    if action == "check":
+        argv = ["check"]
+    elif action == "setup":
+        argv = ["setup"]
+        if _bin_bool(data, "install"):
+            argv.append("--install")
+        if _t("only"):
+            argv += ["--only", _t("only")]
+    elif action == "symbolic":
+        argv = ["symbolic"]
+        if _t("target_func"):
+            argv += ["--target", _t("target_func")]
+        avoid = [s.strip() for s in _t("avoid").split(",") if s.strip()]
+        if avoid:
+            argv += ["--avoid", ",".join(avoid)]
+        if _bin_bool(data, "dump_input"):
+            argv.append("--dump-input")
+        if _t("output"):
+            argv += ["--output", _t("output")]
+        if primary:
+            argv.append(primary)
+    elif action == "ghidra":
+        argv = ["ghidra", primary, "--timeout", str(min(int(_t("timeout") or 300), 3600))]
+        if _t("target_func"):
+            argv += ["--target", _t("target_func")]
+    elif action == "trace":
+        argv = ["trace", primary, "--tool", _t("tool") or "strace",
+                "--timeout", str(min(int(_t("timeout") or 15), 600))]
+        if _t("trace_filter"):
+            argv += ["--trace", _t("trace_filter")]
+        if _bin_bool(data, "summary"):
+            argv.append("--summary")
+        if _t("argv"):
+            argv += ["--argv", _t("argv")]
+    elif action == "dbg":
+        argv = ["dbg", primary, "--break", _t("break_at") or "main",
+                "--timeout", str(min(int(_t("timeout") or 60), 1800))]
+        if _t("stdin"):
+            argv += ["--stdin", _t("stdin")]
+        if _t("argv"):
+            argv += ["--argv", _t("argv")]
+        if _t("cmd"):
+            argv += ["--cmd", _t("cmd")]
+    elif action == "afl":
+        subc = _t("afl_sub") or "scout"
+        argv = ["afl", subc]
+        if subc in ("gen", "fuzz", "triage") and primary:
+            argv.append(primary)
+        if _t("output"):
+            argv += ["--output", _t("output")]
+        if subc == "fuzz" and _t("timeout"):
+            argv += ["--timeout", _t("timeout")]
+        if _t("harness"):
+            argv += ["--harness", _t("harness")]
+    elif action == "bindiff":
+        argv = ["bindiff", primary]
+        if _t("binary2"):
+            argv.append(_t("binary2"))
+    elif action == "libc":
+        argv = ["libc"]
+        if _bin_bool(data, "web"):
+            argv.append("--web")
+        if _t("leaked"):
+            argv += ["--leaked", _t("leaked")]
+        if _t("offset"):
+            argv += ["--offset", _t("offset")]
+        if primary and primary != "list":
+            argv.append(primary)
+    elif action == "cyclic":
+        argv = ["cyclic", _t("length") or "1024"]
+    elif action == "pattern":
+        argv = ["pattern", "-v", _t("value") or "0x61616171"]
+    elif action == "net":
+        argv = ["net", primary]
+    else:
+        argv = [action]
+        if primary:
+            argv.append(primary)
+    if _bin_bool(data, "json"):
+        argv.append("--json")
+    return argv + extra
+
+
+def _binary_tool_job(action, argv, timeout, _progress=None):
+    """Run a bin-tools.py subcommand in a job thread; returns dict result."""
+    from modules.bin_wrapper import _find_bin_tools
+    tool = _find_bin_tools()
+    if not tool:
+        raise RuntimeError("bin-tools.py not found. Expected at ../ai-bug-bounty/bin-tools.py")
+    py = shutil.which("python3") or shutil.which("python") or "python3"
+    cmd = [py, tool] + argv
+    if _progress:
+        _progress(1, message="Running: " + " ".join(cmd))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"action": action, "command": " ".join(cmd), "returncode": None,
+                "stdout": "", "stderr": "",
+                "error": f"Command timed out after {timeout}s. "
+                         f"Common causes: analyze/symbolic/ghidra on large binaries are slow; "
+                         f"raise the timeout field (max 3600)."}
+    except Exception as e:
+        return {"action": action, "command": " ".join(cmd), "returncode": None,
+                "stdout": "", "stderr": "", "error": str(e)[:2000]}
+    if _progress:
+        _progress(2, message="Finished")
+    return {"action": action, "command": " ".join(cmd),
+            "returncode": r.returncode,
+            "stdout": (r.stdout or "")[-20000:],
+            "stderr": (r.stderr or "")[-4000:]}
+
+
+@app.route("/binary")
+@require_api_key_html
+def binary_page():
+    return render_template("binary.html", actions=sorted(_BIN_ACTIONS.items()))
+
+
+@app.route("/api/binary/status")
+@require_api_key
+def api_binary_status():
+    from modules.bin_wrapper import _find_bin_tools
+    tool = _find_bin_tools()
+    return jsonify({
+        "bin_tools": tool,
+        "python": shutil.which("python3") or shutil.which("python") or None,
+        "has_bin_tools": bool(tool),
+    })
+
+
+@app.route("/api/binary/run", methods=["POST"])
+@require_api_key
+@csrf_required
+def api_binary_run():
+    data = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip().lower()
+    if action not in _BIN_ACTIONS:
+        return jsonify({"error": f"Unknown action: {action}"}), 400
+    try:
+        timeout = min(int(data.get("timeout") or _BIN_ACTIONS[action][2]), 3600)
+    except (TypeError, ValueError):
+        timeout = _BIN_ACTIONS[action][2]
+    argv = _bin_build_argv(action, data)
+    title = f"Binary: {action} {argv[1] if len(argv) > 1 else ''}"
+    job_id = _jm.create("binary", title, 2)
+    run_in_thread(_jm, job_id, _binary_tool_job, action=action, argv=argv,
+                  timeout=timeout, progress_callback=_make_job_progress("", job_id))
+    return jsonify({"job_id": job_id, "action": action, "argv": argv}), 201
+
+
+# ---------------------------------------------------------------------------
 # Features — MCP lightweight toggles
 # ---------------------------------------------------------------------------
 @app.route("/features")
@@ -5590,7 +5810,7 @@ def api_features():
 @csrf_required
 def api_features_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     def _mut(cfg):
         feats = dict(cfg.get("features") or {})
         if "enabled_groups" in data and isinstance(data["enabled_groups"], list):

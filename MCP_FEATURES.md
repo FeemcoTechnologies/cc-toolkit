@@ -15,7 +15,7 @@ at the next start, based on `config.json` `features` (and the `CC_MCP_TOOLS` env
 - **ad** — Active Directory (25 tools)
 - **appsec** — AppSec (DAST/SAST/SCA) (22 tools)
 - **bb** — Bug Bounty (10 tools)
-- **binary** — Binary Exploitation (16 tools)
+- **binary** — Binary Exploitation (22 tools)
 - **case** — Case Management (104 tools)
 - **forensics** — Forensics & Creds (15 tools)
 - **recon** — Recon & Assets (42 tools)

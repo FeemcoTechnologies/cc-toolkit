@@ -156,6 +156,49 @@ def _pe_version_info(path: Path) -> Dict:
     return out
 
 
+def _r2_entry_disasm(path: Path, lines: int = 12) -> Dict:
+    """Disassemble the entry point / main() via radare2/rizin when available."""
+    r2 = shutil.which("r2") or shutil.which("rizin")
+    if not r2:
+        return {}
+    try:
+        out, _ = _run([r2, "-q", "-2", "-e", "bin.relocs.apply=true", "-c",
+                       "e scr.color=false; aa; s main; pd %d" % lines, str(path)],
+                      timeout=90)
+    except Exception:
+        return {}
+    rows = [ln.strip() for ln in out.splitlines() if ln.strip()][:lines]
+    if not rows:
+        return {}
+    return {"tool": shutil.which("rizin") and "rizin" or "radare2", "count": len(rows),
+            "instructions": rows}
+
+
+def _diec_packer_hints(path: Path) -> Dict:
+    """Query Detect It Easy (diec) for packer/protector/compiler hints."""
+    diec = shutil.which("diec")
+    if not diec:
+        return {}
+    try:
+        out, _ = _run([diec, "-j", str(path)], timeout=60)
+    except Exception:
+        return {}
+    import json as _json
+    try:
+        data = _json.loads(out)
+    except Exception:
+        return {}
+    det = data.get("detects", []) if isinstance(data, dict) else []
+    hints = []
+    for e in det:
+        if isinstance(e, dict):
+            name = e.get("name") or e.get("value") or ""
+            if name:
+                hints.append({"type": e.get("type") or "?", "name": name,
+                              "options": e.get("options") or []})
+    return {"tool": "diec", "hints": hints[:10]}
+
+
 def scan_binary(path: Path, with_strings: bool = True) -> Dict:
     """Analyze a single binary for its CLI surface."""
     info: Dict = {
@@ -172,11 +215,20 @@ def scan_binary(path: Path, with_strings: bool = True) -> Dict:
         "cve_hints": [],
         "paths": [],
         "symbol_count": 0,
+        "packer": {},
+        "entry_disasm": [],
     }
     if info["type"] == "ELF":
         info["arch"] = _elf_arch(path)
     if info["type"] == "PE":
         info["version_info"] = _pe_version_info(path)
+
+    if info["type"] in ("ELF", "PE"):
+        info["packer"] = _diec_packer_hints(path)
+    if info["type"] == "ELF":
+        d = _r2_entry_disasm(path)
+        if d.get("instructions"):
+            info["entry_disasm"] = d["instructions"]
 
     if with_strings:
         ss = _string_surface(path)
@@ -279,6 +331,13 @@ def format_report(r: Dict) -> str:
         if b.get("version_info"):
             vi = ", ".join(f"{k}={v}" for k, v in list(b["version_info"].items())[:5])
             lines.append(f"  version: {vi}")
+        if b.get("packer") and b["packer"].get("hints"):
+            pk = ", ".join(f"{h['name']}({h['type']})" for h in b["packer"]["hints"][:6])
+            lines.append(f"  packer/protector: {pk}")
+        if b.get("entry_disasm"):
+            lines.append(f"  entry disasm ({len(b['entry_disasm'])} instr):")
+            for ins in b["entry_disasm"][:6]:
+                lines.append(f"    {ins}")
         if b.get("subcommands"):
             lines.append(f"  subcommands: {', '.join(b['subcommands'][:25])}")
         if b.get("options"):

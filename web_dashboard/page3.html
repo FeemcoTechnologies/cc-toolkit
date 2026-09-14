@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="674f4ec3869d10b71ba6f1f0d877e733d94f2b701f1dc208ce57c379734f96e2">
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var t = document.querySelector('meta[name="csrf-token"]');
+            if (!t) return;
+            var c = t.getAttribute('content');
+            var f = window.fetch;
+            window.fetch = function(u, o) {
+                o = o || {};
+                var m = (o.method || "GET").toUpperCase();
+                if (["GET","POST","PUT","DELETE","PATCH"].indexOf(m) >= 0) {
+                    o.credentials = "same-origin";
+                    var h = o.headers || {};
+                    if (h instanceof Headers) h.set("X-CSRF-Token", c);
+                    else if (Array.isArray(h)) h.push(["X-CSRF-Token", c]);
+                    else h["X-CSRF-Token"] = c;
+                    o.headers = h;
+                    if (o.body && typeof o.body === "string") {
+                        try { var b = JSON.parse(o.body);
+                            if (!b.csrf_token) { b.csrf_token = c; o.body = JSON.stringify(b); }
+                            // Ensure Content-Type is set so Flask can parse the JSON
+                            if (h instanceof Headers) { if (!h.has("Content-Type")) h.set("Content-Type", "application/json"); }
+                            else if (!Array.isArray(h) && !h["Content-Type"]) { h["Content-Type"] = "application/json"; o.headers = h; }
+                        } catch(e) {}
+                    }
+                }
+                return f(u, o);
+            };
+            var ox = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(m, u, a, us, pw) {
+                this._m = m.toUpperCase(); return ox.apply(this, arguments);
+            };
+            var xs = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function(b) {
+                if (["GET","POST","PUT","DELETE","PATCH"].indexOf(this._m) >= 0)
+                    this.setRequestHeader("X-CSRF-Token", c);
+                return xs.apply(this, arguments);
+            };
+        });
+    </script>
+
+    <title>PT-POSUSA-2026-003 / Report Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+<link href="https://cdn.quilljs.com/2.0.3/quill.snow.css" rel="stylesheet">
+<style>
+  #editor-container .ql-editor { min-height: 60vh; font-size: 13px; line-height: 1.7; color: #222; }
+  #editor-container .ql-editor h1 { font-size: 1.6em; margin-top: 1em; }
+  #editor-container .ql-editor h2 { font-size: 1.3em; margin-top: 0.8em; }
+  #editor-container .ql-editor h3 { font-size: 1.1em; }
+  #editor-container .ql-editor pre { background: #1e1e2e; color: #cdd6f4; padding: 0.8em; border-radius: 4px; white-space: pre-wrap; }
+  #editor-container .ql-editor table { border-collapse: collapse; width: 100%; }
+  #editor-container .ql-editor table th { background: #000; color: #fff; font-weight: 600; border: 1px solid #444; }
+  #editor-container .ql-editor table td { background: #fff; color: #222; border: 1px solid #ccc; padding: 6px 10px; }
+  #editor-container { background: #fff; border-radius: 0 0 6px 6px; }
+</style>
+
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+    <nav class="bg-gray-900 border-b border-gray-800 px-4 py-3 sticky top-0 z-50">
+         <div class="flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <a href="/" class="text-lg font-bold text-indigo-400 tracking-wide shrink-0">CC<span class="text-gray-400">/dashboard</span></a>
+                <span class="text-gray-600 text-sm">|</span>
+                <select id="case-selector" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 max-w-[160px]"
+                        onchange="if(this.value) window.location='/case/'+this.value">
+                    <option value="">Select case...</option>
+                </select>
+            </div>
+
+            <!-- Mobile hamburger -->
+            <button id="nav-toggle" class="md:hidden text-gray-400 hover:text-gray-100" onclick="toggleMobileNav()">
+                <i data-lucide="menu" class="w-5 h-5"></i>
+            </button>
+
+            <!-- Desktop nav -->
+            <div id="desktop-nav" class="hidden md:flex items-center gap-1">
+                
+
+                
+                <div class="relative" data-dropdown="engagement">
+                    <button onclick="toggleDropdown('engagement')" class="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 rounded transition-colors whitespace-nowrap">
+                        <i data-lucide="crosshair" class="w-4 h-4"></i>
+                        <span>Engagement</span>
+                        <i data-lucide="chevron-down" class="w-3 h-3 opacity-60"></i>
+                    </button>
+                    <div id="dropdown-engagement" class="absolute top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px] hidden z-50">
+                        
+                <a href="/projects" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="columns" class="w-3.5 h-3.5"></i> Projects</a>
+                <a href="/findings" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="search" class="w-3.5 h-3.5"></i> Findings</a>
+                <a href="/runbooks" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="book-open" class="w-3.5 h-3.5"></i> Runbooks</a>
+                <a href="/assets" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="hard-drive" class="w-3.5 h-3.5"></i> Assets</a>
+                <a href="/loot" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="database" class="w-3.5 h-3.5"></i> Loot</a>
+                
+                    </div>
+                </div>
+                
+
+                
+                <div class="relative" data-dropdown="bugbounty">
+                    <button onclick="toggleDropdown('bugbounty')" class="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 rounded transition-colors whitespace-nowrap">
+                        <i data-lucide="target" class="w-4 h-4"></i>
+                        <span>Bug Bounty</span>
+                        <i data-lucide="chevron-down" class="w-3 h-3 opacity-60"></i>
+                    </button>
+                    <div id="dropdown-bugbounty" class="absolute top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px] hidden z-50">
+                        
+                <a href="/bb" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="target" class="w-3.5 h-3.5"></i> Programs</a>
+                
+                    </div>
+                </div>
+                
+
+                
+                <div class="relative" data-dropdown="infra">
+                    <button onclick="toggleDropdown('infra')" class="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 rounded transition-colors whitespace-nowrap">
+                        <i data-lucide="terminal" class="w-4 h-4"></i>
+                        <span>Infrastructure</span>
+                        <i data-lucide="chevron-down" class="w-3 h-3 opacity-60"></i>
+                    </button>
+                    <div id="dropdown-infra" class="absolute top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px] hidden z-50">
+                        
+                <a href="/terminal" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="terminal" class="w-3.5 h-3.5"></i> Terminal</a>
+                <a href="/tools" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="wrench" class="w-3.5 h-3.5"></i> Tools</a>
+                <a href="/appsec" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="shield-half" class="w-3.5 h-3.5"></i> AppSec</a>
+                <a href="/burp" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Burp</a>
+                <a href="/wifi-monitor" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="wifi" class="w-3.5 h-3.5"></i> WiFi</a>
+                
+                    </div>
+                </div>
+                
+
+                
+                <div class="relative" data-dropdown="library">
+                    <button onclick="toggleDropdown('library')" class="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 rounded transition-colors whitespace-nowrap">
+                        <i data-lucide="book" class="w-4 h-4"></i>
+                        <span>Library</span>
+                        <i data-lucide="chevron-down" class="w-3 h-3 opacity-60"></i>
+                    </button>
+                    <div id="dropdown-library" class="absolute top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px] hidden z-50">
+                        
+                <a href="/flashcards" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="brain" class="w-3.5 h-3.5"></i> Brain</a>
+                <a href="/prompts" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="file-text" class="w-3.5 h-3.5"></i> Prompts</a>
+                <a href="/rules" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="shield" class="w-3.5 h-3.5"></i> Rules</a>
+                
+                    </div>
+                </div>
+                
+
+                
+                <div class="relative" data-dropdown="system">
+                    <button onclick="toggleDropdown('system')" class="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 rounded transition-colors whitespace-nowrap">
+                        <i data-lucide="settings" class="w-4 h-4"></i>
+                        <span>System</span>
+                        <i data-lucide="chevron-down" class="w-3 h-3 opacity-60"></i>
+                    </button>
+                    <div id="dropdown-system" class="absolute top-full right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px] hidden z-50">
+                        
+                <a href="/ai" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> AI</a>
+                <a href="/jobs" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800 relative"><i data-lucide="clock" class="w-3.5 h-3.5"></i> Jobs <span id="job-badge-nav" class="bg-indigo-500 text-white text-xs rounded-full px-1.5 ml-1 hidden">0</span></a>
+                <a href="/features" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="sliders" class="w-3.5 h-3.5"></i> Features</a>
+                <a href="/debug" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="bug" class="w-3.5 h-3.5"></i> Debug</a>
+                <a href="/docs" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="book-open" class="w-3.5 h-3.5"></i> API Docs</a>
+                <a href="/mcp-resources" class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-100 hover:bg-gray-800"><i data-lucide="database" class="w-3.5 h-3.5"></i> MCP Resources</a>
+                
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+
+        <!-- Mobile nav panel -->
+        <div id="mobile-nav" class="md:hidden hidden mt-2 border-t border-gray-800 pt-2 space-y-1">
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Engagement</div>
+            <a href="/projects" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="columns" class="w-4 h-4"></i> Projects</a>
+            <a href="/findings" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="search" class="w-4 h-4"></i> Findings</a>
+            <a href="/runbooks" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="book-open" class="w-4 h-4"></i> Runbooks</a>
+            <a href="/assets" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="hard-drive" class="w-4 h-4"></i> Assets</a>
+            <a href="/loot" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="database" class="w-4 h-4"></i> Loot</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Bug Bounty</div>
+            <a href="/bb" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="target" class="w-4 h-4"></i> Programs</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Infrastructure</div>
+            <a href="/terminal" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="terminal" class="w-4 h-4"></i> Terminal</a>
+            <a href="/tools" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="wrench" class="w-4 h-4"></i> Tools</a>
+            <a href="/appsec" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="shield-half" class="w-4 h-4"></i> AppSec</a>
+            <a href="/burp" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="bug" class="w-4 h-4"></i> Burp</a>
+            <a href="/wifi-monitor" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="wifi" class="w-4 h-4"></i> WiFi</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">Library</div>
+            <a href="/flashcards" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="brain" class="w-4 h-4"></i> Brain</a>
+            <a href="/prompts" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="file-text" class="w-4 h-4"></i> Prompts</a>
+            <a href="/rules" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="shield" class="w-4 h-4"></i> Rules</a>
+            <div class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">System</div>
+            <a href="/ai" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="cpu" class="w-4 h-4"></i> AI</a>
+            <a href="/jobs" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="clock" class="w-4 h-4"></i> Jobs <span id="job-badge-mobile" class="bg-indigo-500 text-white text-xs rounded-full px-1.5 ml-1 hidden">0</span></a>
+            <a href="/features" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-400 hover:text-gray-100 rounded"><i data-lucide="sliders" class="w-4 h-4"></i> Features</a>
+            <a href="/debug" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="bug" class="w-4 h-4"></i> Debug</a>
+            <a href="/docs" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="book-open" class="w-4 h-4"></i> API Docs</a>
+            <a href="/mcp-resources" class="flex items-center gap-2 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-100 rounded"><i data-lucide="database" class="w-4 h-4"></i> MCP Resources</a>
+        </div>
+    </nav>
+    <main class="p-4">
+        
+
+<div class="flex gap-4 items-start">
+<nav class="case-sidebar bg-gray-900 border border-gray-800 rounded-lg overflow-hidden shrink-0">
+    <div class="px-3 py-2 bg-gray-800/50 border-b border-gray-800">
+        <a href="/case/PT-POSUSA-2026-003" class="text-sm font-semibold text-gray-200 hover:text-indigo-400 transition-colors flex items-center gap-2">
+            <i data-lucide="folder" class="w-4 h-4 text-indigo-400"></i>
+            PT-POSUSA-2026-003
+        </a>
+        <span class="text-xs text-gray-500">pentest_web</span>
+    </div>
+    <div class="py-1 space-y-0.5">
+        
+        
+        <a href="/case/PT-POSUSA-2026-003" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="layout-dashboard" class="w-4 h-4 shrink-0"></i>
+            <span>Overview</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/board" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="columns" class="w-4 h-4 shrink-0"></i>
+            <span>Board</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/checklist" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="check-square" class="w-4 h-4 shrink-0"></i>
+            <span>Checklist</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/gantt" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="calendar" class="w-4 h-4 shrink-0"></i>
+            <span>Timeline</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/findings" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="search-circle" class="w-4 h-4 shrink-0"></i>
+            <span>Findings</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/notes" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+            <span>Notes</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/evidence" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="shield" class="w-4 h-4 shrink-0"></i>
+            <span>Evidence</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/files" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="folder-open" class="w-4 h-4 shrink-0"></i>
+            <span>Files</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/topology" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="network" class="w-4 h-4 shrink-0"></i>
+            <span>Topology</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/runbook" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="book-open" class="w-4 h-4 shrink-0"></i>
+            <span>Runbook</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/edit" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-gray-400 hover:text-gray-200 hover:bg-gray-800">
+            <i data-lucide="edit" class="w-4 h-4 shrink-0"></i>
+            <span>Settings</span>
+        </a>
+        
+        <a href="/case/PT-POSUSA-2026-003/report" class="flex items-center gap-2 px-3 py-1.5 text-sm transition-colors
+            text-indigo-400 bg-indigo-900/20 border-r-2 border-indigo-400">
+            <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+            <span>Report</span>
+        </a>
+        
+    </div>
+</nav>
+<div class="min-w-0 flex-1">
+
+<nav class="text-xs text-gray-500 mb-3 flex items-center gap-1 breadcrumbs">
+  <a href="/" class="hover:text-gray-300">Dashboard</a>
+  <span>/</span>
+  <a href="/case/PT-POSUSA-2026-003" class="hover:text-gray-300">PT-POSUSA-2026-003</a>
+  <span>/</span>
+  <span class="text-gray-400">Report Editor</span>
+</nav>
+
+<h1 class="text-xl font-semibold mb-4">Report Editor</h1>
+
+<div class="flex items-center gap-2 mb-3 flex-wrap">
+  <button id="load-report-btn" onclick="loadReport()" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm">Load Report</button>
+  <span class="text-gray-600">|</span>
+  <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+    <input type="checkbox" id="show-retest" class="accent-indigo-500">
+    Include retest section
+  </label>
+  <span class="text-gray-600">|</span>
+  <button onclick="exportReport('md')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-md">Export MD</button>
+  <button onclick="exportReport('html')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-html">Export HTML</button>
+  <button onclick="exportReport('docx')" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-docx">Export DOCX</button>
+  <button onclick="exportReport('pdf')" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-sm disabled:opacity-50" id="export-pdf">Export PDF</button>
+  <span id="editor-status" class="text-xs text-gray-500 ml-auto"></span>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4" style="min-height: 70vh;">
+  <div class="bg-gray-900 rounded-lg border border-gray-800 flex flex-col" style="min-height: 70vh;">
+    <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+      <span class="text-xs font-semibold text-gray-400">Editor</span>
+      <span class="text-xs text-gray-500">Format with toolbar above</span>
+    </div>
+    <div id="editor-container" style="flex:1;"></div>
+  </div>
+  <div class="bg-white rounded-lg border border-gray-800 flex flex-col overflow-hidden">
+    <div class="flex items-center justify-between px-3 py-2 border-b border-gray-300 bg-gray-100">
+      <span class="text-xs font-semibold text-gray-600">Preview</span>
+    </div>
+    <iframe id="report-preview" class="flex-1 w-full border-0" style="min-height: 60vh;"></iframe>
+  </div>
+</div>
+
+</div> 
+</div> 
+
+    </main>
+
+    <!-- Global Toast -->
+    <div id="global-toast" class="fixed bottom-20 right-4 z-50 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-sm shadow-xl hidden items-center gap-2"></div>
+
+    <!-- Floating job queue widget -->
+    <div id="job-queue-container" class="fixed bottom-4 right-4 z-40 w-80 max-h-96 flex flex-col">
+        <button id="job-queue-toggle" onclick="toggleJobQueue()"
+                class="self-end mb-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg px-3 py-1.5 text-xs flex items-center gap-2 transition-colors">
+            <i data-lucide="list" class="w-3.5 h-3.5"></i>
+            <span>Recent Jobs</span>
+            <span id="job-badge-mini" class="bg-indigo-500 text-white rounded-full px-1.5 hidden text-xs">0</span>
+        </button>
+        <div id="job-queue-panel"
+             class="bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-y-auto hidden"
+             style="max-height: 320px;">
+            <div id="job-queue-widget">
+                <div class="text-gray-500 text-xs p-3 text-center">Connecting...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/job-queue.js"></script>
+    <script>
+        lucide.createIcons();
+        fetch('/api/cases').then(r=>r.json()).then(cases=>{
+            const sel = document.getElementById('case-selector');
+            if(!sel) return;
+            cases.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.case_id;
+                opt.textContent = `${c.case_id} (${c.client || 'no client'} — ${c.status})`;
+                sel.appendChild(opt);
+            });
+        });
+
+        function toggleJobQueue() {
+            const panel = document.getElementById('job-queue-panel');
+            panel.classList.toggle('hidden');
+        }
+
+        function toggleDropdown(id) {
+            const panel = document.getElementById('dropdown-' + id);
+            const isOpen = !panel.classList.contains('hidden');
+            // Close all dropdowns
+            document.querySelectorAll('[id^="dropdown-"]').forEach(p => p.classList.add('hidden'));
+            if (!isOpen) panel.classList.remove('hidden');
+        }
+
+        function toggleMobileNav() {
+            document.getElementById('mobile-nav').classList.toggle('hidden');
+            lucide.createIcons();
+        }
+
+        window.toast = function(msg, ok) {
+            var el = document.getElementById('global-toast');
+            if (!el) return;
+            el.textContent = msg;
+            el.className = 'fixed bottom-20 right-4 z-50 border rounded-lg px-4 py-2 text-sm shadow-xl flex items-center gap-2 ' +
+                (ok !== false ? 'bg-green-900 border-green-700 text-green-200' : 'bg-red-900 border-red-700 text-red-200');
+            el.classList.remove('hidden');
+            setTimeout(function() { el.classList.add('hidden'); }, 3000);
+        };
+
+        // Close dropdowns on click outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('[data-dropdown]'))
+                document.querySelectorAll('[id^="dropdown-"]').forEach(p => p.classList.add('hidden'));
+        });
+
+        // Update badge from widget state
+        document.addEventListener('DOMContentLoaded', function() {
+            setInterval(function() {
+                const container = document.getElementById('job-queue-widget');
+                if (!container) return;
+                const count = container.querySelectorAll('[class*="animate-pulse"]').length;
+                ['job-badge','job-badge-mini','job-badge-nav','job-badge-mobile'].forEach(function(id) {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.textContent = count || '0';
+                    el.style.display = count ? 'inline' : 'none';
+                });
+            }, 2000);
+        });
+    </script>
+    
+<script src="https://cdn.quilljs.com/2.0.3/quill.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/turndown@7.2.4/dist/turndown.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@18.0.9/lib/marked.umd.js"></script>
+<script>
+const quill = new Quill('#editor-container', {
+  theme: 'snow',
+  modules: {
+    table: true,
+    toolbar: [
+      [{ header: [1, 2, 3, 4, false] }],
+      ['bold', 'italic', 'underline', 'strike'],
+      [{ list: 'ordered' }, { list: 'bullet' }],
+      ['blockquote', 'code-block'],
+      ['link', 'clean']
+    ]
+  },
+  placeholder: 'Click "Load Report" to begin...'
+});
+
+const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+turndown.use(turndownPluginGfm.gfm);
+
+// Teach marked how to parse Pandoc-style heading attributes into real
+// id="" attributes (marked v18 does NOT understand them natively, so
+// without this they'd render as literal anchor text inside headings).
+marked.use({
+  renderer: {
+    heading(token) {
+      const text = (token.tokens && this.parser && this.parser.parseInline)
+        ? this.parser.parseInline(token.tokens)
+        : (token.text || '');
+      const m = text.match(/\{\x23([a-zA-Z0-9_:-]+)\}\s*$/);
+      let id = '', txt = text;
+      if (m) { id = ' id="' + m[1] + '"'; txt = text.slice(0, m.index); }
+      return '<h' + token.depth + id + '>' + txt.replace(/\s+$/, '') + '</h' + token.depth + '>\n';
+    }
+  }
+});
+
+// Turndown drops HTML heading ids by default, which would kill the finding
+// anchors (and the page-break CSS) on the preview round-trip. Preserve them.
+turndown.addRule('headingWithId', {
+  filter: function(node) {
+    return /^H[1-6]$/.test(node.nodeName) && node.getAttribute && node.getAttribute('id');
+  },
+  replacement: function(content, node) {
+    const lvl = parseInt(node.nodeName[1], 10);
+    const id = node.getAttribute('id');
+    return new Array(lvl + 1).join('#') + ' ' + content + ' {' + '\x23' + id + '}\n\n';
+  }
+});
+
+// --- HTML normalizers for Quill output quirks ---
+function normalizeQuillHtml(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html;
+  // 1. Convert Quill code-block divs to <pre><code> (turndown needs <code> child for fenced code blocks)
+  d.querySelectorAll('.ql-code-block-container').forEach(function(container) {
+    var lines = [];
+    container.querySelectorAll('.ql-code-block').forEach(function(block) {
+      lines.push(block.textContent);
+    });
+    var pre = document.createElement('pre');
+    var code = document.createElement('code');
+    code.textContent = lines.join('\n');
+    pre.appendChild(code);
+    container.replaceWith(pre);
+  });
+  // 2. Merge consecutive <table> siblings with data-row attrs into a single table.
+  //    Quill's table module can split rows into separate <table> elements.
+  //    Group <td> elements by their data-row value into unified <tr> elements.
+  //    Also remove any <table> whose entire content is duplicated by a following table
+  //    (identifiable by a proper <thead> neighbor).
+  (function mergeQuillTables() {
+    var tables = Array.from(d.querySelectorAll('table'));
+    // First pass: remove broken data-row tables that have a proper <thead> table as next sibling
+    tables.forEach(function(tbl, idx) {
+      if (!tbl.querySelector('td[data-row]')) return;
+      // Check if the very next sibling is also a <table> with a <thead>
+      var next = tbl.nextElementSibling;
+      if (next && next.tagName === 'TABLE' && next.querySelector('thead')) {
+        tbl.remove();
+      }
+    });
+    // Second pass: merge consecutive data-row tables
+    tables = Array.from(d.querySelectorAll('table'));
+    var merged = false;
+    do {
+      merged = false;
+      tables = Array.from(d.querySelectorAll('table'));
+      for (var i = 0; i < tables.length - 1; i++) {
+        var a = tables[i], b = tables[i + 1];
+        if (a.nextElementSibling !== b) continue;
+        var aRows = a.querySelectorAll('tr');
+        var bRows = b.querySelectorAll('tr');
+        if (aRows.length === 0 || bRows.length === 0) continue;
+        // Merge second table's rows into first
+        var targetTbody = a.querySelector('tbody') || a;
+        Array.from(bRows).forEach(function(tr) {
+          // Remove data-row attrs on cells
+          tr.querySelectorAll('td').forEach(function(td) { td.removeAttribute('data-row'); });
+          targetTbody.appendChild(tr);
+        });
+        b.remove();
+        merged = true;
+        break;
+      }
+    } while (merged);
+    // Remove any remaining data-row attrs (cleanup)
+    d.querySelectorAll('td[data-row]').forEach(function(td) { td.removeAttribute('data-row'); });
+  })();
+  // 3. Convert first row of any table from <td> to <th> if not already a header
+  d.querySelectorAll('table').forEach(function(table) {
+    if (table.querySelector('th') || table.querySelector('thead')) return;
+    var tbody = table.querySelector('tbody');
+    if (!tbody) return;
+    var rows = tbody.querySelectorAll('tr');
+    if (rows.length < 2) return;
+    var thead = document.createElement('thead');
+    var hr = document.createElement('tr');
+    rows[0].querySelectorAll('td').forEach(function(td) {
+      var th = document.createElement('th');
+      th.innerHTML = td.innerHTML;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.insertBefore(thead, tbody);
+    rows[0].remove();
+  });
+  // 4. Restore nested lists from Quill 2 flat format.
+  //    Quill 2 flattens <ol><ul> nesting into a single <ol> with
+  //    <li data-list="ordered|bullet" class="ql-indent-N">.
+  //    Reconstruct proper nesting so turndown emits correct markdown.
+  d.querySelectorAll('ol, ul').forEach(function(list) {
+    var hasQuill = list.querySelector('[data-list]') || list.querySelector('.ql-indent-1');
+    if (!hasQuill) return;
+    var items = Array.from(list.children).filter(function(el) { return el.tagName === 'LI'; });
+    if (items.length === 0) return;
+    var root = document.createElement(list.tagName);
+    var stack = [{list: root, indent: 0}];
+    items.forEach(function(li) {
+      var dataList = li.getAttribute('data-list') || 'ordered';
+      var indent = 0;
+      var m = li.className.match(/ql-indent-(\d+)/);
+      if (m) indent = parseInt(m[1], 10);
+      // Pop up to parent level
+      while (stack.length > 1 && indent < stack[stack.length - 1].indent) {
+        stack.pop();
+      }
+      // Create nested list if indent increased
+      if (indent > stack[stack.length - 1].indent) {
+        var tag = dataList === 'bullet' ? 'ul' : 'ol';
+        var nested = document.createElement(tag);
+        var prevLi = stack[stack.length - 1].list.lastElementChild;
+        if (prevLi && prevLi.tagName === 'LI') {
+          prevLi.appendChild(nested);
+        } else {
+          stack[stack.length - 1].list.appendChild(nested);
+        }
+        stack.push({list: nested, indent: indent});
+      }
+      // Switch list type at same indent (ordered→bullet or vice versa)
+      var curTag = stack[stack.length - 1].list.tagName.toLowerCase();
+      var wantTag = dataList === 'bullet' ? 'ul' : 'ol';
+      if (curTag !== wantTag) {
+        var parentEl = stack[stack.length - 1].list.parentNode;
+        if (parentEl) {
+          var switched = document.createElement(wantTag);
+          parentEl.insertBefore(switched, stack[stack.length - 1].list.nextSibling);
+          stack[stack.length - 1] = {list: switched, indent: indent};
+        }
+        // If parentEl is null (root not yet in DOM), just keep current list
+      }
+      var cleanLi = document.createElement('li');
+      cleanLi.innerHTML = li.innerHTML;
+      cleanLi.removeAttribute('data-list');
+      cleanLi.removeAttribute('class');
+      stack[stack.length - 1].list.appendChild(cleanLi);
+    });
+    list.replaceWith(root);
+  });
+  return d.innerHTML;
+}
+let loaded = false;
+
+// --- Load report ---
+async function loadReport() {
+  const btn = document.getElementById('load-report-btn');
+  btn.textContent = 'Loading...';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/case/PT-POSUSA-2026-003/report/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: 'md', show_retest: document.getElementById('show-retest').checked})
+    });
+    const result = await r.json();
+    if (result.error) { showStatus('Error: ' + result.error, true); return; }
+
+    let md = result.output || '';
+    // Strip logo embeds (can't resolve in browser)
+    md = md.replace(/!\[Logo\]\(data:image\/[^)]+\)\n*/g, '');
+    md = md.replace(/!\[\[\.?\/?Data\/Logo[^\]]*\]\]\n*/g, '');
+    md = md.replace(/!\[.*?\]\(\.\/?Data\/Logo[^)]*\)\n*/g, '');
+    // Strip evidence screenshot embeds (filesystem paths, can't load in browser)
+    md = md.replace(/!\[.*?\]\(evidence\/[^)]*\)\n*/g, '');
+    md = md.replace(/!\[\[evidence\/[^\]]*\]\]\n*/g, '');
+    // Strip entire Evidence Screenshots section (images can't load in web context)
+    md = md.replace(/## Evidence Screenshots[\s\S]*?(?=\n---)/, '');
+    md = md.trimStart();
+
+    // Cache the clean markdown for exports (bypasses Quill round-trip which mangles tables)
+    window._cachedMd = md;
+    // Convert markdown to HTML (sanitized: report content is engagement data)
+    function sanitizeReportHtml(html) {
+        return html
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+            .replace(/<object[\s\S]*?<\/object>/gi, '')
+            .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+            .replace(/\s(javascript|vbscript)\s*:/gi, ' ');
+    }
+    const html = sanitizeReportHtml(marked.parse(md));
+    // Store original table HTMLs for preview repair (Quill's table module mangles tables)
+    window._originalTables = [];
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+    temp.querySelectorAll('table').forEach(function(table) {
+      window._originalTables.push(table.outerHTML);
+    });
+    quill.clipboard.dangerouslyPasteHTML(html);
+    loaded = true;
+    showStatus('Report loaded');
+    // Scroll to top
+    try { quill.root.scrollTop = 0; } catch(e) {}
+    refreshPreview();
+  } catch(e) {
+    showStatus('Error: ' + e.message, true);
+    console.error('loadReport error:', e);
+  } finally {
+    btn.textContent = 'Load Report';
+    btn.disabled = false;
+  }
+}
+
+// --- Export (WYSIWYG: captures preview iframe HTML, which has all JS fixes applied) ---
+async function exportReport(format) {
+  if (!loaded) { showStatus('Load a report first', true); return; }
+  const iframe = document.getElementById('report-preview');
+  if (!iframe || !iframe.contentDocument) { showStatus('Preview not ready', true); return; }
+
+  const btn = document.getElementById('export-' + format);
+  btn.textContent = 'Converting...';
+  btn.disabled = true;
+  try {
+    // Capture the preview iframe's fully-rendered HTML (includes JS table repair + PoC styling)
+    const previewHtml = iframe.contentDocument.documentElement.outerHTML;
+
+    if (format === 'html') {
+      const blob = new Blob([previewHtml], {type: 'text/html'});
+      triggerDownload(blob, 'report-PT-POSUSA-2026-003.html');
+      showStatus('HTML downloaded');
+      return;
+    }
+    if (format === 'md') {
+      // Convert preview HTML to markdown via server
+      const r = await fetch('/api/case/PT-POSUSA-2026-003/report/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({format: 'md', html: previewHtml})
+      });
+      const result = await r.json();
+      if (result.error) { showStatus(result.error, true); return; }
+      const blob = new Blob([result.output || ''], {type: 'text/markdown'});
+      triggerDownload(blob, 'report-PT-POSUSA-2026-003.md');
+      showStatus('MD downloaded');
+      return;
+    }
+    // DOCX/PDF: send preview HTML to server for direct conversion (bypasses markdown)
+    const r = await fetch('/api/case/PT-POSUSA-2026-003/report/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format, html: previewHtml})
+    });
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const result = await r.json();
+        if (result.error) {
+          showStatus(result.error, true);
+        } else if (result.output) {
+          const blob = new Blob([result.output], {type: 'text/html'});
+          triggerDownload(blob, 'report-PT-POSUSA-2026-003.' + format);
+          showStatus(format.toUpperCase() + ' downloaded');
+        } else {
+          showStatus(format.toUpperCase() + ' complete');
+        }
+      } else {
+        const blob = await r.blob();
+        triggerDownload(blob, 'report-PT-POSUSA-2026-003.' + format);
+        showStatus(format.toUpperCase() + ' downloaded');
+      }
+  } catch(e) {
+    showStatus('Error: ' + e.message, true);
+  } finally {
+    btn.textContent = 'Export ' + format.toUpperCase();
+    btn.disabled = false;
+  }
+}
+
+// Quill strips <h3 id="..."> attrs on paste, so finding headings
+// lose their finding anchors in the markdown round-trip.
+// Re-derive them from the "#N" prefix so the preview keeps the
+// id="finding-N" + page-break CSS the server emits.
+function reinjectFindingHeadingIds(md) {
+  return md.split('\n').map(function(line) {
+    if (!/^#{1,6}\s+#\d+/.test(line)) return line;
+    const m = line.match(/^(#{1,6})\s+#(\d+)\s+—\s+(.+?)(\s*\{\x23finding-\d+\})?\s*$/);
+    if (m && !m[4]) {
+      return '### #' + m[2] + ' — ' + m[3] + ' {' + '\x23finding-' + m[2] + '}';
+    }
+    return line;
+  }).join('\n');
+}
+
+// --- Preview (client-side turndown → server-side _md_to_html_full) ---
+async function refreshPreview() {
+  const raw = quill.root.innerHTML;
+  if (!raw.trim() || raw === '<p><br></p>') { previewPlaceholder(); return; }
+  // Normalize Quill HTML quirks then convert to markdown via turndown
+  let md = turndown.turndown(normalizeQuillHtml(raw));
+  md = reinjectFindingHeadingIds(md);
+  try {
+    const r = await fetch('/api/case/PT-POSUSA-2026-003/report/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: 'html', markdown: md})
+    });
+    const result = await r.json();
+    const iframe = document.getElementById('report-preview');
+    if (result.output && iframe.contentDocument) {
+      iframe.contentDocument.open();
+      iframe.contentDocument.write(result.output);
+      iframe.contentDocument.close();
+      // Repair tables mangled by Quill: replace tables lacking <thead> with originals by position
+      if (window._originalTables && window._originalTables.length > 0) {
+        var previewTables = iframe.contentDocument.querySelectorAll('table');
+        var brokenIdx = 0;
+        previewTables.forEach(function(tbl) {
+          if (!tbl.querySelector('thead') && brokenIdx < window._originalTables.length) {
+            var div = iframe.contentDocument.createElement('div');
+            div.innerHTML = window._originalTables[brokenIdx];
+            var replacement = div.querySelector('table');
+            if (replacement) { tbl.replaceWith(replacement); }
+            brokenIdx++;
+          }
+        });
+      }
+      // Style PoC <pre> blocks as terminal boxes (fallback if ```poc tag was lost in round-trip)
+      iframe.contentDocument.querySelectorAll('h4').forEach(function(h4) {
+        if (h4.textContent.indexOf('Proof of Concept') !== -1) {
+          var el = h4.nextElementSibling;
+          while (el && el.tagName !== 'PRE') { el = el.nextElementSibling; }
+          if (el && el.tagName === 'PRE' && !el.classList.contains('poc-shell')) {
+            el.style.background = '#000';
+            el.style.color = '#fff';
+            el.style.border = '1px solid #555';
+          }
+        }
+      });
+    } else if (result.error) {
+      showStatus('Preview error: ' + result.error, true);
+    }
+  } catch(e) {
+    console.error('preview error:', e);
+    showStatus('Preview error: ' + e.message, true);
+  }
+}
+
+function previewPlaceholder() {
+  const iframe = document.getElementById('report-preview');
+  if (!iframe.contentDocument) return;
+  iframe.contentDocument.open();
+  iframe.contentDocument.write('<html><body style="font-family:sans-serif;color:#555;padding:2em;text-align:center;margin-top:4em"><p>Click <strong>Load Report</strong> to begin.</p></body></html>');
+  iframe.contentDocument.close();
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function showStatus(msg, isError) {
+  const el = document.getElementById('editor-status');
+  el.textContent = msg;
+  el.className = 'text-xs ' + (isError ? 'text-red-400' : 'text-gray-400') + ' ml-auto';
+}
+
+// Init
+previewPlaceholder();
+
+// Debounced auto-preview on Quill content change
+let previewTimer = null;
+quill.on('text-change', function() {
+  if (!loaded) return;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshPreview, 800);
+});
+</script>
+
+</body>
+</html>

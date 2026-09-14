@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}CC / Binary{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold flex items-center gap-2"><i data-lucide="bug" class="w-5 h-5 text-red-400"></i> Binary Exploitation Toolkit</h1>
+    <a href="/appsec" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-1.5 rounded flex items-center gap-1"><i data-lucide="shield-half" class="w-3.5 h-3.5"></i> AppSec</a>
+</div>
+
+<div id="toast" class="hidden fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium max-w-md"></div>
+
+<div id="tool-status" class="mb-4"></div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+    <!-- Run form -->
+    <div class="lg:col-span-1 bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <h2 class="text-sm font-semibold flex items-center gap-2 mb-3"><i data-lucide="terminal" class="w-4 h-4 text-red-400"></i> Run analysis</h2>
+
+        <label class="block text-xs text-gray-400 mb-1">Action</label>
+        <select id="act" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 mb-3" onchange="onActionChange()">
+            {% for key, (help, label, tmo) in actions %}
+            <option value="{{ key }}">{{ key }} — {{ help }}</option>
+            {% endfor %}
+        </select>
+
+        <div id="target-wrap">
+            <label id="target-label" class="block text-xs text-gray-400 mb-1">Target</label>
+            <input id="target" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 mb-3" placeholder="Path to binary on server, e.g. /opt/challenge">
+        </div>
+
+        <!-- action-specific options -->
+        <div id="opts"></div>
+
+        <label class="block text-xs text-gray-400 mb-1">Extra CLI args</label>
+        <input id="extra" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 mb-3 font-mono" placeholder="--arch x86_64 --format c ... (optional)">
+
+        <div class="grid grid-cols-2 gap-2 mb-3">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Timeout (s)</label>
+                <input id="timeout" type="number" min="5" max="3600" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100" value="120">
+            </div>
+            <div class="flex items-end pb-1">
+                <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                    <input id="json" type="checkbox" class="accent-red-600"> --json
+                </label>
+            </div>
+        </div>
+
+        <button id="run-btn" onclick="doRun()" class="bg-red-700 hover:bg-red-600 disabled:opacity-50 text-xs px-4 py-2 rounded flex items-center gap-2 w-full justify-center">
+            <span id="run-btn-text">Run</span>
+            <span id="run-btn-spinner" class="hidden"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg></span>
+        </button>
+    </div>
+
+    <!-- Output -->
+    <div class="lg:col-span-2 bg-gray-900 rounded-lg border border-gray-800 p-5 min-h-[200px]">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold flex items-center gap-2"><i data-lucide="file-search" class="w-4 h-4 text-blue-400"></i> Output</h2>
+            <button onclick="clearOut()" class="bg-gray-800 hover:bg-gray-700 text-xs px-2 py-1 rounded">Clear</button>
+        </div>
+        <div id="cmd-display" class="hidden mb-2 text-[11px] font-mono text-gray-500 bg-gray-950 rounded px-2 py-1 break-all"></div>
+        <pre id="out" class="bg-gray-950 rounded p-3 text-xs font-mono text-gray-300 whitespace-pre-wrap break-words overflow-x-auto" style="max-height:70vh">No run yet.</pre>
+    </div>
+</div>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-5 mb-4">
+    <h2 class="text-sm font-semibold flex items-center gap-2 mb-3"><i data-lucide="list" class="w-4 h-4 text-indigo-400"></i> All actions</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {% for key, (help, label, tmo) in actions %}
+        <div class="flex items-start justify-between gap-2 p-2.5 rounded border border-gray-800 bg-gray-950 cursor-pointer hover:border-red-700 transition text-sm" onclick="pickAction('{{ key }}')">
+            <span><span class="font-mono text-red-400">{{ key }}</span> <span class="text-gray-500 text-xs">{{ help }}</span></span>
+            <span class="text-gray-600 text-[11px] shrink-0 whitespace-nowrap">{{ label or 'no target' }} · {{ tmo }}s</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function $(id) { return document.getElementById(id); }
+function toast(msg, isErr) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm font-medium max-w-md ' +
+        (isErr ? 'bg-red-900/95 border-red-700 text-red-100' : 'bg-gray-900/95 border-gray-700 text-gray-100');
+    t.classList.remove('hidden');
+    setTimeout(() => t.classList.add('hidden'), isErr ? 6000 : 2500);
+}
+
+const OPT_LABELS = {
+    'symbolic': 'Target binary', 'net': 'Binary or tcp://host:port', 'libc': 'libc binary or symbol',
+    'one_gadget': 'libc file', 'crash': 'Core dump file', 'bindiff': 'First binary',
+    'scaffold': 'Target binary', 'fuzz': 'Target binary', 'asm': 'Assembly line(s)',
+    'disasm': 'Hex bytes', 'shellcode': 'Architecture (optional)',
+};
+
+function onActionChange() {
+    const a = $('act').value;
+    const label = OPT_LABELS[a] || (a + ' target');
+    $('target-label').textContent = label;
+    $('target-wrap').classList.toggle('hidden',
+        ['check','setup','cyclic','pattern'].includes(a));
+    const o = $('opts');
+    o.innerHTML = '';
+    const add = (html) => { const d = document.createElement('div'); d.innerHTML = html; o.appendChild(d.firstChild); };
+    const field = (id, lbl, ph, def) => add(
+        `<label class="block text-xs text-gray-400 mb-1">${lbl}</label><input id="${id}" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 mb-3 font-mono" placeholder="${ph}" value="${def || ''}">`);
+    const sel = (id, lbl, opts, def) => {
+        let hs = opts.map(ov => `<option value="${ov}"${ov === (def || opts[0]) ? ' selected' : ''}>${ov}</option>`).join('');
+        add(`<label class="block text-xs text-gray-400 mb-1">${lbl}</label><select id="${id}" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 mb-3">${hs}</select>`);
+    };
+    const chk = (id, lbl) => add(
+        `<label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer mb-3"><input id="${id}" type="checkbox" class="accent-red-600"> ${lbl}</label>`);
+
+    if (a === 'symbolic') {
+        field('target_func', 'Target function', 'system', 'system');
+        field('avoid', 'Avoid symbols (comma-separated)', 'exit,abort');
+        chk('dump_input', '--dump-input (write concrete stdin)');
+        field('output', '--output file', '/tmp/stdin.bin');
+    } else if (a === 'ghidra') {
+        field('target_func', 'Also decompile symbol', '__libc_start_main');
+        field('timeout', 'Ghidra timeout (s)', '300');
+    } else if (a === 'trace') {
+        sel('tool', 'Tracer', ['strace', 'ltrace'], 'strace');
+        field('trace_filter', 'Strace event filter', 'process,file,network,memory', 'process,file,network,memory');
+        field('argv', 'Program arguments', '--help');
+        chk('summary', '--summary (syscall counts)');
+        field('timeout', 'Trace timeout (s)', '15');
+    } else if (a === 'dbg') {
+        field('break_at', 'Break at', 'main', 'main');
+        field('stdin', 'StdIn file', '/tmp/inp');
+        field('argv', 'Program arguments', '');
+        field('cmd', 'Extra GDB command', '');
+        field('timeout', 'Timeout (s)', '60');
+    } else if (a === 'afl') {
+        sel('afl_sub', 'AFL sub-command', ['scout', 'gen', 'fuzz', 'triage'], 'scout');
+        field('output', '--output dir', 'findings');
+        field('harness', '--harness binary', '');
+        field('timeout', 'Fuzz timeout (s)', '60');
+    } else if (a === 'setup') {
+        chk('install', '--install missing tools');
+        field('only', '--only (comma-separated tools)', 'ghidra,rizin');
+    } else if (a === 'bindiff') {
+        field('binary2', 'Second binary (patched)', '/tmp/patched');
+    } else if (a === 'libc') {
+        chk('web', '--web (libc.rip lookup)');
+        field('leaked', '--leaked address', '0x7f12345678b0');
+        field('offset', '--offset', '0x5f0f0');
+    } else if (a === 'cyclic') {
+        field('length', 'Pattern length', '1024');
+    } else if (a === 'pattern') {
+        field('value', 'Value to search (hex or ascii)', '0x61616171');
+    } else if (a === 'shellcode') {
+        field('extra2', '', '');
+        $('extra').value = $('extra').value || '--list';
+    }
+    if (['asm','disasm','shellcode','patch','ropchain','ret2csu','ret2dlresolve'].includes(a)) {
+        $('extra').setAttribute('placeholder', 'e.g. --arch x86_64 --format c  (action options go here)');
+    }
+}
+function pickAction(key) {
+    $('act').value = key;
+    onActionChange();
+    $('act').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('target').focus();
+}
+
+async function loadStatus() {
+    try {
+        const s = await (await fetch('/api/binary/status')).json();
+        const ok = s.has_bin_tools && s.bin_tools;
+        $('tool-status').innerHTML =
+            `<div class="flex items-center gap-2 text-xs ${ok ? 'text-green-400' : 'text-red-400'}">
+                <span class="status-dot inline-block w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-400' : 'bg-red-400'}"></span>
+                ${ok ? 'bin-tools.py: ' + s.bin_tools : 'bin-tools.py NOT found on server (' + (s.python || 'no python') + ')'}
+            </div>`;
+    } catch (e) {
+        $('tool-status').innerHTML = '<div class="text-xs text-red-400">Status check failed: ' + e.message + '</div>';
+    }
+}
+
+async function doRun() {
+    const a = $('act').value;
+    const btn = $('run-btn');
+    btn.disabled = true;
+    $('run-btn-spinner').classList.remove('hidden');
+    $('run-btn-text').textContent = 'Running...';
+    const body = {
+        action: a,
+        target: $('target').value.trim(),
+        extra: $('extra').value.trim(),
+        timeout: $('timeout').value || 120,
+        json: $('json').checked,
+    };
+    ['target_func','avoid','dump_input','output','tool','trace_filter','summary','argv',
+     'break_at','stdin','cmd','afl_sub','harness','install','only','binary2','web','leaked',
+     'offset','length','value'].forEach(f => {
+        const el = $(f);
+        if (el) body[f] = el.type === 'checkbox' ? el.checked : el.value.trim();
+    });
+    try {
+        const r = await (await fetch('/api/binary/run', {method:'POST', body: JSON.stringify(body)})).json();
+        if (r.error) { toast('Error: ' + r.error, true); }
+        else { toast('Started job ' + r.job_id, false); pollJob(r.job_id); return; }
+    } catch (e) { toast('Network error: ' + e.message, true); }
+    btn.disabled = false;
+    $('run-btn-spinner').classList.add('hidden');
+    $('run-btn-text').textContent = 'Run';
+}
+
+function pollJob(jobId) {
+    const timer = setInterval(async () => {
+        try {
+            const j = await (await fetch('/api/jobs/' + jobId)).json();
+            if (j.message) $('cmd-display').textContent = j.message;
+            if (j.status === 'completed' || j.status === 'failed') {
+                clearInterval(timer);
+                const btn = $('run-btn');
+                btn.disabled = false;
+                $('run-btn-spinner').classList.add('hidden');
+                $('run-btn-text').textContent = 'Run';
+                renderResult(j);
+            }
+        } catch (e) { clearInterval(timer); }
+    }, 1500);
+}
+
+function formatOut(text) {
+    const s = (text || '');
+    if (s.startsWith('{') || s.startsWith('[')) {
+        try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { /* fall through */ }
+    }
+    return s;
+}
+
+function renderResult(j) {
+    const cmd = $('cmd-display');
+    if (j.status === 'failed') {
+        cmd.classList.remove('hidden');
+        cmd.textContent = 'ERROR: ' + (j.error || 'unknown');
+        $('out').textContent = j.error || 'Job failed.';
+        toast('Job failed', true);
+        return;
+    }
+    const r = j.result || {};
+    cmd.classList.remove('hidden');
+    cmd.textContent = r.command || '';
+    let body = formatOut(r.stdout);
+    if (r.stderr && !r.stdout) body = 'stderr:\n' + r.stderr;
+    else if (r.stderr) body += '\n\n[stderr]\n' + r.stderr;
+    const err = r.error || j.error;
+    if (err) {
+        $('out').className = 'bg-red-950/50 rounded p-3 text-xs font-mono text-red-200 whitespace-pre-wrap break-words overflow-x-auto';
+        body = 'ERROR: ' + err + (body ? '\n\n' + body : '');
+    } else if (r.returncode !== 0 || (r.stderr && !r.stdout)) {
+        $('out').className = 'bg-red-950/50 rounded p-3 text-xs font-mono text-red-200 whitespace-pre-wrap break-words overflow-x-auto';
+    } else {
+        $('out').className = 'bg-gray-950 rounded p-3 text-xs font-mono text-gray-100 whitespace-pre-wrap break-words overflow-x-auto';
+    }
+    if (!body) body = `(exit ${r.returncode}, no output)`;
+    $('out').textContent = body;
+    $('out').style.maxHeight = '70vh';
+}
+
+function clearOut() {
+    $('cmd-display').classList.add('hidden');
+    $('out').textContent = 'No run yet.';
+}
+
+onActionChange();
+loadStatus();
+</script>
+{% endblock %}

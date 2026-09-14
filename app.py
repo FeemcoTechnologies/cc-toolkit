@@ -2345,7 +2345,7 @@ def api_case_runbook_run(case_id: str):
     def _run(*, _progress=None):
         try:
             from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+            from modules.config import PLAYBOOKS_DIR
             if _progress:
                 _progress(current_step=1, message="Building runbook...")
 
@@ -2440,7 +2440,7 @@ def api_case_runbook_log(case_id: str):
 def runbooks_list():
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         import yaml
         engine = RunbookEngine(PLAYBOOKS_DIR)
         files = engine.list_runbooks()
@@ -2523,7 +2523,7 @@ def _count_step_types(data: dict) -> dict:
 def runbook_detail(filename: str):
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         engine = RunbookEngine(PLAYBOOKS_DIR)
         data = engine.load(filename)
     except Exception as e:
@@ -2564,7 +2564,7 @@ def api_runbook_run(filename: str):
     def _run(*, _progress=None):
         try:
             from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+            from modules.config import PLAYBOOKS_DIR
             from modules.case_manager import CaseManager
             import json as _json
             if _progress:
@@ -2624,7 +2624,7 @@ from modules.config import PLAYBOOKS_DIR
 def api_runbooks_list():
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         import yaml
         engine = RunbookEngine(PLAYBOOKS_DIR)
         files = engine.list_runbooks()
@@ -2656,7 +2656,7 @@ from modules.config import PLAYBOOKS_DIR
 def api_runbook_steps(filename: str):
     try:
         from modules.playbook_engine import RunbookEngine
-from modules.config import PLAYBOOKS_DIR
+        from modules.config import PLAYBOOKS_DIR
         engine = RunbookEngine(PLAYBOOKS_DIR)
         data = engine.load(filename)
         steps = []
@@ -4057,7 +4057,7 @@ def _get_loot_db():
     global _LOOT
     if _LOOT is None:
         from modules.tool_wrappers import LootDB
-from modules.config import CC_DIR
+        from modules.config import CC_DIR
         _LOOT = LootDB(CC_DIR / "loot.db")
     return _LOOT
 
@@ -4324,7 +4324,7 @@ def _read_mcp_resource(uri: str) -> str:
     """Read an MCP resource by URI — shared logic with cc_mcp_server.py."""
     import yaml
     from modules.case_manager import CaseManager
-from modules.config import CASES_DIR, CC_DIR
+    from modules.config import CASES_DIR, CC_DIR
     from modules.findings_db import FindingsDB
     import json as _json
 
@@ -4411,7 +4411,7 @@ def _read_mcp_playbooks() -> str:
 
 def _read_mcp_prompts() -> str:
     import yaml
-from modules.config import CC_DIR
+    from modules.config import CC_DIR
     prompts_dir = CC_DIR / "prompts"
     if not prompts_dir.is_dir():
         return "[]"
@@ -4586,7 +4586,7 @@ def api_burp_config_update():
         updates["burp_proxy_url"] = data["proxy_url"]
         DASHBOARD_CONFIG["burp_proxy_url"] = data["proxy_url"]
     if updates:
-from modules.config import update_config
+        from modules.config import update_config
         update_config(lambda cfg, u=updates: cfg.update(u))
     return jsonify({"status": "ok"})
 
@@ -5048,7 +5048,7 @@ def api_appsec_caido_config():
 @csrf_required
 def api_appsec_caido_config_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     updates = {}
     if "base_url" in data and data["base_url"].strip():
         updates["caido_url"] = data["base_url"].strip()
@@ -5079,7 +5079,7 @@ def api_appsec_zap_config():
 @csrf_required
 def api_appsec_zap_config_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     def _mut(cfg):
         z = dict(cfg.get("zap") or {})
         if data.get("url", "").strip():
@@ -5109,7 +5109,7 @@ def api_appsec_burp_config():
 @csrf_required
 def api_appsec_burp_config_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     def _mut(cfg):
         if data.get("api_url", "").strip():
             cfg["burp_api_url"] = data["api_url"].strip()
@@ -5465,7 +5465,7 @@ def api_features():
 @csrf_required
 def api_features_update():
     data = request.get_json(silent=True) or {}
-from modules.config import update_config
+    from modules.config import update_config
     def _mut(cfg):
         feats = dict(cfg.get("features") or {})
         if "enabled_groups" in data and isinstance(data["enabled_groups"], list):

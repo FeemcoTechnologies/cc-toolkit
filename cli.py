@@ -1311,7 +1311,7 @@ def _appsec_fmt_sca(r):
 # ---------------------------------------------------------------------------
 def cmd_zap(args):
     from modules.zap_client import ZapClient
-from modules.config import load_config
+    from modules.config import load_config
     zc = load_config().get("zap") or {}
     client = ZapClient(api_url=zc.get("url", "http://127.0.0.1:8080"),
                        api_key=zc.get("api_key", ""))
@@ -1887,7 +1887,7 @@ def cmd_features(args):
         return
 
     if action == "manifest":
-from modules.config import CC_DIR
+        from modules.config import CC_DIR
         env = __import__("os").environ.get("CC_MCP_TOOLS", "")
         s = summarize(feats)
         md = ["# CC Toolkit — MCP Feature Manifest",
@@ -4908,10 +4908,28 @@ def main():
                  ("fmtstr","Format string analysis"),
                  ("heap","Heap analysis"),
                  ("net","Network service analysis"),
-                 ("angr","Symbolic execution (angr)"),
+                 ("symbolic","Symbolic execution (angr)"),
+                 ("ghidra","Ghidra headless decompile"),
+                 ("trace","strace/ltrace dynamic tracing"),
+                 ("dbg","GDB batch triage"),
+                 ("afl","AFL++ fuzzing orchestration"),
+                 ("setup","Audit/install analysis tools"),
+                 ("bindiff","Binary diffing (radiff2)"),
+                 ("libc","libc fingerprinting (local search / libc.rip)"),
+                 ("seccomp","Seccomp filter analysis"),
                  ("fuzz","Generate fuzzing harness"),
                  ("strings","Extract strings"),
                  ("funcs","List functions"),
+                 ("asm","Assemble instructions"),
+                 ("disasm","Disassemble bytes"),
+                 ("shellcode","Shellcode generation"),
+                 ("scaffold","Exploit scaffold"),
+                 ("crash","Crash triage"),
+                 ("one_gadget","one_gadget search"),
+                 ("patch","Binary patching"),
+                 ("ropchain","Build a ROP chain"),
+                 ("ret2csu","ret2csu exploit scaffolding"),
+                 ("ret2dlresolve","ret2dlresolve exploit scaffolding"),
                  ("cyclic","Generate cyclic pattern"),
                  ("pattern","Find offset in pattern")]:
         csp = bc.add_parser(a, help=h)

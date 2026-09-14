@@ -156,8 +156,8 @@ ENV_PATTERNS = [
     (r"/root/", "Hardcoded /root/ path"),
 ]
 
-IMPORT_RE = re.compile(r"^[ \t]*(from\s+modules)\.constants(\s+import)", re.MULTILINE)
-REL_IMPORT_RE = re.compile(r"^[ \t]*(from\s+\.)constants(\s+import)", re.MULTILINE)
+IMPORT_RE = re.compile(r"^([ \t]*from\s+modules)\.constants(\s+import)", re.MULTILINE)
+REL_IMPORT_RE = re.compile(r"^([ \t]*from\s+\.)constants(\s+import)", re.MULTILINE)
 
 
 # -- SAFETY CHECKS ------------------------------------------------------------
@@ -222,20 +222,22 @@ def _transform_source(src: str, rel_path: str) -> tuple[str, list[str]]:
 
 # -- SYNC --------------------------------------------------------------------─
 
-def sync_file(src_path: Path, rel_path: str) -> list[str]:
-    """Sync a single file from working → public."""
+def sync_file(src_path: Path, rel_path: str) -> tuple[list[str], str]:
+    """Sync a single file from working → public.
+    Returns (issues, status) where status is one of
+    "written" | "unchanged" | "skipped" so main() can report real counts."""
     dst_path = PUBLIC / rel_path
     issues = []
 
     if src_path.is_dir():
         dst_path.mkdir(parents=True, exist_ok=True)
-        return issues
+        return issues, "skipped"
 
     ext = src_path.suffix.lower()
     is_py = ext == ".py"
 
     if not is_py and ext not in VERBATIM_EXTS:
-        return issues
+        return issues, "skipped"
 
     src = src_path.read_text(encoding="utf-8", errors="replace")
 
@@ -255,13 +257,13 @@ def sync_file(src_path: Path, rel_path: str) -> list[str]:
     if dst_path.exists():
         existing = dst_path.read_text(encoding="utf-8", errors="replace")
         if existing == src:
-            return issues
+            return issues, "unchanged"
 
     # newline="" preserves \n so we never rewrite LF files as CRLF on Windows
     with open(dst_path, "w", encoding="utf-8", newline="") as fh:
         fh.write(src)
     print(f"  {'=' if is_py else ' '} {rel_path}")
-    return issues
+    return issues, "written"
 
 
 def main():
@@ -293,7 +295,8 @@ def main():
     # -- Sync --
     print("-- Sync --")
     all_issues = []
-    synced = 0
+    written = 0
+    unchanged = 0
     skipped = 0
 
     for src_path in sorted(WORKING.rglob("*")):
@@ -317,11 +320,16 @@ def main():
             rel = renamed
             print(f"  > rename: {src_path.name} -> {renamed}")
 
-        issues = sync_file(src_path, rel)
+        issues, status = sync_file(src_path, rel)
         all_issues.extend(issues)
-        synced += 1
+        if status == "written":
+            written += 1
+        elif status == "unchanged":
+            unchanged += 1
+        else:
+            skipped += 1
 
-    print(f"\nSynced: {synced}, Skipped (data/cache): {skipped}")
+    print(f"\nWritten: {written}, Unchanged: {unchanged}, Skipped (data/cache/ext): {skipped}")
 
     # -- Report --
     if all_issues:

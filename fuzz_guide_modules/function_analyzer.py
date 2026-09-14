@@ -191,7 +191,10 @@ def angr_trace_to(binary_path: str, target: str, max_steps: int = 2000) -> dict:
             chunk = min(max_steps - steps, 50)
             if chunk <= 0:
                 break
-            simgr.explore(find=a)
+            # n= bounds the exploration to chunk real steps per call, so a
+            # huge state space cannot run to exhaustion (the old explore()
+            # with no n ran unbounded despite the cosmetic step counter).
+            simgr.explore(find=a, n=chunk)
             steps += chunk
             if simgr.found:
                 found = simgr.found[0]

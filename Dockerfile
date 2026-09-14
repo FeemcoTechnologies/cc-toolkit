@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
@@ -29,7 +29,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     shared-mime-info \
     procps \
     curl \
@@ -44,7 +44,12 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 # Copy application code (everything not in .dockerignore)
 COPY . ./
 
-# Create workspace directories
+# Create workspace directories and run as non-root
+RUN useradd --create-home --shell /usr/sbin/nologin cctk && \
+    chown -R cctk:cctk /opt/cc-toolkit && \
+    mkdir -p /workspace && chown cctk:cctk /workspace
+USER cctk
+
 VOLUME /workspace
 
 # Default port

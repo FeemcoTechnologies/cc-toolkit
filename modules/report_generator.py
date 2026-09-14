@@ -123,6 +123,82 @@ def _sections_for_case(case_type: str) -> List[str]:
     """Return the section list appropriate for a given case type."""
     return CASE_TYPE_SECTIONS.get(case_type, ALL_SECTIONS)
 
+
+# Markdown marker requesting a page break before the following heading.
+# - Server HTML renderer (_md_to_html_simple) passes the raw <div> through,
+#   and _md_to_html_body ships CSS `.page-break { page-break-after: always; }`.
+# - DOCX conversion maps it to a pandoc raw openxml block (real Word page break).
+# - Client preview (marked) renders it as a plain div; it is stripped from the
+#   Quill editor on paste and re-injected on preview export so it never depends
+#   on the fragile editor round-trip.
+_PAGE_BREAK = '<div class="page-break"></div>'
+
+# Literal text token substituted for _PAGE_BREAK in the HTML passed to pandoc's
+# html→docx writer. pandoc swallows empty divs and ignores CSS page-break rules,
+# so we render a visible marker paragraph, convert, then post-process the DOCX to
+# swap each marker paragraph for a real Word page-break run. Exact-literal, so it
+# is immune to markdown-escape / XML-entity matching pitfalls.
+_PAGE_BREAK_TOKEN = "@@PAGEBREAK@@"
+
+# Headings that must NOT get an automatic page break (cover / TOC live on one page).
+_NO_BREAK_HEADINGS = {"report of findings", "table of contents"}
+
+# Top-level report sections that SHOULD get page breaks (only these, not
+# sub-headings like "## Affected Tables" inside finding descriptions).
+_TOP_SECTIONS = {
+    "confidentiality statement", "disclaimer", "contact information",
+    "engagement contacts", "assessment overview", "scope", "executive summary",
+    "strengths", "weaknesses", "findings", "risk assessment matrix",
+    "methodology", "appendix a – flags discovered",
+    "retest summary", "evidence screenshots",
+}
+
+
+def _inject_section_page_breaks(md: str) -> str:
+    """Insert _PAGE_BREAK markers before each top-level section and each finding.
+
+    Skips headings already preceded by a <div> marker (idempotent) and never
+    breaks before sub-headings (e.g. ## inside finding descriptions) or the
+    cover/TOC headings. Used to guarantee DOCX page breaks even when the markdown
+    came from a client round-trip without markers.
+    """
+    lines = md.split("\n")
+    out = []
+    in_finding = False
+    for line in lines:
+        stripped = line.strip()
+        is_finding = re.match(r"^###\s+#\d+\s+—", stripped)
+        is_top_section = False
+        if in_finding:
+            # Inside a finding block the only heading that gets a break is the
+            # finding heading itself (handled by prev_div guard + marker swap in
+            # _render_report_markdown); any ##/### here (e.g. "## Scope" inside a
+            # description) must NOT trigger a page break.
+            if is_finding or re.match(r"^##\s+", stripped):
+                pass  # sub-headers inside findings never get auto-breaks
+        elif re.match(r"^##\s+", stripped):
+            head_lower = stripped.lstrip("# ").strip().lower()
+            is_top_section = head_lower in _TOP_SECTIONS
+        if is_top_section:
+            in_finding = False
+        if is_finding:
+            in_finding = True
+        if is_top_section or is_finding:
+                # Guard: don't double-inject when the closest preceding line
+                # of content is already a page-break div.
+                prev_div = False
+                for j in range(len(out) - 1, -1, -1):
+                    prev = out[j].strip()
+                    if prev == "":
+                        continue
+                    prev_div = prev.startswith("<div")
+                    break
+                if not prev_div:
+                    out.append(_PAGE_BREAK)
+                    out.append("")
+        out.append(line)
+    return "\n".join(out)
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -572,6 +648,7 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
         affected_hosts = f.get("affected_hosts", source)
 
         me = _md_escape
+        lines += [_PAGE_BREAK, ""]
         lines += [
             f"### #{i} — {me(title)} {{#finding-{i}}}",
             "",
@@ -598,15 +675,9 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
             lines.append(f"| **CVSS 3.1 Score** | {cvss_display} |")
         else:
             lines.append("| **CVSS 3.1 Score** | N/A |")
-        # Description (Incl. Root Cause)
-        lines.append(f"| **Description (Incl. Root Cause)** | {me(desc or 'N/A', table=True)} |")
-        # Security Impact
-        lines.append(f"| **Security Impact** | {me(impact or 'N/A', table=True)} |")
         # Affected Host(s)
         hosts = affected_hosts or "N/A"
         lines.append(f"| **Affected Host(s)** | {me(hosts, table=True)} |")
-        # Remediation
-        lines.append(f"| **Remediation** | {me(remediation or 'N/A', table=True)} |")
         # External References
         if references:
             ref_str = "; ".join(me(r, table=True) for r in references[:5])
@@ -618,6 +689,25 @@ def _section_findings(case_data: dict, findings: List[dict], case_dir: Optional[
         ftags = f.get("tags", [])
         if ftags:
             lines.append(f"| **Tags** | {', '.join(me(t) for t in ftags)} |")
+
+        # Multi-line markdown fields: render as standalone blocks so embedded
+        # markdown (headings, lists, tables) survives. Escaping the whole value
+        # or inlining it into a single table cell destroys nested markdown tables.
+        lines += [
+            "",
+            "**Description (Incl. Root Cause)**",
+            "",
+            (desc or "N/A"),
+            "",
+            "**Security Impact**",
+            "",
+            (impact or "N/A"),
+            "",
+            "**Remediation**",
+            "",
+            (remediation or "N/A"),
+            "",
+        ]
 
         # Proof of Concept section — uses ```poc language tag for terminal styling
         has_poc = bool(poc or command_output)
@@ -877,6 +967,7 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
     lines += _generate_toc(sections, findings)
 
     for section_name in sections:
+        lines += [_PAGE_BREAK, ""]
         if section_name == "Confidentiality Statement":
             lines += _section_confidentiality(client)
         elif section_name == "Disclaimer":
@@ -906,10 +997,13 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
         lines.append("")
 
     # Add retest summary section (only when show_retest=True and retest data exists)
-    if show_retest:
-        lines += _section_retest_findings(findings)
+    retest_lines = _section_retest_findings(findings)
+    if retest_lines:
+        lines += [_PAGE_BREAK, ""]
+        lines += retest_lines
 
     # Add evidence screenshots section (looks in case_dir/evidence/ for images)
+    lines += [_PAGE_BREAK, ""]
     lines += _generate_screenshots_section(cd)
 
     lines += [
@@ -924,9 +1018,12 @@ def _render_report_markdown(case_data: dict, findings: List[dict],
                  r'![\1](\1)', raw, flags=re.IGNORECASE)
     # Non-image Obsidian embeds → plain file references
     raw = re.sub(r'!\[\[([^\]]+)\]\]', r'[\1](\1)', raw)
-    # Strip remaining HTML divs (pandoc leak)
+    # Strip remaining HTML divs (pandoc leak), but keep intentional page-break markers.
+    _pb_token = "__PAGEBREAK_DIV__"
+    raw = raw.replace(_PAGE_BREAK, _pb_token)
     raw = re.sub(r'<div[^>]*>', '', raw)
     raw = re.sub(r'</div>', '', raw)
+    raw = raw.replace(_pb_token, _PAGE_BREAK)
     return raw
 
 
@@ -1239,7 +1336,7 @@ def generate_obsidian_report(
     Returns:
         Dict mapping format extension to file path, e.g. {'md': '/path/to/file.md', ...}
     """
-from .config import PENTEST_NOTES_DIR
+    from .config import PENTEST_NOTES_DIR
     case_data, findings = _load_case(case_dir)
     case_id = case_data.get("case_id", "?")
     case_type = case_data.get("case_type", "pentest")
@@ -1467,6 +1564,65 @@ def _add_table_th_styles(html: str) -> str:
     return re.sub(r'<th(?:\s[^>]*?)?>', _style_th, html)
 
 
+def _docx_replace_pagebreak_markers(docx_path: Path) -> None:
+    """Swap literal `_PAGE_BREAK_TOKEN` paragraphs in a DOCX for page breaks.
+
+    pandoc (html→docx) swallows empty divs and drops CSS page-break rules, so
+    the HTML passed in carried a visible marker paragraph instead. This reads
+    word/document.xml and replaces every paragraph whose text contains the token
+    with a real Word page-break paragraph. Collapses adjacent break paragraphs.
+    """
+    import zipfile
+    br = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+    try:
+        with zipfile.ZipFile(docx_path) as zin:
+            names = zin.namelist()
+            data = {n: zin.read(n) for n in names}
+        xml = data["word/document.xml"].decode("utf-8")
+
+        paras = list(re.finditer(r"<w:p\b[^>]*>.*?</w:p>", xml, re.S))
+        if not paras:
+            return
+        # find target indices (text of the paragraph contains the token)
+        targets = []
+        for i, p in enumerate(paras):
+            txt = "".join(re.findall(r"<w:t\b[^>]*>(.*?)</w:t>", p.group(0), re.S))
+            if _PAGE_BREAK_TOKEN in txt:
+                targets.append(i)
+
+        if not targets:
+            logger.debug("no page-break tokens found in generated docx")
+            return
+
+        # rebuild xml replacing target paragraphs, collapsing runs of adjacent
+        # targets into a single break paragraph.
+        parts = []
+        pos = 0
+        last = -10
+        for i in targets:
+            if i == last + 1:
+                continue
+            if i == 0:
+                pos = paras[i].end()
+                last = i
+                continue
+            parts.append(xml[pos:paras[i].start()])
+            parts.append(br)
+            pos = paras[i].end()
+            last = i
+        parts.append(xml[pos:])
+
+        data["word/document.xml"] = "".join(parts).encode("utf-8")
+        tmp = docx_path.with_suffix(".pb.docx")
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for nm in names:
+                zout.writestr(nm, data[nm])
+        tmp.replace(docx_path)
+        logger.debug("inserted %d page breaks into %s", len(targets), docx_path)
+    except Exception:
+        logger.debug("page-break post-processing failed", exc_info=True)
+
+
 def _convert_md_to_docx(md_text: str, out_path: Path, title: str = "",
                          work_dir: Optional[Path] = None,
                          case_dir: Optional[Path] = None) -> Optional[Path]:
@@ -1491,11 +1647,16 @@ def _convert_md_to_docx(md_text: str, out_path: Path, title: str = "",
         # Add inline styles for PoC terminal blocks and table headers (pandoc strips CSS classes)
         html_content = _add_poc_inline_styles(html_content)
         html_content = _add_table_th_styles(html_content)
+        if _PAGE_BREAK in html_content:
+            html_content = html_content.replace(
+                _PAGE_BREAK, f'<p class="pbmark">{_PAGE_BREAK_TOKEN}</p>')
         html_path = work_dir / "_convert_temp.html"
         html_path.write_text(html_content, encoding="utf-8")
         cleanup_files.append(html_path)
 
-        # Try pandoc with HTML source (best style preservation)
+        # Try pandoc with HTML source (best style preservation); restored later
+        # by _docx_replace_pagebreak_markers which swaps the literal token for a
+        # real Word page-break run.
         try:
             subprocess.run(
                 ["pandoc", str(html_path), "-o", str(out_path),
@@ -1503,6 +1664,7 @@ def _convert_md_to_docx(md_text: str, out_path: Path, title: str = "",
                 capture_output=True, text=True, timeout=60,
             )
             if out_path.exists():
+                _docx_replace_pagebreak_markers(out_path)
                 for p in cleanup_files:
                     p.unlink(missing_ok=True)
                 if work_dir and str(work_dir).endswith("_convert_temp"):
@@ -1616,21 +1778,8 @@ def _convert_md_to_pdf(md_text: str, out_path: Path, title: str = "",
         tmp.close()
         cleanup = lambda: md_path.unlink(missing_ok=True)
 
-    # Try pandoc with weasyprint or wkhtmltopdf
-    for engine in ("weasyprint", "wkhtmltopdf", "pdflatex"):
-        try:
-            cmd = ["pandoc", str(md_path), "-o", str(out_path),
-                   "--metadata", f"title={title}", "--from", "markdown",
-                   "--pdf-engine", engine]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if out_path.exists():
-                cleanup()
-                return out_path
-        except Exception as _e:
-            print(f"[report] PDF engine failed: {_e}", flush=True)
-            continue
-
-    # Fallback: try weasyprint directly from HTML
+    # Preferred: weasyprint directly from our styled HTML (keeps CSS page breaks,
+    # badge styling, cover page, and code blocks).
     try:
         from weasyprint import HTML
         html = _md_to_html_full(md_text, title)
@@ -1644,7 +1793,21 @@ def _convert_md_to_pdf(md_text: str, out_path: Path, title: str = "",
             return out_path
     except Exception:
 
-        logger.debug("Exception in report_generator.py", exc_info=True)
+        logger.debug("weasyprint direct failed", exc_info=True)
+
+    # Fallback: pandoc with weasyprint or wkhtmltopdf
+    for engine in ("weasyprint", "wkhtmltopdf", "pdflatex"):
+        try:
+            cmd = ["pandoc", str(md_path), "-o", str(out_path),
+                   "--metadata", f"title={title}", "--from", "markdown",
+                   "--pdf-engine", engine]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if out_path.exists():
+                cleanup()
+                return out_path
+        except Exception as _e:
+            print(f"[report] PDF engine failed: {_e}", flush=True)
+            continue
 
     cleanup()
     return None
@@ -1938,7 +2101,7 @@ def _md_to_html_full(md_text: str, title: str = "") -> str:
 
 def _find_logo(case_dir: Optional[Path] = None) -> Optional[Path]:
     """Search for the company logo in known template locations or case directory."""
-from .config import OBSIDIAN_DIR
+    from .config import OBSIDIAN_DIR
     candidates = [
         OBSIDIAN_DIR / "Templates" / "Pentest Templates" / "Data" / "Logo Try 2.png",
         OBSIDIAN_DIR / "Templates" / "Pentest Templates" / "Data" / "Logo Try 2.jpg",

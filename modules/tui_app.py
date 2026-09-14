@@ -11,7 +11,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.shortcuts import input_dialog, message_dialog, yes_no_dialog
 
 try:
-from modules.config import load_config, CASES_DIR, CC_DIR, PLAYBOOKS_DIR
+    from modules.config import load_config, CASES_DIR, CC_DIR, PLAYBOOKS_DIR
 except ImportError:
     from modules.config import WORKSPACE as CC_DIR, PENTEST_DIR as CASES_DIR, load_config_file as load_config
     PLAYBOOKS_DIR = CC_DIR / "playbooks"

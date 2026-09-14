@@ -649,7 +649,7 @@ def sast_scan(target: str) -> dict:
 
 
 def _rule_dirs() -> list:
-from .config import SEMGREP_RULES_DIR
+    from .config import SEMGREP_RULES_DIR
     roots = [SEMGREP_RULES_DIR]
     return [str(r) for r in roots if Path(r).exists()]
 

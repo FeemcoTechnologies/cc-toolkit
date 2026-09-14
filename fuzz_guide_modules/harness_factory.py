@@ -53,7 +53,7 @@ def setup_campaign(
     if input_type == "file":
         if not args or "@@" not in args:
             args = "@@"  # AFL replaces @@ with the file path
-        cmd = f"{binary} {args}" if args.startswith("@") else f"{binary} {args}"
+        cmd = f"{binary} {args}"
     elif input_type == "net_basic":
         harness = generate_net_harness(target or "127.0.0.1:5555", work)
         if harness.get("error"):

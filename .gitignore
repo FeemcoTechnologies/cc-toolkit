@@ -45,6 +45,12 @@ env-profiles.json
 .DS_Store
 Thumbs.db
 
+# ── Runtime scan/report output ─────────────────────────────────────────────
+ffuf_output/
+gobuster_output/
+report.json
+reverse_exploit_analyzer.py
+
 # ── Docker ──────────────────────────────────────────────────────────────────
 /workspace/
 /workspace/*

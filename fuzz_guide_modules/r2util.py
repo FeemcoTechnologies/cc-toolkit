@@ -8,7 +8,7 @@ Design notes
   cheap ``readelf``/``file`` parsing instead.
 - When r2 *is* used, a watchdog thread kills every radare2 process pointing at
   the binary after ``budget_s`` seconds, so a timed-out MCP request never leaves
-  an orphaned r2 hogging CPU/RAM (see ``_kill_r2_for`` / ``open_r2``).
+  an orphaned r2 hogging CPU/RAM (see ``kill_r2_for`` / ``open_r2``).
 """
 
 import json
@@ -103,9 +103,31 @@ def fast_elf_info(path: str) -> dict:
 # ------------------------------------------------------------------.
 # watchdog r2 wrapper
 # ------------------------------------------------------------------
+def _arg_refs(args: list[str], path: str) -> bool:
+    """True when *path* appears as a WHOLE argv element (or as the same file
+    after realpath). Substring matches are intentionally rejected so shared
+    path prefixes never cause another session to be misidentified."""
+    if path in args:
+        return True
+    try:
+        canon = os.path.realpath(path)
+    except OSError:
+        return False
+    for a in args:
+        if a.startswith(("/", "~", os.path.expanduser("~"))):
+            try:
+                if os.path.realpath(a) == canon:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _r2_procs_for(path: str) -> list[int]:
-    """Find PIDs of radare2 processes whose argv references *path*."""
+    """Find PIDs of radare2 processes whose argv references *path* (exact match)."""
     pids = []
+    if os.name != "posix" or not os.path.isdir("/proc"):
+        return pids  # /proc scan is Linux-specific; nothing we can watch elsewhere
     try:
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
@@ -114,14 +136,14 @@ def _r2_procs_for(path: str) -> list[int]:
             try:
                 with open(cmdline_f, "rb") as f:
                     raw = f.read()
-                args = [a for a in raw.split(b"\x00") if a]
+                args = [a.decode("utf-8", "replace") for a in raw.split(b"\x00") if a]
                 if not args:
                     continue
-                first = os.path.basename(args[0].decode("utf-8", "replace"))
-                joined = b"".join(args).decode("utf-8", "replace")
-                if first.startswith("radare2") and path in joined:
+                if not os.path.basename(args[0]).startswith("radare2"):
+                    continue
+                if _arg_refs(args, path):
                     pids.append(int(entry))
-            except (IOError, ValueError, PermissionError):
+            except (IOError, ValueError, PermissionError, OSError):
                 continue
     except Exception:
         pass
@@ -139,24 +161,31 @@ def kill_r2_for(path: str, sig: int = 9) -> dict:
     return {"killed": pids}
 
 
-_SCRIPTED_R2_ARGS = {"-2", "-q0"}
-
-
 def _is_scripted_r2(args: list[str]) -> bool:
     """True if a radare2 argv looks like an r2pipe session ('-2 -q0')."""
     return "-2" in args and "-q0" in args
 
 
+def _fuzz_workdir() -> str:
+    return os.environ.get("FUZZ_GUIDE_WORKDIR", "/tmp/fuzz_guide_workdir")
+
+
 def sweep_stale_r2() -> dict:
-    """Kill every lingering *scripted* radare2 session on the box.
+    """Kill stale *scripted* radare2 sessions — but ONLY sessions whose argv
+    references a file inside the fuzz-guide workdir (exact match).
 
     r2pipe spawns r2 with ``-2 -q0``; when the MCP server dies mid-analysis
     the print-level child is adopted by init and keeps eating CPU for hours
-    (observed: 2h05m on a truncated ELF).  Interactive r2 (no ``-q0``) is
-    never touched.
+    (observed: 2h05m on a truncated ELF).  Interactive r2 sessions, and any
+    scripted r2 a different project started outside the workdir, are never
+    touched.
     """
     killed = []
     kept = []
+    if os.name != "posix" or not os.path.isdir("/proc"):
+        return {"killed_r2": killed, "untouched_interactive_r2": kept,
+                "note": "no /proc scan available on this platform"}
+    workdir = _fuzz_workdir()
     try:
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
@@ -164,21 +193,20 @@ def sweep_stale_r2() -> dict:
             try:
                 with open(f"/proc/{entry}/cmdline", "rb") as f:
                     raw = f.read()
-                args = [a for a in raw.split(b"\x00") if a]
-                if not args:
+                args = [a.decode("utf-8", "replace") for a in raw.split(b"\x00") if a]
+                if not args or not os.path.basename(args[0]).startswith("radare2"):
                     continue
-                first = os.path.basename(args[0].decode("utf-8", "replace"))
-                if not first.startswith("radare2"):
+                if not _is_scripted_r2(args):
+                    kept.append(int(entry))  # interactive r2: leave alone
                     continue
-                sargs = [a.decode("utf-8", "replace") for a in args]
-                if _is_scripted_r2(sargs):
+                if _arg_refs(args, workdir):
                     try:
                         os.kill(int(entry), 9)
                         killed.append(int(entry))
                     except (ProcessLookupError, PermissionError, ValueError):
                         pass
                 else:
-                    kept.append(int(entry))  # interactive r2: leave alone
+                    kept.append(int(entry))  # other project's session: leave alone
             except (IOError, OSError, ValueError, PermissionError):
                 continue
     except Exception:

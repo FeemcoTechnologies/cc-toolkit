@@ -47,33 +47,36 @@ services:
       - "host.docker.internal:host-gateway"
     command: web
 
-  # ── JupyterLab (optional) ─────────────────────────────────────────────
+  # ── JupyterLab on Kali (optional) ──────────────────────────────────────
   # Start with: docker compose --profile with-jupyter up -d
   #
-  # Access directly at http://localhost:8888 or via the dashboard's
-  # Jupyter iframe at http://localhost:5000.
+  # Kali Linux + JupyterLab: the Jupyter web UI (and its built-in Terminal)
+  # give a root shell with Kali's command-line toolset. The /work volume
+  # holds notebooks and is shared across restarts.
   #
-  # JupyterLab starts with no auth token for local-only convenience.
-  # For any public-facing deployment, set a strong password.
+  # Access directly at http://localhost:8888 or via the dashboard's Jupyter
+  # iframe at http://localhost:5000.
+  #
+  # Jupyter starts with no auth token unless CC_JUPYTER_TOKEN is set.
+  # For any public-facing deployment, set a strong CC_JUPYTER_TOKEN.
   jupyter:
-    image: jupyter/datascience-notebook:latest
+    image: cc-jupyter-kali:latest
+    build: docker/jupyter-kali
     container_name: cc-jupyter
     restart: unless-stopped
     profiles:
       - with-jupyter
     ports:
       - "8888:8888"
+    # NET_RAW/NET_ADMIN: nmap SYN (-sS) scans and tcpdump capture need raw
+    # sockets + packet socket access, which Docker drops by default.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
     environment:
-      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=${CC_JUPYTER_TOKEN:-}
     volumes:
-      - cc-notebooks:/home/jovyan/work
-    command: >
-      start-notebook.sh
-      --NotebookApp.token=''
-      --NotebookApp.password=''
-      --NotebookApp.allow_origin='*'
-      --NotebookApp.disable_check_xsrf=True
-      --NotebookApp.tornado_settings='{"headers":{"Content-Security-Policy":"frame-ancestors *"}}'
+      - cc-notebooks:/work
 
   # ── Caido Proxy (optional Docker-based) ───────────────────────────────
   # Start with: docker compose --profile with-caido up -d

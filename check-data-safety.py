@@ -26,17 +26,32 @@ BLOCKED_FILENAMES = frozenset({
     "runbook-log.json",   # Runbook execution results
     "findings.json",      # All case findings
     "findings.db",        # Findings database
+    "evidence.db",        # Evidence database
+    "loot.db",            # Loot database
+    "loot.json",          # Loot database (flat file)
+    "case.json",          # Case metadata (client name, targets)
+    "report.json",        # Per-binary analysis report
     "asset_db.json",      # Asset inventory
     "arsenal-rules.json",
     "dashboard_layout.json",
     "env-profiles.json",
+    "bb_config.json",     # Bug bounty platform API credentials
+    "bb_cache.json",      # Bug bounty program scope cache
     ".vault_key",
 })
 
 BLOCKED_DIRS = frozenset({
     "cases", "data", "nmap_scans", "screenshots",
     "logs", "sessions", "wifi_sessions", "dns_monitors", "wordlists",
+    "reports", "ffuf_output", "gobuster_output", "sqlmap",
 })
+
+# Timestamped recon/output directories, e.g. subfinder_output_20260902_185141_926027_0001/
+BLOCKED_DIR_PATTERNS = [
+    (r"^(httpx|subfinder|nuclei|katana|naabu|ffuf|gobuster)_output_\d+_\d+",
+     "Recon output directory"),
+    (r"^output_\d{8}_\d{6}", "Timestamped output directory"),
+]
 
 # Suspicious patterns in file contents
 SUSPICIOUS_PATTERNS = [
@@ -59,11 +74,16 @@ def check_file(filepath: Path, is_staged: bool = False) -> list[str]:
     if filepath.name in BLOCKED_FILENAMES:
         violations.append(f"BLOCKED: {rel} — blocked filename ({filepath.name})")
 
-    # Check parent directory blocklist
+    # Check parent directory blocklist (exact names + regex output dirs)
     for part in rel.split("/"):
         if part in BLOCKED_DIRS:
             violations.append(f"BLOCKED: {rel} — inside blocked directory ({part})")
             break
+        for pattern, desc in BLOCKED_DIR_PATTERNS:
+            if re.match(pattern, part):
+                violations.append(
+                    f"BLOCKED: {rel} — inside blocked {desc} ({part})")
+                break
 
     if not filepath.is_file():
         return violations
