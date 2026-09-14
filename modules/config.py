@@ -5,10 +5,14 @@ All settings have sensible defaults and can be overridden via:
 2. A JSON config file (CC_CONFIG_FILE or /workspace/config/settings.json)
 """
 
-import os
+import copy
 import json
+import os
 import secrets
+import threading
 from pathlib import Path
+
+from modules.feature_groups import DEFAULT_FEATURES
 
 
 def _env_or_default(key, default):
@@ -28,6 +32,11 @@ SESSIONS_DIR = Path(_env_or_default("SESSIONS_DIR", str(WORKSPACE / "sessions"))
 CONFIG_DIR   = Path(_env_or_default("CONFIG_DIR",   str(WORKSPACE / "config")))
 NOTEBOOK_DIR = Path(_env_or_default("NOTEBOOK_DIR", str(WORKSPACE / "notebooks")))
 GIT_REPO     = Path(_env_or_default("GIT_REPO",     str(WORKSPACE / "git-repo")))
+ARSENAL_DIR  = Path(_env_or_default("ARSENAL_DIR",  str(WORKSPACE / "arsenal")))
+ARSENAL_RULES_FILE = Path(_env_or_default("ARSENAL_RULES_FILE",
+                                          str(WORKSPACE / "arsenal-rules.json")))
+ENV_PROFILES_FILE  = Path(_env_or_default("ENV_PROFILES_FILE",
+                                          str(WORKSPACE / "env-profiles.json")))
 
 # ── Web Dashboard ──────────────────────────────────────────────────────────
 DASHBOARD_HOST     = _env_or_default("HOST",     "0.0.0.0")
@@ -45,6 +54,8 @@ SECRET_KEY         = _env_or_default("SECRET", "") or secrets.token_hex(16)
 JUPYTER_URL = _env_or_default("JUPYTER_URL", "http://localhost:8888")
 # Caido intercepting proxy
 CAIDO_URL   = _env_or_default("CAIDO_URL",   "http://localhost:8080")
+CAIDO_HOST  = _env_or_default("CAIDO_HOST",  "localhost")
+CAIDO_PORT  = int(_env_or_default("CAIDO_PORT", "8080"))
 # Ollama LLM inference server
 OLLAMA_HOST = _env_or_default("OLLAMA_HOST", "http://localhost:11434")
 # SSH tunnel target for AI infrastructure (host where ollama runs)
@@ -96,6 +107,15 @@ YARA_RULES_DIR = WORKSPACE / "rules" / "yara"
 SIGMA_RULES_DIR = WORKSPACE / "rules" / "sigma"
 SEMGREP_RULES_DIR = WORKSPACE / "rules" / "semgrep"
 
+# Directory names excluded from recursive scans (appsec, bin_surface, yara,
+# semgrep, etc.). These hold engagement artifacts / tooling output that must
+# never be fed back into the scanner.
+DEFAULT_EXCLUDE_DIRS = (
+    ".git", "__pycache__", ".venv", "venv", "node_modules", "dist", "build",
+    "site-packages", "target", ".mypy_cache", ".pytest_cache", "cases",
+    "data", "nmap_scans",
+)
+
 
 def load_config_file(path=None):
     """Merge settings from a JSON config file (overrides env vars)."""
@@ -116,3 +136,80 @@ def ensure_dirs():
     for d in [PENTEST_DIR, TOOLS_DIR, WORDLISTS_DIR, LOGS_DIR,
               SESSIONS_DIR, CONFIG_DIR, NOTEBOOK_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+
+
+# ── Burp Suite / ZAP / Misc constants expected by web_dashboard/app.py ─────
+BURP_API_URL   = _env_or_default("BURP_API_URL",  "http://192.168.56.1:1337")
+BURP_API_KEY   = os.environ.get("BURP_API_KEY", "")
+BURP_PROXY_URL = _env_or_default("BURP_PROXY_URL", "http://192.168.56.1:8081")
+
+# ── Config file with mtime-cached reads ─────────────────────────────────────
+CONFIG_FILE = CONFIG_DIR / "settings.json"
+
+DEFAULT_CONFIG = {
+    "dashboard_host": DASHBOARD_HOST,
+    "dashboard_port": DASHBOARD_PORT,
+    "dashboard_debug": DEBUG,
+    "dashboard_api_key": DASHBOARD_API_KEY,
+    "workspace": str(WORKSPACE),
+    "pentest_dir": str(PENTEST_DIR),
+    "cases_dir": str(CASES_DIR),
+    "tools_dir": str(TOOLS_DIR),
+    "wordlists_dir": str(WORDLISTS_DIR),
+    "logs_dir": str(LOGS_DIR),
+    "sessions_dir": str(SESSIONS_DIR),
+    "jupyter_url": str(JUPYTER_URL),
+    "caido_url": str(CAIDO_URL),
+    "obsidian_dir": str(OBSIDIAN_DIR),
+    "burp_api_url": BURP_API_URL,
+    "burp_api_key": BURP_API_KEY,
+    "burp_proxy_url": BURP_PROXY_URL,
+    "zap": {"url": "http://127.0.0.1:8080", "api_key": "changeme", "bin": "zaproxy"},
+    "features": DEFAULT_FEATURES,
+}
+
+_CONFIG_CACHE = None
+_CONFIG_MTIME = None
+_config_lock = threading.RLock()
+
+
+def load_config() -> dict:
+    """Return config dict, re-reading CONFIG_FILE when it changes on disk."""
+    global _CONFIG_CACHE, _CONFIG_MTIME
+    with _config_lock:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if CONFIG_FILE.exists():
+            try:
+                mtime = CONFIG_FILE.stat().st_mtime
+            except OSError:
+                mtime = _CONFIG_MTIME
+            if _CONFIG_CACHE is None or _CONFIG_MTIME != mtime:
+                _CONFIG_CACHE = {**copy.deepcopy(DEFAULT_CONFIG),
+                                 **json.loads(CONFIG_FILE.read_text())}
+                _CONFIG_MTIME = mtime
+        else:
+            _CONFIG_CACHE = copy.deepcopy(DEFAULT_CONFIG)
+            _CONFIG_MTIME = None
+            save_config(_CONFIG_CACHE)
+        return _CONFIG_CACHE
+
+
+def save_config(cfg: dict) -> None:
+    global _CONFIG_CACHE, _CONFIG_MTIME
+    with _config_lock:
+        _CONFIG_CACHE = cfg
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        try:
+            _CONFIG_MTIME = CONFIG_FILE.stat().st_mtime
+        except OSError:
+            _CONFIG_MTIME = None
+
+
+def update_config(mutator) -> dict:
+    """Atomically load → mutate → save the config under a lock."""
+    with _config_lock:
+        cfg = load_config()
+        mutator(cfg)
+        save_config(cfg)
+        return cfg

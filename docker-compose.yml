@@ -25,7 +25,9 @@ version: "3.9"
 services:
   # ── Main toolkit ──────────────────────────────────────────────────────
   cc-toolkit:
-    image: cc-toolkit:latest
+    # localhost/ forces podman to use the locally-built image instead of
+    # trying to pull docker.io/library/cc-toolkit:latest (access denied).
+    image: localhost/cc-toolkit:latest
     build: .
     container_name: cc-toolkit
     restart: unless-stopped
@@ -67,7 +69,7 @@ services:
   # Jupyter starts with no auth token unless CC_JUPYTER_TOKEN is set.
   # For any public-facing deployment, set a strong CC_JUPYTER_TOKEN.
   jupyter:
-    image: cc-jupyter-kali:latest
+    image: localhost/cc-jupyter-kali:latest
     build: docker/jupyter-kali
     container_name: cc-jupyter
     restart: unless-stopped
@@ -110,7 +112,7 @@ services:
   # correlates across devices, and serves the dashboard/MCP/CLI via REST.
   # Agents reach it over WireGuard (Phase 2); host access is loopback only.
   edr:
-    image: cc-edr-server:latest
+    image: localhost/cc-edr-server:latest
     build:
       context: ./edr
       dockerfile: server/Dockerfile
