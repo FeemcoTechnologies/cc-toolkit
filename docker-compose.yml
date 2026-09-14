@@ -1,20 +1,25 @@
 version: "3.9"
 
 # ── CC Toolkit — Docker Compose ───────────────────────────────────────────
-# Runs the web dashboard with persistent data in named volumes.
+# Full stack: web dashboard, Kali+JupyterLab, Caido, EDR server.
+# All services are ON by default; disable via up.sh/.env flags.
+#
+# NETWORKING (Phase 0, see DEPLOYMENT_PLAN.md):
+#   * Everything talks by container name on the shared external network
+#     "cc-net" (created by ./up.sh if missing).
+#   * Every host-published port is bound to 127.0.0.1 ONLY. Nothing is
+#     accessible from the network/internet without the reverse proxy
+#     (nginx-proxy-manager, see edges/). Caido is intentionally non-public.
+#   * nginx-proxy-manager/wg-easy must join cc-net and proxy to SERVICE
+#     NAMES (e.g. http://cc-toolkit:5000), never to host 127.0.0.1:port.
 #
 # Quick start:
-#   docker compose up -d
-#   docker compose logs -f
+#   cp .env.example .env      # edit secrets
+#   ./up.sh                   # docker compose up -d --build
+#   ./down.sh                 # stop everything
 #
-# With JupyterLab integration:
-#   docker compose --profile with-jupyter up -d
-#
-# With everything (JupyterLab + optional Caido proxy):
-#   docker compose --profile with-jupyter --profile with-caido up -d
-#
-# Caido: default expectation is host-based (host.docker.internal:8080).
-# The optional "with-caido" profile runs Caido inside Docker instead.
+# Flags (recorded in .env):
+#   CC_ENABLE_JUPYTER=1   CC_ENABLE_CAIDO=1   CC_ENABLE_EDR=1
 # ──────────────────────────────────────────────────────────────────────────
 
 services:
@@ -25,19 +30,21 @@ services:
     container_name: cc-toolkit
     restart: unless-stopped
     ports:
-      - "5000:5000"    # Web dashboard
-      - "5001:5001"    # WebSocket terminal
+      - "127.0.0.1:5000:5000"    # Web dashboard (loopback only)
+      - "127.0.0.1:5001:5001"    # WebSocket terminal (loopback only)
     environment:
       - CC_HOST=0.0.0.0
       - CC_PORT=5000
       - CC_WS_PORT=5001
       - CC_WORKSPACE=/workspace
       - CC_SECRET=${CC_SECRET:-change-me-in-production}
-      # Jupyter — accessible via Docker service name when using with-jupyter profile
-      - CC_JUPYTER_URL=http://jupyter:8888
-      # Caido — host.docker.internal assumes Caido is running on the host.
-      # If using the optional with-caido profile, change to http://caido:8080
-      - CC_CAIDO_URL=http://host.docker.internal:8080
+      # Peer services reachable by container name on cc-net. Overridable in
+      # .env for the reverse-proxy layout (e.g. https://<domain>/jupyter).
+      - CC_JUPYTER_URL=${CC_JUPYTER_URL:-http://jupyter:8888}
+      - CC_CAIDO_URL=${CC_CAIDO_URL:-http://caido:8080}
+      # EDR server + API key for the dashboard/MCP integrations
+      - EDR_SERVER_URL=${EDR_SERVER_URL:-http://edr:8900}
+      - EDR_ADMIN_API_KEY=${EDR_ADMIN_API_KEY:-}
     volumes:
       - cc-data:/workspace
       # Mount Docker socket for Docker-from-Docker (optional — needed for
@@ -46,16 +53,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: web
+    networks:
+      - cc-net
 
-  # ── JupyterLab on Kali (optional) ──────────────────────────────────────
-  # Start with: docker compose --profile with-jupyter up -d
-  #
+  # ── JupyterLab on Kali ────────────────────────────────────────────────
   # Kali Linux + JupyterLab: the Jupyter web UI (and its built-in Terminal)
-  # give a root shell with Kali's command-line toolset. The /work volume
+  # gives a root shell with Kali's command-line toolset. The /work volume
   # holds notebooks and is shared across restarts.
   #
-  # Access directly at http://localhost:8888 or via the dashboard's Jupyter
-  # iframe at http://localhost:5000.
+  # Host: http://localhost:8383 (loopback only). When path-proxied later,
+  # set JUPYTER_BASE_URL=/jupyter in .env (Kali CMD supports it).
   #
   # Jupyter starts with no auth token unless CC_JUPYTER_TOKEN is set.
   # For any public-facing deployment, set a strong CC_JUPYTER_TOKEN.
@@ -64,10 +71,8 @@ services:
     build: docker/jupyter-kali
     container_name: cc-jupyter
     restart: unless-stopped
-    profiles:
-      - with-jupyter
     ports:
-      - "8888:8888"
+      - "127.0.0.1:8383:8888"   # host 8383 → container 8888 (loopback)
     # NET_RAW/NET_ADMIN: nmap SYN (-sS) scans and tcpdump capture need raw
     # sockets + packet socket access, which Docker drops by default.
     cap_add:
@@ -75,35 +80,63 @@ services:
       - NET_ADMIN
     environment:
       - JUPYTER_TOKEN=${CC_JUPYTER_TOKEN:-}
+      - JUPYTER_BASE_URL=${JUPYTER_BASE_URL:-}
     volumes:
       - cc-notebooks:/work
+    networks:
+      - cc-net
 
-  # ── Caido Proxy (optional Docker-based) ───────────────────────────────
-  # Start with: docker compose --profile with-caido up -d
-  #
-  # Access Caido UI at http://localhost:8080
-  #
-  # NOTE: Running Caido in Docker means the proxy intercepts Docker
-  # network traffic, not your host traffic directly. For typical
-  # pentesting against web apps on the host, run Caido on the host
-  # and rely on the host.docker.internal default above.
-  #
-  # If you use this, update cc-toolkit's CC_CAIDO_URL to http://caido:8080
-  # caido:
-  #   image: caido/caido:latest
-  #   container_name: cc-caido
-  #   restart: unless-stopped
-  #   profiles:
-  #     - with-caido
-  #   ports:
-  #     - "8080:8080"
-  #   environment:
-  #     - CAIDO_PORT=8080
-  #     - CAIDO_HOST=0.0.0.0
-  #   volumes:
-  #     - cc-caido-data:/data
+  # ── Caido Proxy ───────────────────────────────────────────────────────
+  # Intercepting proxy + web app analysis.
+  # NON-PUBLIC BY DESIGN: an open proxy lets strangers replay requests
+  # through it. Bound to host loopback only; reachable by the dashboard
+  # (CC_CAIDO_URL) and other cc-net services. No public port, ever.
+  caido:
+    image: docker.io/caido/caido:latest
+    container_name: cc-caido
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # loopback only
+    environment:
+      - CAIDO_PORT=8080
+      - CAIDO_HOST=0.0.0.0
+    volumes:
+      - cc-caido-data:/data
+    networks:
+      - cc-net
+
+  # ── EDR server ────────────────────────────────────────────────────────
+  # FastAPI server (SQLite) for the EDR system: receives agent alerts,
+  # correlates across devices, and serves the dashboard/MCP/CLI via REST.
+  # Agents reach it over WireGuard (Phase 2); host access is loopback only.
+  edr:
+    image: cc-edr-server:latest
+    build:
+      context: ./edr
+      dockerfile: server/Dockerfile
+    container_name: cc-edr
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8900:8900"   # loopback only
+    environment:
+      - EDR_DB_PATH=/app/data/edr.db
+      - EDR_SECRET_KEY=${EDR_SECRET_KEY:-change-me-edr-secret}
+      - EDR_ADMIN_API_KEY=${EDR_ADMIN_API_KEY:-change-me-edr-admin-key}
+    volumes:
+      - cc-edr-data:/app/data
+      - ./edr/rules:/app/rules:ro
+    networks:
+      - cc-net
+
+# Shared with the edge (nginx-proxy-manager) and wg-easy — see edges/.
+# ./up.sh creates it if missing.
+networks:
+  cc-net:
+    external: true
+    name: ${CC_NETNAME:-cc-net}
 
 volumes:
   cc-data:
   cc-notebooks:
-  # cc-caido-data:   # uncomment if using Docker-based Caido
+  cc-caido-data:
+  cc-edr-data:

@@ -1,0 +1,10 @@
+# ── Edge services config (copy to .env: cd edges && cp _env.example .env) ─
+# Public IP or DNS name clients dial in the WireGuard tunnel URI.
+WG_HOST=your-server-public-ip-or-domain
+
+# Hash of the wg-easy admin password (generate, don't put plaintext here):
+#   docker run --rm weejewel/wg-easy wgpw '<your-password>'
+WGEASY_PASSWORD_HASH=change-me
+
+# Shared network name must match the stack's CC_NETNAME (default cc-net).
+CC_NETNAME=cc-net

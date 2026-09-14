@@ -52,8 +52,10 @@ EXPOSE 8888
 
 # Roots of the Jupyter process (and its terminal) default to root on Kali.
 # JUPYTER_TOKEN empty => no auth (local convenience); set it for exposed hosts.
+# JUPYTER_BASE_URL (e.g. /jupyter) enables reverse-proxy path routing.
 CMD ["sh", "-c", "jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root \
      --ServerApp.root_dir=/work --ServerApp.allow_root=True \
+     --ServerApp.base_url=${JUPYTER_BASE_URL:-} \
      --ServerApp.token=${JUPYTER_TOKEN} --ServerApp.password='' \
      --ServerApp.allow_origin='*' --ServerApp.disable_check_xsrf=True \
      --ServerApp.tornado_settings='{\"headers\":{\"Content-Security-Policy\":\"frame-ancestors *\"}}'"]
